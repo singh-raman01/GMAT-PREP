@@ -69,7 +69,10 @@ export class TotalScoreView extends Schema.Class<TotalScoreView>("gmat-prep/api/
 
 export class ScoreEstimates extends Schema.Class<ScoreEstimates>("gmat-prep/api/ScoreEstimates")({
   sections: Schema.Array(ScoreEstimateView),
-  total: Schema.NullOr(TotalScoreView)
+  total: Schema.NullOr(TotalScoreView),
+  // Today in the Profile's time zone: the latest day an Official Score can
+  // be dated, and the date its form starts with.
+  today: Day
 }) {}
 
 export class ScoresApi extends HttpApiGroup.make("scores")

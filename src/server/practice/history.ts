@@ -61,11 +61,11 @@ export const mergeTargets = Effect.gen(function*() {
 
 // When the Profile's Paper Marks made each Question Seen, by the Question
 // it counts as.
-export const paperSeenBy = (profileId: string) =>
+export const paperSeenBy = (profileId: string, which: "first" | "last" = "first") =>
   Effect.gen(function*() {
     const { marks, pages } = yield* marksAndPages(profileId)
     if (marks.length === 0) return new Map<string, number>() as ReadonlyMap<string, number>
-    return paperSeenOf(marks, pages, yield* mergeTargets)
+    return paperSeenOf(marks, pages, yield* mergeTargets, which)
   })
 
 // A Question is Seen by a Profile once a Session has served it to them, or a
@@ -113,7 +113,7 @@ export const heldBySections = (profileId: string) =>
 
 // When a Profile last saw each Question it has Seen, a merged Question's
 // servings counting for the one it became. A Paper Mark counts as a sighting
-// at the time it was made.
+// at the time it was made, the latest of those that cover the Question.
 export const lastSeenBy = (profileId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
@@ -128,7 +128,7 @@ export const lastSeenBy = (profileId: string) =>
       const id = resolve(row.questionId)
       last.set(id, Math.max(last.get(id) ?? 0, Number(row.at ?? 0)))
     }
-    for (const [id, at] of yield* paperSeenBy(profileId)) last.set(id, Math.max(last.get(id) ?? 0, at))
+    for (const [id, at] of yield* paperSeenBy(profileId, "last")) last.set(id, Math.max(last.get(id) ?? 0, at))
     return last
   })
 

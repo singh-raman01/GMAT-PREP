@@ -3,9 +3,9 @@ import { Effect } from "effect"
 import { Db } from "../db/Database.ts"
 import { paperMarks, sources } from "../db/schema.ts"
 
-// What Paper Marks make Seen (docs/design.md, "Paper Marks"): every Question
-// with a Source on a marked page of a marked Book, from the time of the
-// earliest mark that covers it.
+// What Paper Marks make Seen (docs/design.md, "Sessions", and decision 57):
+// every Question with a Source on a marked page of a marked Book, first Seen
+// at the earliest mark that covers it and last Seen at the latest.
 
 export interface Mark {
   readonly id: string
@@ -25,20 +25,21 @@ export const covers = (mark: Mark, source: SourcePage) =>
   mark.bookId === source.bookId &&
   (mark.firstPage === null || mark.lastPage === null || (source.page >= mark.firstPage && source.page <= mark.lastPage))
 
-// When each Question was made Seen, by the Question it counts as: a merged
-// Question counts as the one it became.
+// When each Question was first made Seen, or last, by the Question it counts
+// as: a merged Question counts as the one it became.
 export const paperSeenOf = (
   marks: ReadonlyArray<Mark>,
   pages: ReadonlyArray<SourcePage>,
-  resolve: (questionId: string) => string = (questionId) => questionId
+  resolve: (questionId: string) => string = (questionId) => questionId,
+  which: "first" | "last" = "first"
 ): ReadonlyMap<string, number> => {
   const seen = new Map<string, number>()
   for (const source of pages) {
     for (const mark of marks) {
       if (!covers(mark, source)) continue
       const id = resolve(source.questionId)
-      const earlier = seen.get(id)
-      if (earlier === undefined || mark.createdAt < earlier) seen.set(id, mark.createdAt)
+      const kept = seen.get(id)
+      if (kept === undefined || (which === "first" ? mark.createdAt < kept : mark.createdAt > kept)) seen.set(id, mark.createdAt)
     }
   }
   return seen

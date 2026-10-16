@@ -15,7 +15,7 @@ import { officialScores, profiles } from "../db/schema.ts"
 import { namesOf } from "../practice/content.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { scoreEstimatesOf, scoreEstimateView } from "./estimates.ts"
-import { calibrationOf, dayNumber } from "./OfficialScores.ts"
+import { calibrationOf, DayMs, dayNumber } from "./OfficialScores.ts"
 
 const viewOf = (used: ReadonlyMap<string, ReadonlyArray<string>>) => (row: typeof officialScores.$inferSelect) =>
   new OfficialScoreView({
@@ -44,17 +44,24 @@ export class Scores extends Context.Service<Scores, {
       const db = yield* Db
       const names = namesOf((yield* Taxonomy).view)
 
+      // Today's date in the Profile's time zone, as a day number.
+      const todayOf = (profileId: string) =>
+        Effect.gen(function*() {
+          const now = yield* Clock.currentTimeMillis
+          const [profile] = yield* db.select({ timeZone: profiles.timeZone }).from(profiles)
+            .where(eq(profiles.id, profileId)).pipe(Effect.orDie)
+          return studyDayOf(now, profile?.timeZone ?? "UTC", 0)
+        })
+
       const estimates = (profileId: string) =>
-        scoreEstimatesOf(profileId).pipe(
-          Effect.provideService(Db, db),
-          Effect.orDie,
-          Effect.map((found) =>
-            new ScoreEstimates({
-              sections: found.sections.map(scoreEstimateView((id) => names.named(id))),
-              total: found.total === null ? null : new TotalScoreView(found.total)
-            })
-          )
-        )
+        Effect.gen(function*() {
+          const found = yield* scoreEstimatesOf(profileId).pipe(Effect.provideService(Db, db), Effect.orDie)
+          return new ScoreEstimates({
+            sections: found.sections.map(scoreEstimateView((id) => names.named(id))),
+            total: found.total === null ? null : new TotalScoreView(found.total),
+            today: new Date((yield* todayOf(profileId)) * DayMs).toISOString().slice(0, 10)
+          })
+        })
 
       const list = (profileId: string) =>
         Effect.gen(function*() {
@@ -69,10 +76,7 @@ export class Scores extends Context.Service<Scores, {
       const add = (profileId: string, input: OfficialScoreInput) =>
         Effect.gen(function*() {
           const now = yield* Clock.currentTimeMillis
-          const [profile] = yield* db.select({ timeZone: profiles.timeZone }).from(profiles)
-            .where(eq(profiles.id, profileId)).pipe(Effect.orDie)
-          const today = studyDayOf(now, profile?.timeZone ?? "UTC", 0)
-          if (dayNumber(input.takenOn) > today) return yield* new OfficialScoreInFuture()
+          if (dayNumber(input.takenOn) > (yield* todayOf(profileId))) return yield* new OfficialScoreInFuture()
           yield* db.insert(officialScores).values({
             id: crypto.randomUUID(),
             profileId,

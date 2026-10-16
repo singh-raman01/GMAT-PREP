@@ -18,13 +18,9 @@ interface Props {
 
 const kinds = Object.keys(OfficialScoreKindNames) as Array<OfficialScoreKind>
 
-// Today in this browser's time zone, as the date input writes it.
-const today = () => {
-  const now = new Date()
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
-}
-
-const blankForm = () => ({ takenOn: today(), kind: "practice-exam" as OfficialScoreKind, total: "", quant: "", verbal: "", di: "" })
+// A new form starts on today in the Profile's time zone, as the server gives
+// it: the latest day an Official Score can be dated.
+const blankForm = (today = "") => ({ takenOn: today, kind: "practice-exam" as OfficialScoreKind, total: "", quant: "", verbal: "", di: "" })
 type Form = ReturnType<typeof blankForm>
 
 const sectionNames: Readonly<Record<string, string>> = { quant: "Quantitative", verbal: "Verbal", di: "Data Insights" }
@@ -65,7 +61,7 @@ export const ScoresPage = ({ onSessionLost, onStopped }: Props) => {
   const ids = { date: useId(), total: useId(), quant: useId(), verbal: useId(), di: useId() }
   const [estimates, setEstimates] = useState<ScoreEstimates>()
   const [official, setOfficial] = useState<ReadonlyArray<OfficialScoreView>>()
-  const [form, setForm] = useState<Form>(blankForm)
+  const [form, setForm] = useState<Form>(() => blankForm())
   const [problems, setProblems] = useState<ReadonlyArray<string>>([])
   const [saved, setSaved] = useState<string>()
   const busy = useRef(false)
@@ -84,6 +80,7 @@ export const ScoresPage = ({ onSessionLost, onStopped }: Props) => {
     if (listed._tag === "Failure") return handle(listed.failure)
     setEstimates(read.success)
     setOfficial(listed.success)
+    setForm((current) => (current.takenOn === "" ? { ...current, takenOn: read.success.today } : current))
   }, [handle])
 
   useEffect(() => void load(), [load])
@@ -117,7 +114,7 @@ export const ScoresPage = ({ onSessionLost, onStopped }: Props) => {
       return handle(result.failure)
     }
     setOfficial(result.success)
-    setForm(blankForm())
+    setForm(blankForm(estimates?.today))
     const added = result.success.find((each) =>
       each.takenOn === form.takenOn && each.total === Number(form.total) && each.quant === Number(form.quant)
     )
@@ -161,6 +158,7 @@ export const ScoresPage = ({ onSessionLost, onStopped }: Props) => {
                     <span className="score-value">{estimates.total.score}</span>
                     <span className="score-facts">
                       likely {estimates.total.low} to {estimates.total.high}, on the 205 to 805 scale
+                      {estimates.total.calibrated ? "" : ", not yet calibrated"}
                     </span>
                   </li>
                 )}
@@ -211,7 +209,13 @@ export const ScoresPage = ({ onSessionLost, onStopped }: Props) => {
         <div className="practice-fields">
           <div className="field">
             <label htmlFor={ids.date}>Date taken</label>
-            <input id={ids.date} type="date" value={form.takenOn} onChange={(event) => change({ takenOn: event.target.value })} />
+            <input
+              id={ids.date}
+              type="date"
+              value={form.takenOn}
+              max={estimates?.today}
+              onChange={(event) => change({ takenOn: event.target.value })}
+            />
           </div>
           <fieldset className="inline-field">
             <legend>Which exam</legend>
