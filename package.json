@@ -19,7 +19,8 @@
     "drizzle-orm": "1.0.0-rc.5-5935859",
     "effect": "4.0.5",
     "react": "19.3.1",
-    "react-dom": "19.3.1"
+    "react-dom": "19.3.1",
+    "unpdf": "1.9.0"
   },
   "devDependencies": {
     "@types/bun": "1.4.3",
@@ -27,6 +28,7 @@
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
     "drizzle-kit": "1.0.0-rc.5-5935859",
+    "pdf-lib": "1.17.1",
     "typescript": "7.0.2",
     "vite": "8.3.4"
   }
