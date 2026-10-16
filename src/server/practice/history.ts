@@ -4,6 +4,7 @@ import { PartChoice, type Selection } from "../../api/Practice.ts"
 import { Db } from "../db/Database.ts"
 import { bookmarks, books, difficulty, parts, questions, responses, servedQuestions, sessions, sources } from "../db/schema.ts"
 import { chosenQuestions, decodeConfig, SectionKinds } from "../sections/config.ts"
+import { marksAndPages, paperSeenOf } from "./paperSeen.ts"
 import type { History, PoolQuestion } from "./selection.ts"
 
 // What Practice Sets read about Questions and about a Profile's history.
@@ -58,7 +59,17 @@ export const mergeTargets = Effect.gen(function*() {
   }
 })
 
-// A Question is Seen by a Profile once a Session has served it to them.
+// When the Profile's Paper Marks made each Question Seen, by the Question
+// it counts as.
+export const paperSeenBy = (profileId: string) =>
+  Effect.gen(function*() {
+    const { marks, pages } = yield* marksAndPages(profileId)
+    if (marks.length === 0) return new Map<string, number>() as ReadonlyMap<string, number>
+    return paperSeenOf(marks, pages, yield* mergeTargets)
+  })
+
+// A Question is Seen by a Profile once a Session has served it to them, or a
+// Paper Mark covers it.
 export const seenBy = (profileId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
@@ -66,7 +77,7 @@ export const seenBy = (profileId: string) =>
     const rows = yield* db.selectDistinct({ questionId: servedQuestions.questionId }).from(servedQuestions)
       .innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
       .where(eq(sessions.profileId, profileId))
-    return new Set(rows.map((row) => resolve(row.questionId)))
+    return new Set([...rows.map((row) => resolve(row.questionId)), ...(yield* paperSeenBy(profileId)).keys()])
   })
 
 // The Questions of every unit the Profile's running Sectionals chose, served
@@ -84,7 +95,8 @@ export const heldBySections = (profileId: string) =>
   })
 
 // When a Profile last saw each Question it has Seen, a merged Question's
-// servings counting for the one it became.
+// servings counting for the one it became. A Paper Mark counts as a sighting
+// at the time it was made.
 export const lastSeenBy = (profileId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
@@ -99,6 +111,7 @@ export const lastSeenBy = (profileId: string) =>
       const id = resolve(row.questionId)
       last.set(id, Math.max(last.get(id) ?? 0, Number(row.at ?? 0)))
     }
+    for (const [id, at] of yield* paperSeenBy(profileId)) last.set(id, Math.max(last.get(id) ?? 0, at))
     return last
   })
 

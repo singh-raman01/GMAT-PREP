@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { eq } from "drizzle-orm"
 import { Effect } from "effect"
 import { TestClock } from "effect/testing"
+import { DefaultBlueprint } from "../src/api/blueprint.ts"
 import { BookId } from "../src/api/Books.ts"
 import { Db } from "../src/server/db/Database.ts"
 import { books } from "../src/server/db/schema.ts"
@@ -81,4 +82,60 @@ describe("What Paper Marks make Seen", () => {
     )
     expect(Object.fromEntries(seen)).toEqual({ q10: 50, q30: 300 })
   })
+})
+
+describe("Paper-Marked Questions", () => {
+  const smallBlueprint = Effect.gen(function*() {
+    const curator = yield* openBrowser
+    yield* curator.curatorAccess.setPassphrase({ payload: { passphrase: "correct horse battery" } })
+    yield* curator.settings.saveBlueprint({ payload: { blueprint: { ...DefaultBlueprint, ps: 4 } } })
+  })
+
+  test("are Seen: held for Mocks, they open to Practice and leave the start check, until the mark goes", () =>
+    runWithWorkers(Effect.gen(function*() {
+      yield* smallBlueprint
+      const og = yield* seedBook("Official Guide", numbered(10, { reserve: true, seed: 0 }))
+      const asha = yield* openBrowser
+      yield* asha.profiles.create({ payload: { name: "Asha" } })
+      const unseen = asha.sectionals.options().pipe(
+        Effect.map((options) => options.sections.find((section) => section.section.id === "quant")!.groups[0]!.unseen)
+      )
+      const practice = asha.practice.preview({
+        payload: { choice: { kind: "filters", section: "quant", status: "any", size: 10 } }
+      }).pipe(Effect.map((preview) => preview.questions))
+      expect([yield* unseen, yield* practice]).toEqual([10, 0])
+
+      const marked = yield* asha.paperMarks.add({ payload: { bookId: BookId.make(og.bookId), firstPage: 1, lastPage: 4 } })
+      expect([yield* unseen, yield* practice]).toEqual([6, 4])
+      expect((yield* asha.sectionals.options()).sections.find((section) => section.section.id === "quant")!.ready)
+        .toBe(false)
+
+      yield* asha.paperMarks.remove({ params: { id: marked[0]!.id } })
+      expect([yield* unseen, yield* practice]).toEqual([10, 0])
+    })))
+
+  test("are never Rated, though a timed set serves them", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const og = yield* seedBook("Official Guide", numbered(3))
+      const timedSet = (who: Effect.Success<typeof openBrowser>) =>
+        Effect.gen(function*() {
+          let view = yield* who.practice.start({ payload: { choice: { kind: "filters", status: "any", size: 3, timed: true } } })
+          while (view.current !== null) {
+            view = yield* who.practice.answer({
+              params: { id: view.id },
+              payload: { seq: view.nextSeq, questionId: view.current.question.id, selection: [{ part: 0, choice: "C" }], guessed: false }
+            })
+          }
+          return yield* who.practice.scores()
+        })
+      const asha = yield* openBrowser
+      yield* asha.profiles.create({ payload: { name: "Asha" } })
+      yield* asha.paperMarks.add({ payload: { bookId: BookId.make(og.bookId), firstPage: null, lastPage: null } })
+      yield* TestClock.adjust("1 minute")
+      expect(yield* timedSet(asha)).toEqual([])
+
+      const ben = yield* openBrowser
+      yield* ben.profiles.create({ payload: { name: "Ben" } })
+      expect((yield* timedSet(ben))[0]).toMatchObject({ ratedResponses: 3 })
+    })))
 })
