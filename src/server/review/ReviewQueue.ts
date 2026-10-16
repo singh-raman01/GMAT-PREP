@@ -33,6 +33,7 @@ import {
   recheckSources,
   RepeatCodes,
   repeatOf,
+  sourceKeyReasons,
   UnsureCodes
 } from "../books/bankWrites.ts"
 import { Db } from "../db/Database.ts"
@@ -562,12 +563,25 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
             }).pipe(Effect.orDie)
             yield* db.update(parts).set({ key, keyBasis: "override" }).where(eq(parts.id, part.id)).pipe(Effect.orDie)
             const [question] = yield* db.select().from(questions).where(eq(questions.id, questionId)).pipe(Effect.orDie)
-            // A Generated Question's disagreement about this Part is settled
-            // too; the Curator has read its words.
+            // The override settles questions about this Part's key: another
+            // Book's key for another Part still holds the Question. A
+            // Generated Question's disagreement about this Part is settled
+            // too, since the Curator has read its words; a Two-Part
+            // Analysis's columns are read together, so theirs only once both
+            // are overridden.
             const prefix = partReasonPrefix(part.kind as PartKind, position)
-            const kept = readLinkReasons(question?.linkReasons ?? "[]").filter((each) =>
-              !KeyCodes.has(each.code) && !(each.code === "predicate-disagreement" && each.detail.startsWith(prefix))
+            const siblings = yield* db.select({ position: parts.position, kind: parts.kind, keyBasis: parts.keyBasis })
+              .from(parts).where(eq(parts.questionId, questionId)).pipe(Effect.orDie)
+            const settled = part.kind !== "column-choice" || siblings.every((each) =>
+              each.kind !== "column-choice" || each.position === position || each.keyBasis === "override"
             )
+            const kept = [
+              ...readLinkReasons(question?.linkReasons ?? "[]").filter((each) =>
+                !KeyCodes.has(each.code) &&
+                !(settled && each.code === "predicate-disagreement" && each.detail.startsWith(prefix))
+              ),
+              ...yield* sourceKeyReasons(questionId).pipe(Effect.provideService(Db, db), Effect.orDie)
+            ]
             yield* db.update(questions).set({
               linkReasons: JSON.stringify(kept),
               status: "draft",
