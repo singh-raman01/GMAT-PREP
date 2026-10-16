@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNotNull, max, sql } from "drizzle-orm"
+import { and, asc, eq, gte, inArray, isNotNull, max, sql } from "drizzle-orm"
 import { Effect, Schema } from "effect"
 import { PartChoice, type Selection } from "../../api/Practice.ts"
 import { Db } from "../db/Database.ts"
@@ -81,17 +81,34 @@ export const seenBy = (profileId: string) =>
   })
 
 // The Questions of every unit the Profile's running Sectionals chose, served
-// yet or not, by the Question each counts as. Practice leaves them out until
-// the Section closes, so no Practice Set can show their keys or say how an
-// answer went while the Section can still change it.
+// yet or not, by the Question each counts as, and those of a running Mock's
+// Sections, closed ones too. Practice leaves them out until the Sectional or
+// Mock ends, so no Practice Set can show their keys or say how an answer
+// went before its report does.
 export const heldBySections = (profileId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
+    const mine = and(eq(sessions.profileId, profileId), inArray(sessions.kind, SectionKinds))
     const running = yield* db.select({ config: sessions.config }).from(sessions)
-      .where(and(eq(sessions.profileId, profileId), inArray(sessions.kind, SectionKinds), eq(sessions.status, "active")))
-    if (running.length === 0) return new Set<string>()
+      .where(and(mine, eq(sessions.status, "active")))
+    const mocks = yield* db.select({ id: sessions.id, createdAt: sessions.createdAt }).from(sessions)
+      .where(and(eq(sessions.profileId, profileId), eq(sessions.kind, "mock"), eq(sessions.status, "active")))
+    // A Mock's Sections start after it does.
+    const closed = mocks.length === 0 ? [] : yield* db.select({ config: sessions.config }).from(sessions)
+      .where(and(
+        eq(sessions.profileId, profileId),
+        eq(sessions.kind, "mock-section"),
+        eq(sessions.status, "finished"),
+        gte(sessions.createdAt, Math.min(...mocks.map((mock) => mock.createdAt)))
+      ))
+    const configs = [
+      ...running.map((session) => decodeConfig(session.config)),
+      ...closed.map((session) => decodeConfig(session.config))
+        .filter((config) => config.mock !== undefined && mocks.some((mock) => mock.id === config.mock!.id))
+    ]
+    if (configs.length === 0) return new Set<string>()
     const resolve = yield* mergeTargets
-    return new Set(running.flatMap((session) => chosenQuestions(decodeConfig(session.config)).map(resolve)))
+    return new Set(configs.flatMap((config) => chosenQuestions(config).map(resolve)))
   })
 
 // When a Profile last saw each Question it has Seen, a merged Question's
