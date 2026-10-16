@@ -29,6 +29,7 @@ import {
   proposedBook,
   rangesOf,
   sentFor,
+  waitFor,
   withModel
 } from "./bookFlow.ts"
 import { advanceUntil, runWithWorker, runWithWorkers, TestWorkers } from "./harness.ts"
@@ -308,6 +309,53 @@ describe("Extracting Problem Solving Questions", () => {
     ), 20_000)
 })
 
+describe("Enriching after a stop", () => {
+  test("a worker killed while enriching resumes without tagging or solving any Question twice", () =>
+    runWithWorkers(
+      Effect.gen(function*() {
+        yield* configure
+        const fake = yield* FakeLlm
+        const curator = yield* curatorBrowser
+        const workers = yield* TestWorkers
+        const first = yield* workers.start
+        const proposed = yield* proposedBook(curator)
+        // The API goes down at the full run's first Approaches call, after
+        // that Question's tags and solves are stored, and the worker is
+        // killed while it waits to try again.
+        let written = 0
+        let down = false
+        yield* fake.respondWith((request) => {
+          if ((request.messages[0]?.content ?? "").includes("You write teaching material")) {
+            written += 1
+            // The cost preview's sample wrote two.
+            if (written === 3) down = true
+            if (down) return { status: 503, message: "overloaded" }
+          }
+          return fakeBookModel(request)
+        })
+        yield* curator.api.books.confirmMap({ params: { id: proposed.book.id }, payload: { ranges: rangesOf(proposed) } })
+        yield* advanceUntil(Effect.sync(() => (down ? true : undefined)), { step: "200 millis", maxSteps: 3000 })
+        yield* Fiber.interrupt(first)
+
+        down = false
+        yield* fake.respondWith(fakeBookModel)
+        yield* workers.start
+        yield* waitFor(curator, proposed.book.id, (detail) => detail.book.status === "extracted")
+        const db = yield* Db
+        const extraction = yield* db.select({ id: jobs.id }).from(jobs).where(eq(jobs.kind, "book-extract")).pipe(Effect.orDie)
+        const okCalls = (task: string) =>
+          db.select().from(llmCalls)
+            .where(and(eq(llmCalls.task, task), eq(llmCalls.outcome, "ok"), eq(llmCalls.jobId, extraction[0]!.id)))
+            .pipe(Effect.orDie)
+        // Seven Questions are enriched: each tagged once and solved three times.
+        expect(yield* okCalls("tagging")).toHaveLength(7)
+        expect(yield* okCalls("solving")).toHaveLength(21)
+        expect(yield* okCalls("approaches")).toHaveLength(7)
+      }),
+      AllJobKinds
+    ), 20_000)
+})
+
 describe("The Publish Gate", () => {
   test("an Approach that misses the key is written once more; one that misses it again holds the Question", () =>
     runWithWorker(
@@ -343,7 +391,7 @@ describe("The Publish Gate", () => {
       AllJobKinds
     ))
 
-  test("a tag the Question Type does not allow, or a Book Label two bands from the estimate, holds the Question", () =>
+  test("a Skill the reply schema refuses leaves the Question untagged and held, as does a Book Label two bands off", () =>
     runWithWorker(
       Effect.gen(function*() {
         yield* configure
