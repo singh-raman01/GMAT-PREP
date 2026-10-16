@@ -464,7 +464,7 @@ const KeyChange = (
                 onChange={() => setKey(option.label)}
               />
               {option.label}
-              {several && <span className="quiet"> {option.text}</span>}
+              {(several || part.kind !== "single-choice") && <span className="quiet"> {option.text}</span>}
               {option.label === part.key && <span className="quiet"> (now)</span>}
             </label>
           ))}

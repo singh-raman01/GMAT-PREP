@@ -220,9 +220,12 @@ export const chartSpec = (chart: ChartReading): unknown => {
     return { field: field(name), type, ...(type === "quantitative" ? {} : { sort: null }), title: name }
   }
   const series = chart.series === "" ? {} : { color: { field: field(chart.series), type: "nominal", title: chart.series } }
+  // A fixed size, so a chart of a few bars is not drawn narrow; a pie is
+  // square.
   const base = {
     $schema: "https://vega.github.io/schema/vega-lite/v6.json",
     data: { name: "dataset" },
+    ...(chart.kind === "pie" ? { width: 280, height: 280 } : { width: 420, height: 260 }),
     ...(chart.title === "" ? {} : { title: chart.title })
   }
   switch (chart.kind) {

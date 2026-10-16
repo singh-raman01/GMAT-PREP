@@ -2151,6 +2151,15 @@ input.number-input {
   justify-content: flex-start;
 }
 
+/* After answering, a cell's flag wraps under its choice, so a column stays
+   narrow on a small screen. */
+.choice-cell .answer-flag {
+  display: block;
+  white-space: normal;
+  font-size: var(--step--1);
+  line-height: 1.2;
+}
+
 .statement-rows tr[data-right] .statement,
 .statement-rows tr[data-wrong] .statement {
   font-weight: 700;

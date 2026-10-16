@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import {
   type Candidate,
   candidateProblems,
+  chartSpec,
   DsOptions,
   dsStem,
   linkSet,
@@ -390,5 +391,40 @@ describe("Data Sufficiency near matches", () => {
       trigrams(nearText("di.ds", dsStem("What is the value of x?", ["3x + 2 = 14", "x^2 = 25"]), [{ prompt: null, options: DsOptions }]))
     )
     expect(copy).toBeGreaterThanOrEqual(NearMatch)
+  })
+})
+
+describe("A chart's spec", () => {
+  const data = {
+    columns: [
+      { name: "Quarter", type: "text" as const, unit: "" },
+      { name: "Units", type: "number" as const, unit: "" },
+      { name: "Store", type: "text" as const, unit: "" }
+    ],
+    rows: [["Q1", "120", "North"]]
+  }
+
+  test("is built by code from what the reading names, bound to the Dataset by name, at a size it can be read at", () => {
+    expect(chartSpec({ kind: "bar", title: "Units sold", data, x: "Quarter", y: "Units", series: "Store", sets: [] })).toEqual({
+      $schema: "https://vega.github.io/schema/vega-lite/v6.json",
+      data: { name: "dataset" },
+      width: 420,
+      height: 260,
+      title: "Units sold",
+      mark: "bar",
+      encoding: {
+        x: { field: "Quarter", type: "nominal", sort: null, title: "Quarter" },
+        y: { field: "Units", type: "quantitative", title: "Units" },
+        color: { field: "Store", type: "nominal", title: "Store" }
+      }
+    })
+    expect(chartSpec({ kind: "pie", title: "", data, x: "Quarter", y: "Units", series: "", sets: [] })).toMatchObject({
+      width: 280,
+      height: 280,
+      mark: "arc",
+      encoding: { theta: { field: "Units" }, color: { field: "Quarter" } }
+    })
+    expect(chartSpec({ kind: "venn", title: "", data, x: "Region", y: "Count", series: "", sets: ["Tea", "Coffee"] }))
+      .toEqual({ venn: { sets: ["Tea", "Coffee"], region: "Region", value: "Count" } })
   })
 })
