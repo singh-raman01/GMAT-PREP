@@ -17,7 +17,7 @@ const Params = Schema.Struct({
 // A single step, so there is nothing to carry between steps.
 const Checkpoint = Schema.Struct({})
 
-const Reply = Schema.Struct({ ok: Schema.Boolean, word: Schema.String })
+export const ConnectionTestReply = Schema.Struct({ ok: Schema.Boolean, word: Schema.String })
 
 export const ConnectionTest: JobKind<typeof Params.Type, typeof Checkpoint.Type> = {
   kind: "connection-test",
@@ -34,7 +34,7 @@ export const ConnectionTest: JobKind<typeof Params.Type, typeof Checkpoint.Type>
         promptVersion: "connection-test@1",
         system: "You are checking that an API connection works. Follow the instruction exactly.",
         user: `Reply with ok set to true and word set to "${params.word}".`,
-        output: Reply,
+        output: ConnectionTestReply,
         jobId
       })
       if (!reply.value.ok || reply.value.word !== params.word) {

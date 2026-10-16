@@ -1,5 +1,5 @@
 import { eq, sql } from "drizzle-orm"
-import { Clock, Context, Effect, Layer, Option, Random, Schema } from "effect"
+import { Clock, Context, Effect, Layer, Option, Random, Redacted, Schema } from "effect"
 import { LlmNotConfigured } from "../../api/Jobs.ts"
 import type { LlmTask } from "../../api/Settings.ts"
 import { Db } from "../db/Database.ts"
@@ -7,6 +7,7 @@ import { jobs, llmCalls } from "../db/schema.ts"
 import { nextRevision } from "../jobs/revision.ts"
 import { ApiKeyStore } from "../settings/ApiKeyStore.ts"
 import { completionsUrl, missingSettings, Settings } from "../settings/Settings.ts"
+import { strictJsonSchema } from "./jsonSchema.ts"
 import { type ChatMessage, LlmTransport, type TransportFailure, type TransportReply } from "./LlmTransport.ts"
 
 // The API refused the request for a reason retrying cannot fix, such as a
@@ -61,7 +62,6 @@ export interface LlmReply<A> {
   readonly cost: number
 }
 
-
 // Retries for 429, 5xx and lost connections, before the call gives up.
 const MaxAttempts = 6
 const MaxBackoffMs = 30_000
@@ -70,8 +70,10 @@ const MaxBackoffMs = 30_000
 const MaxInlineWaitMs = 60_000
 
 const retryable = (failure: TransportFailure) =>
-  failure.status === null || failure.status === 408 || failure.status === 409 || failure.status === 425 ||
-  failure.status === 429 || failure.status >= 500
+  failure.sent && (
+    failure.status === null || failure.status === 408 || failure.status === 409 || failure.status === 425 ||
+    failure.status === 429 || failure.status >= 500
+  )
 
 // Roughly four characters per token, for APIs that report no usage.
 const estimateTokens = (text: string) => Math.ceil(text.length / 4)
@@ -81,8 +83,13 @@ const stripCodeFence = (content: string) => {
   return fenced?.[1] ?? content
 }
 
-// Parses and checks a reply, or says what is wrong with it.
-const checkReply = <A>(output: Schema.Codec<A, unknown>, reply: TransportReply): Effect.Effect<A, string> => {
+// Parses and checks a reply, or says what is wrong with it. A wrapped output
+// arrives as { value }.
+const checkReply = <A>(
+  output: Schema.Codec<A, unknown>,
+  wrapped: boolean,
+  reply: TransportReply
+): Effect.Effect<A, string> => {
   if (reply.content === null || reply.content.trim() === "") {
     return Effect.fail(
       reply.finishReason === "length" ? "the reply was cut off before any JSON" : "the reply was empty"
@@ -96,19 +103,18 @@ const checkReply = <A>(output: Schema.Codec<A, unknown>, reply: TransportReply):
         : "the reply was not valid JSON"
     )
   }
-  return Schema.decodeUnknownEffect(Schema.toCodecJson(output))(parsed.value).pipe(
+  const value = wrapped
+    ? (typeof parsed.value === "object" && parsed.value !== null && "value" in parsed.value
+      ? (parsed.value as { readonly value: unknown }).value
+      : undefined)
+    : parsed.value
+  if (value === undefined) return Effect.fail("it did not match the schema: the value field is missing")
+  return Schema.decodeUnknownEffect(Schema.toCodecJson(output))(value).pipe(
     Effect.mapError((error) => `it did not match the schema: ${error.message.slice(0, 1500)}`)
   )
 }
 
 const schemaName = (task: LlmTask) => task.replace(/[^a-zA-Z0-9_-]/g, "_")
-
-export const jsonSchemaOf = (output: Schema.Top): object => {
-  const document = Schema.toJsonSchemaDocument(output, { onExcessProperty: "error" })
-  return Object.keys(document.definitions).length === 0
-    ? document.schema
-    : { ...document.schema, $defs: document.definitions }
-}
 
 export class LlmAdapter extends Context.Service<LlmAdapter, {
   call<A>(request: LlmRequest<A>): Effect.Effect<LlmReply<A>, LlmError>
@@ -144,25 +150,25 @@ export class LlmAdapter extends Context.Service<LlmAdapter, {
           const now = yield* Clock.currentTimeMillis
           yield* db.transaction((tx) =>
             Effect.gen(function*() {
-          yield* tx.insert(llmCalls).values({
-            id: crypto.randomUUID(),
-            jobId: entry.jobId ?? null,
-            task: entry.task,
-            model: entry.model,
-            promptVersion: entry.promptVersion,
-            tokensIn: entry.tokensIn,
-            tokensOut: entry.tokensOut,
-            tokensEstimated: entry.tokensEstimated,
-            cost: entry.cost,
-            outcome: entry.outcome,
-            detail: entry.detail,
-            createdAt: now
-          })
-          if (entry.jobId !== undefined && entry.cost > 0) {
-            yield* tx.update(jobs)
-              .set({ spend: sql`${jobs.spend} + ${entry.cost}`, revision: nextRevision, updatedAt: now })
-              .where(eq(jobs.id, entry.jobId))
-          }
+              yield* tx.insert(llmCalls).values({
+                id: crypto.randomUUID(),
+                jobId: entry.jobId ?? null,
+                task: entry.task,
+                model: entry.model,
+                promptVersion: entry.promptVersion,
+                tokensIn: entry.tokensIn,
+                tokensOut: entry.tokensOut,
+                tokensEstimated: entry.tokensEstimated,
+                cost: entry.cost,
+                outcome: entry.outcome,
+                detail: entry.detail,
+                createdAt: now
+              })
+              if (entry.jobId !== undefined && entry.cost > 0) {
+                yield* tx.update(jobs)
+                  .set({ spend: sql`${jobs.spend} + ${entry.cost}`, revision: nextRevision, updatedAt: now })
+                  .where(eq(jobs.id, entry.jobId))
+              }
             })
           )
         }).pipe(Effect.orDie)
@@ -179,14 +185,21 @@ export class LlmAdapter extends Context.Service<LlmAdapter, {
             })
           }
 
-          if (request.jobId !== undefined) {
+          // No request starts once the job's cap is reached, a retry included.
+          const checkCap = Effect.gen(function*() {
+            if (request.jobId === undefined) return
             const job = yield* jobSpend(request.jobId)
             if (job !== undefined && job.spend >= job.cap) {
               return yield* new SpendCapReached({ spend: job.spend, cap: job.cap })
             }
-          }
+          })
+          yield* checkCap
 
-          const jsonSchema = jsonSchemaOf(request.output)
+          // A provider or proxy may echo the key in an error; it is never stored.
+          const key = Redacted.value(apiKey.value)
+          const redact = (text: string) => text.split(key).join("[the API key]")
+
+          const { jsonSchema, wrapped } = strictJsonSchema(request.output)
           const instructions = settings.jsonMode === "json-schema"
             ? "Reply with JSON only."
             : `Reply with only a JSON value that matches this JSON Schema:\n${JSON.stringify(jsonSchema)}`
@@ -220,6 +233,7 @@ export class LlmAdapter extends Context.Service<LlmAdapter, {
                   return { reply, tokensIn, tokensOut, tokensEstimated, cost: costOf(tokensIn, tokensOut) }
                 }
                 const failure = outcome.failure
+                const message = redact(failure.message)
                 const unavailable = retryable(failure)
                 yield* record({
                   jobId: request.jobId,
@@ -231,16 +245,16 @@ export class LlmAdapter extends Context.Service<LlmAdapter, {
                   tokensEstimated: false,
                   cost: 0,
                   outcome: unavailable ? "unavailable" : "refused",
-                  detail: `${failure.status ?? "no response"}: ${failure.message}`.slice(0, 500)
+                  detail: `${failure.status ?? (failure.sent ? "no response" : "not sent")}: ${message}`.slice(0, 500)
                 })
                 if (!unavailable) {
-                  return yield* new LlmRefused({ status: failure.status ?? 0, message: failure.message })
+                  return yield* new LlmRefused({ status: failure.status ?? 0, message })
                 }
                 const waitFor = failure.retryAfterMs ?? 0
                 if (attempt >= MaxAttempts || waitFor > MaxInlineWaitMs) {
                   return yield* new LlmUnavailable({
                     status: failure.status,
-                    message: failure.message,
+                    message,
                     retryAfterMs: failure.retryAfterMs
                   })
                 }
@@ -254,7 +268,7 @@ export class LlmAdapter extends Context.Service<LlmAdapter, {
             Effect.gen(function*() {
               const sent = yield* send(messages)
               spent += sent.cost
-              const checked = yield* Effect.result(checkReply(request.output, sent.reply))
+              const checked = yield* Effect.result(checkReply(request.output, wrapped, sent.reply))
               yield* record({
                 jobId: request.jobId,
                 task: request.task,
@@ -271,7 +285,9 @@ export class LlmAdapter extends Context.Service<LlmAdapter, {
             })
 
           const first = yield* attempt(base)
-          // An invalid reply gets one retry, with the reply and what was wrong.
+          // An invalid reply gets one retry, with the reply and what was wrong,
+          // unless the first attempt used up the cap.
+          if (first.checked._tag === "Failure") yield* checkCap
           const final = first.checked._tag === "Success" ? first : yield* attempt([
             ...base,
             { role: "assistant", content: first.sent.reply.content ?? "" },

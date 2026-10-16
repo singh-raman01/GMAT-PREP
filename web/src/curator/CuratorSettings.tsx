@@ -1,7 +1,8 @@
-import { type FormEvent, useEffect, useId, useState } from "react"
+import { type FormEvent, useEffect, useId, useRef, useState } from "react"
 import { formatDollars } from "../../../src/api/money.ts"
 import {
   type ApiKeyStatus,
+  isApiKey,
   type JsonMode,
   type LlmSettingsView,
   type LlmTask,
@@ -329,8 +330,8 @@ const ApiKeySection = (
   const save = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const trimmed = key.trim()
-    if (trimmed.length < 8 || /\s/.test(trimmed)) {
-      return setProblem("Paste the whole key: at least 8 characters, with no spaces.")
+    if (!isApiKey(trimmed)) {
+      return setProblem("Paste the whole key: at least 8 characters, with no spaces or hidden characters.")
     }
     const result = await call((client) => client.settings.saveApiKey({ payload: { apiKey: trimmed } }))
     if (result._tag === "Failure") return onFailure(result.failure)
@@ -406,11 +407,15 @@ const ConnectionTest = (
   const id = useId()
   const [task, setTask] = useState<LlmTask | undefined>(tasks[0])
   const [problem, setProblem] = useState<string>()
+  // One test per click, however fast the clicks come.
+  const busy = useRef(false)
   const chosen = task !== undefined && tasks.includes(task) ? task : tasks[0]
 
   const start = async () => {
-    if (chosen === undefined) return
+    if (chosen === undefined || busy.current) return
+    busy.current = true
     const result = await call((client) => client.jobs.testConnection({ payload: { task: chosen } }))
+    busy.current = false
     if (result._tag === "Success") return onStarted()
     if (result.failure._tag === "LlmNotConfigured") {
       return setProblem(`Save ${result.failure.missing.join(", ")} first.`)

@@ -128,13 +128,28 @@ describe("LLM adapter", () => {
       expect((yield* calls).map((call) => call.outcome)).toEqual(["invalid", "invalid"])
     })))
 
-  test("a reply in a code fence, or without usage figures, still counts", () =>
+  test("a reply in a code fence still counts", () =>
     run(Effect.gen(function*() {
       yield* configure()
       const fake = yield* FakeLlm
       yield* fake.respondWith(() => ({ content: "```json\n" + valid + "\n```" }))
       const reply = yield* ask()
       expect(reply.value.ok).toBe(true)
+    })))
+
+  test("a reply without usage figures is priced from four characters a token, and marked as estimated", () =>
+    run(Effect.gen(function*() {
+      yield* configure()
+      const fake = yield* FakeLlm
+      yield* fake.reply({ content: valid, tokensIn: null, tokensOut: null })
+      const reply = yield* ask()
+      const [request] = yield* fake.requests
+      const sentChars = request!.messages.map((message) => message.content).join("").length
+      expect(reply.tokensIn).toBe(Math.ceil(sentChars / 4))
+      expect(reply.tokensOut).toBe(Math.ceil(valid.length / 4))
+      const [recorded] = yield* calls
+      expect(recorded).toMatchObject({ tokensEstimated: true, tokensIn: reply.tokensIn, tokensOut: reply.tokensOut })
+      expect(recorded?.cost).toBeCloseTo((reply.tokensIn * 2 + reply.tokensOut * 8) / 1_000_000, 12)
     })))
 
   test("429 waits for the Retry-After the API gives, then tries again", () =>
@@ -162,6 +177,18 @@ describe("LLM adapter", () => {
       yield* fake.reply({ networkError: "connection reset" })
       yield* fake.respondWith(() => ({ status: 503, message: "overloaded" }))
       const fiber = yield* Effect.forkChild(ask())
+      // The first wait is 1 second times a jitter of 0.5 to 1.5.
+      yield* settle
+      yield* TestClock.adjust("499 millis")
+      yield* settle
+      expect(yield* fake.requests).toHaveLength(1)
+      yield* TestClock.adjust("1001 millis")
+      yield* settle
+      expect(yield* fake.requests).toHaveLength(2)
+      // The second wait doubles: at least a second.
+      yield* TestClock.adjust("999 millis")
+      yield* settle
+      expect(yield* fake.requests).toHaveLength(2)
       for (let i = 0; i < 20; i++) {
         yield* settle
         yield* TestClock.adjust("5 seconds")
@@ -169,6 +196,47 @@ describe("LLM adapter", () => {
       const error = yield* Fiber.join(fiber).pipe(Effect.flip)
       expect(error).toMatchObject({ _tag: "LlmUnavailable", status: 503, message: "overloaded" })
       expect(yield* fake.requests).toHaveLength(6)
+    })))
+
+  test("a request that could not be sent is not retried", () =>
+    run(Effect.gen(function*() {
+      yield* configure()
+      const fake = yield* FakeLlm
+      yield* fake.reply({ notSent: "the API key has characters that cannot be sent" })
+      const error = yield* ask().pipe(Effect.flip)
+      expect(error).toMatchObject({ _tag: "LlmRefused", status: 0 })
+      expect(yield* fake.requests).toHaveLength(1)
+      expect((yield* calls).map((call) => call.outcome)).toEqual(["refused"])
+    })))
+
+  test("an API key echoed in an error is never stored", () =>
+    run(Effect.gen(function*() {
+      yield* configure()
+      const fake = yield* FakeLlm
+      yield* fake.reply({ status: 401, message: "Incorrect API key provided: sk-test-12345678" })
+      const error = yield* ask().pipe(Effect.flip)
+      expect(JSON.stringify(error)).not.toContain("sk-test-12345678")
+      const [recorded] = yield* calls
+      expect(recorded?.detail).toContain("[the API key]")
+      expect(recorded?.detail).not.toContain("sk-test-12345678")
+    })))
+
+  test("an output that is not an object is sent wrapped and taken back out", () =>
+    run(Effect.gen(function*() {
+      yield* configure()
+      const fake = yield* FakeLlm
+      yield* fake.reply({ content: JSON.stringify({ value: ["a", "b"] }) })
+      const llm = yield* LlmAdapter
+      const reply = yield* llm.call({
+        task: "tagging",
+        promptVersion: "test@1",
+        system: "List letters.",
+        user: "Two letters.",
+        output: Schema.Array(Schema.String)
+      })
+      expect(reply.value).toEqual(["a", "b"])
+      const [request] = yield* fake.requests
+      expect(request?.jsonSchema).toMatchObject({ type: "object", required: ["value"] })
     })))
 
   test("a refused request is not retried", () =>
@@ -233,5 +301,24 @@ describe("LLM adapter", () => {
       expect(yield* fake.requests).toHaveLength(2)
       const [listed] = yield* store.list
       expect(listed?.spend).toBeCloseTo(0.0072, 12)
+    })))
+
+  test("the retry after an invalid reply does not start once the cap is reached", () =>
+    run(Effect.gen(function*() {
+      yield* configure()
+      const fake = yield* FakeLlm
+      const store = yield* JobStore
+      const job = yield* store.create(
+        ConnectionTest,
+        { task: "tagging" as const, model: "small-model", word: "apple" },
+        0.005
+      )
+      // Each reply costs $0.0036, so the invalid one passes the cap.
+      yield* fake.reply({ content: valid, tokensIn: 1000, tokensOut: 200 })
+      yield* fake.reply({ content: "not JSON", tokensIn: 1000, tokensOut: 200 })
+      yield* ask(job.id)
+      const error = yield* ask(job.id).pipe(Effect.flip)
+      expect(error).toMatchObject({ _tag: "SpendCapReached", cap: 0.005 })
+      expect(yield* fake.requests).toHaveLength(2)
     })))
 })

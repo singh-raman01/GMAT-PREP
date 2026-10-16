@@ -1,9 +1,13 @@
 import { Database } from "bun:sqlite"
 import { describe, expect, test } from "bun:test"
-import { Effect, Option } from "effect"
+import { Effect, Layer, Option } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { TestClock } from "effect/testing"
 import { join } from "node:path"
+import { JobId } from "../src/api/Jobs.ts"
+import { AppConfig } from "../src/server/AppConfig.ts"
+import { Curator } from "../src/server/curator/Curator.ts"
+import { DatabaseLive } from "../src/server/db/Database.ts"
 import { getWithCookie, openBrowser, openInspectableBrowser, runWithApp, tempDataDir } from "./harness.ts"
 
 const passphrase = "correct horse battery"
@@ -54,15 +58,22 @@ describe("Curator access", () => {
       const owner = yield* openBrowser
       yield* owner.curatorAccess.setPassphrase({ payload: { passphrase } })
       const stranger = yield* openBrowser
+      const job = { params: { id: JobId.make("any-job") } }
       const tags = yield* Effect.all([
         stranger.settings.llm().pipe(Effect.flip),
+        stranger.settings.saveLlm({
+          payload: { baseUrl: "https://api.example.com/v1", jsonMode: "json-schema", models: [], prices: [] }
+        }).pipe(Effect.flip),
         stranger.settings.saveApiKey({ payload: { apiKey: "sk-test-123456789" } }).pipe(Effect.flip),
         stranger.settings.removeApiKey().pipe(Effect.flip),
         stranger.jobs.list().pipe(Effect.flip),
         stranger.jobs.testConnection({ payload: { task: "tagging" } }).pipe(Effect.flip),
+        stranger.jobs.pause(job).pipe(Effect.flip),
+        stranger.jobs.resume({ ...job, payload: {} }).pipe(Effect.flip),
+        stranger.jobs.cancel(job).pipe(Effect.flip),
         stranger.curatorSession.lock().pipe(Effect.flip)
       ])
-      expect(tags.map((error) => error._tag)).toEqual(Array(6).fill("CuratorNotUnlocked"))
+      expect(tags.map((error) => error._tag)).toEqual(Array(10).fill("CuratorNotUnlocked"))
       expect(yield* getWithCookie("/api/events", "")).toBe(401)
     })))
 
@@ -101,4 +112,26 @@ describe("Curator access", () => {
       const error = yield* browser.curatorAccess.unlock({ payload: { passphrase } }).pipe(Effect.flip)
       expect(error._tag).toBe("PassphraseNotSet")
     })))
+
+  test("checking an unlock without using it, as an open events stream does, does not keep it alive", () =>
+    Effect.runPromise(
+      Effect.gen(function*() {
+        const curator = yield* Curator
+        const token = yield* curator.setPassphrase(passphrase)
+        for (let hour = 0; hour <= 12; hour++) {
+          expect(yield* curator.stillUnlocked(token)).toBe(true)
+          yield* TestClock.adjust("1 hour")
+        }
+        expect(yield* curator.stillUnlocked(token)).toBe(false)
+        expect((yield* curator.check(token).pipe(Effect.flip))._tag).toBe("CuratorNotUnlocked")
+      }).pipe(
+        Effect.provide(
+          Curator.layer.pipe(
+            Layer.provide(DatabaseLive),
+            Layer.provide(AppConfig.layer({ dataDir: tempDataDir(), preferredPort: 0 })),
+            Layer.provideMerge(TestClock.layer())
+          )
+        )
+      )
+    ))
 })

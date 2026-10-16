@@ -9,26 +9,28 @@ import { JobStore } from "../jobs/JobStore.ts"
 export const PollEvery = "500 millis"
 
 export class JobFeed extends Context.Service<JobFeed, {
-  // Every job change from the moment the stream starts.
-  readonly changes: Stream.Stream<JobView>
+  // Every job change after the given revision, or from the moment the stream
+  // starts when none is given.
+  changesAfter(revision: number | undefined): Stream.Stream<JobView>
 }>()("gmat-prep/server/JobFeed") {
   static readonly layer = Layer.effect(
     JobFeed,
     Effect.gen(function*() {
       const store = yield* JobStore
-      const changes = Stream.unwrap(
-        Effect.gen(function*() {
-          let cursor = yield* store.latestRevision
-          const poll = Effect.gen(function*() {
-            yield* Effect.sleep(PollEvery)
-            const changed = yield* store.changesSince(cursor)
-            for (const job of changed) cursor = Math.max(cursor, job.revision)
-            return changed
+      const changesAfter = (revision: number | undefined) =>
+        Stream.unwrap(
+          Effect.gen(function*() {
+            let cursor = revision ?? (yield* store.latestRevision)
+            const poll = Effect.gen(function*() {
+              yield* Effect.sleep(PollEvery)
+              const changed = yield* store.changesSince(cursor)
+              for (const job of changed) cursor = Math.max(cursor, job.revision)
+              return changed
+            })
+            return Stream.fromEffectRepeat(poll).pipe(Stream.flattenIterable)
           })
-          return Stream.fromEffectRepeat(poll).pipe(Stream.flattenIterable)
-        })
-      )
-      return JobFeed.of({ changes })
+        )
+      return JobFeed.of({ changesAfter })
     })
   )
 }
