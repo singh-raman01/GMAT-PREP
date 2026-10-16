@@ -4,6 +4,7 @@ import { BookId, BookNotFound } from "./Books.ts"
 import { DifficultyBand } from "./difficulty.ts"
 import { ProfileSession } from "./Profiles.ts"
 import { QuestionId } from "./Review.ts"
+import { StimulusView } from "./Stimulus.ts"
 
 // Practice Sets: Questions chosen by Section, Question Type, Skill,
 // Difficulty Band and status, or a Book's items in book order, answered one
@@ -79,8 +80,17 @@ export class ItemRef extends Schema.Class<ItemRef>("gmat-prep/api/ItemRef")({
   reason: SkipReason
 }) {}
 
+// How a Part is answered: one of five options; a statement row with two
+// choices, such as Yes or No; a menu filling a blank in a sentence; or one
+// column of a two-column grid.
+export const PartKind = Schema.Literals(["single-choice", "two-choice", "dropdown", "column-choice"])
+export type PartKind = typeof PartKind.Type
+
 export class PracticePart extends Schema.Class<PracticePart>("gmat-prep/api/PracticePart")({
   position: Schema.Int,
+  kind: PartKind,
+  // A statement, a sentence with {{blank}} where its menu goes, or a column
+  // heading; null for a single choice, whose question is the stem.
   prompt: Schema.NullOr(Schema.String),
   options: Schema.Array(Schema.Struct({ label: Schema.String, text: Schema.String }))
 }) {}
@@ -89,9 +99,9 @@ export class PracticeQuestion extends Schema.Class<PracticeQuestion>("gmat-prep/
   id: QuestionId,
   section: Named,
   questionType: Named,
-  // The passage a Reading Comprehension Question asks about, shown beside
-  // it; Markdown with LaTeX, like the stem. See richText.ts.
-  stimulus: Schema.NullOr(Schema.String),
+  // What it asks about, shown beside it: a passage, a table, a chart, a
+  // figure or tabs.
+  stimulus: Schema.NullOr(StimulusView),
   stem: Schema.String,
   parts: Schema.Array(PracticePart),
   // Where a Book prints it: the Book the set follows, else its first Source.

@@ -17,6 +17,9 @@ import { RichInline, RichText } from "../RichText.tsx"
 import { linkProps, navigate } from "../router.ts"
 import { DebriefPanel } from "./DebriefPanel.tsx"
 import { type ClockReading, Timer, useRemaining, warningFor } from "./Timer.tsx"
+import { StimulusDetails, StimulusPane } from "../stimulus/StimulusPane.tsx"
+import { AnswerParts, type Picks } from "./Parts.tsx"
+import { Calculator } from "./Calculator.tsx"
 
 interface Props {
   readonly id: string
@@ -166,6 +169,10 @@ const SetScreen = (
 ) => {
   const actions = useActions(onView, onFailure)
   const [timerHidden, setTimerHidden] = useState(false)
+  // The calculator comes with Data Insights Questions only.
+  const [calculating, setCalculating] = useState(false)
+  const calculatorToggle = useRef<HTMLButtonElement>(null)
+  const dataInsights = view.status === "active" && view.current?.question.section.id === "di"
   const remaining = useRemaining(reading)
 
   // The time left turns to a warning near the end, and is said once then,
@@ -223,6 +230,17 @@ const SetScreen = (
               onToggle={() => setTimerHidden((hidden) => !hidden)}
             />
           )}
+          {dataInsights && (
+            <button
+              ref={calculatorToggle}
+              type="button"
+              className="link-button"
+              aria-expanded={calculating}
+              onClick={() => setCalculating((open) => !open)}
+            >
+              Calculator
+            </button>
+          )}
           {view.timed && view.status === "active" && view.heldHere && (
             <button type="button" className="link-button" onClick={pause} disabled={actions.busy}>Pause</button>
           )}
@@ -233,6 +251,14 @@ const SetScreen = (
           )}
         </div>
       </div>
+      {dataInsights && calculating && (
+        <Calculator
+          onClose={() => {
+            setCalculating(false)
+            calculatorToggle.current?.focus()
+          }}
+        />
+      )}
       <p className="visually-hidden" role="status">{announcement}</p>
       {view.clock?.interrupted === true && (
         <p className="clock-note">
@@ -293,21 +319,25 @@ const QuestionScreen = (
   const { busy, setBusy, problem, act } = actions
   const current = view.current!
   const question = current.question
-  const part = question.parts[0]!
+  const parts = question.parts
+  // One Part of five options takes the A to E keys.
+  const lettered = parts.length === 1 && parts[0]!.kind === "single-choice" ? parts[0]! : undefined
   const answered = current.response !== null
   // Read-only here while another device holds the set.
   const locked = !view.heldHere
-  const [picked, setPicked] = useState<string>()
+  const [picks, setPicks] = useState<Picks>({})
   const [guessed, setGuessed] = useState(false)
   const [similarNote, setSimilarNote] = useState<string>()
   const questionHeading = headingRef
   const debriefHeading = useRef<HTMLHeadingElement>(null)
-  const names = { options: useId(), guess: useId() }
+  const names = { guess: useId() }
   const last = current.position + 1 >= view.total
+  const pick = (part: number, label: string) => setPicks((before) => ({ ...before, [part]: label }))
+  const complete = parts.every((part) => picks[part.position] !== undefined)
 
   // A new Question starts clear, with focus on its heading.
   useEffect(() => {
-    setPicked(undefined)
+    setPicks({})
     setGuessed(false)
     setSimilarNote(undefined)
     questionHeading.current?.focus()
@@ -321,17 +351,19 @@ const QuestionScreen = (
     wasAnswered.current = answered
   }, [answered])
 
-  const chosen = answered ? current.response!.selection.find((each) => each.part === part.position)?.choice : picked
+  const shownPicks: Picks = answered
+    ? Object.fromEntries(current.response!.selection.map((each) => [each.part, each.choice]))
+    : picks
 
   const submit = () => {
-    if (answered || locked || picked === undefined) return
+    if (answered || locked || !complete) return
     void act((client) =>
       client.practice.answer({
         params: { id: view.id },
         payload: {
           seq: view.nextSeq,
           questionId: question.id,
-          selection: [{ part: part.position, choice: picked }],
+          selection: parts.map((part) => ({ part: part.position, choice: picks[part.position]! })),
           guessed
         }
       })
@@ -371,9 +403,12 @@ const QuestionScreen = (
     const onKey = (event: KeyboardEvent) => {
       if (locked || event.altKey || event.ctrlKey || event.metaKey || isTyping(event.target)) return
       const label = event.key.toUpperCase()
-      if (!answered && label.length === 1 && part.options.some((option) => option.label === label)) {
+      if (
+        !answered && lettered !== undefined && label.length === 1 &&
+        lettered.options.some((option) => option.label === label)
+      ) {
         event.preventDefault()
-        setPicked(label)
+        pick(lettered.position, label)
         return
       }
       if (event.key !== "Enter") return
@@ -386,43 +421,15 @@ const QuestionScreen = (
     return () => document.removeEventListener("keydown", onKey)
   })
 
-  const key = current.debrief?.keys.find((each) => each.part === part.position)?.key
+  const keys = current.debrief === null
+    ? undefined
+    : new Map(current.debrief.keys.map((each) => [each.part, each.key] as const))
 
   const work = (
     <>
       <div className="question-body">
         <RichText source={question.stem} />
-        {part.prompt !== null && <RichText source={part.prompt} />}
-        <fieldset className="answer-options" disabled={answered || locked}>
-          <legend className="visually-hidden">Answer choices</legend>
-          {part.options.map((option) => {
-            const isPicked = chosen === option.label
-            const isKey = key === option.label
-            return (
-              <label
-                key={option.label}
-                className="answer-option"
-                data-picked={isPicked || undefined}
-                data-key={(answered && isKey) || undefined}
-                data-missed={(answered && isPicked && !isKey) || undefined}
-              >
-                <input
-                  type="radio"
-                  name={names.options}
-                  value={option.label}
-                  checked={isPicked}
-                  onChange={() => setPicked(option.label)}
-                />
-                <span className={isPicked ? "answer-letter mark" : "answer-letter"}>{option.label}</span>
-                <span className="answer-text">
-                  <RichInline source={option.text} />
-                  {answered && isKey && <span className="answer-flag">The answer</span>}
-                  {answered && isPicked && !isKey && <span className="answer-flag">Your answer</span>}
-                </span>
-              </label>
-            )
-          })}
-        </fieldset>
+        <AnswerParts parts={parts} picks={shownPicks} onPick={pick} disabled={answered || locked} keys={keys} />
       </div>
 
       {!answered && !locked && (
@@ -432,15 +439,16 @@ const QuestionScreen = (
             <label htmlFor={names.guess}>I guessed</label>
           </div>
           <div className="actions">
-            <button type="button" className="button" onClick={submit} disabled={picked === undefined || busy}>
+            <button type="button" className="button" onClick={submit} disabled={!complete || busy}>
               {view.timed ? (last ? "Submit and finish" : "Submit and go on") : "Submit answer"}
             </button>
             <BookmarkButton bookmarked={current.bookmarked} disabled={busy} onToggle={toggleBookmark} />
           </div>
           <p className="hint">
-            {view.timed
-              ? "Press A to E to choose, then Enter to submit. The next Question follows at once; how each went shows at the end."
-              : "Press A to E to choose, then Enter to submit."}
+            {lettered !== undefined
+              ? "Press A to E to choose, then Enter to submit."
+              : "Answer every part, then submit. It is right only when every part is."}
+            {view.timed ? " The next Question follows at once; how each went shows at the end." : ""}
           </p>
         </div>
       )}
@@ -453,6 +461,7 @@ const QuestionScreen = (
             response={current.response}
             timed={view.timed}
             headingRef={debriefHeading}
+            parts={parts}
           />
           {!locked && (
             <div className="actions debrief-actions">
@@ -485,27 +494,15 @@ const QuestionScreen = (
           : `. ${question.source.bookTitle}, ${question.source.set}, question ${question.source.number}`}
       </p>
       {question.stimulus === null ? work : (
-        <div className="with-passage">
-          <Passage source={question.stimulus} />
-          <div className="beside-passage">{work}</div>
+        <div className="with-stimulus">
+          <StimulusPane stimulus={question.stimulus} />
+          <div className="beside-stimulus">{work}</div>
         </div>
       )}
     </>
   )
 }
 
-// A Reading Comprehension passage, beside its Question on a wide screen and
-// above it on a narrow one. It scrolls on its own, so it takes focus for the
-// keyboard to scroll it.
-const Passage = ({ source }: { readonly source: string }) => {
-  const title = useId()
-  return (
-    <section className="passage" aria-labelledby={title} tabIndex={0}>
-      <h2 id={title} className="passage-title">The passage</h2>
-      <RichText source={source} />
-    </section>
-  )
-}
 
 const BookmarkButton = (
   { bookmarked, disabled, onToggle }: {
@@ -522,12 +519,20 @@ const BookmarkButton = (
 // A served Question's options as reviewed after the set: the pick marked,
 // and the answer named.
 const AnsweredOptions = ({ served }: { readonly served: ServedView }) => {
-  const part = served.question.parts[0]
-  const picked = served.response?.selection.find((each) => each.part === part?.position)?.choice
-  const key = served.debrief?.keys.find((each) => each.part === part?.position)?.key
+  const parts = served.question.parts
+  // A single Part of five options reads as a list; other Parts as they were
+  // answered, read-only.
+  if (parts.length > 1 || parts[0]?.kind !== "single-choice") {
+    const picks = Object.fromEntries((served.response?.selection ?? []).map((each) => [each.part, each.choice]))
+    const keys = new Map((served.debrief?.keys ?? []).map((each) => [each.part, each.key] as const))
+    return <AnswerParts parts={parts} picks={picks} onPick={() => {}} disabled keys={keys} />
+  }
+  const part = parts[0]
+  const picked = served.response?.selection.find((each) => each.part === part.position)?.choice
+  const key = served.debrief?.keys.find((each) => each.part === part.position)?.key
   return (
     <ul className="answered-options">
-      {part?.options.map((option) => {
+      {part.options.map((option) => {
         const isPicked = option.label === picked
         const isKey = option.label === key
         return (
@@ -680,16 +685,16 @@ const ResultRow = (
       <div id={panel} className="set-result-review" hidden={review._tag !== "Open"}>
         {review._tag === "Open" && (
           <>
-            {review.served.question.stimulus !== null && (
-              <details className="review-passage">
-                <summary>The passage</summary>
-                <RichText source={review.served.question.stimulus} />
-              </details>
-            )}
+            {review.served.question.stimulus !== null && <StimulusDetails stimulus={review.served.question.stimulus} />}
             <RichText source={review.served.question.stem} />
             <AnsweredOptions served={review.served} />
             {review.served.debrief !== null && (
-              <DebriefPanel debrief={review.served.debrief} response={review.served.response} timed={view.timed} />
+              <DebriefPanel
+                debrief={review.served.debrief}
+                response={review.served.response}
+                timed={view.timed}
+                parts={review.served.question.parts}
+              />
             )}
           </>
         )}

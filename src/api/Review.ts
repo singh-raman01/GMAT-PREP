@@ -2,6 +2,7 @@ import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
 import { BookId } from "./Books.ts"
 import { CuratorSession } from "./Curator.ts"
+import { StimulusView } from "./Stimulus.ts"
 
 // The Review Queue: Questions held for the Curator, each with every reason,
 // and pages extraction could not read.
@@ -90,9 +91,8 @@ export class QuestionView extends Schema.Class<QuestionView>("gmat-prep/api/Ques
   id: QuestionId,
   section: Schema.String,
   questionType: Schema.String,
-  // The passage a Reading Comprehension Question asks about. Markdown with
-  // LaTeX, like the stem; see richText.ts.
-  passage: Schema.NullOr(Schema.String),
+  // What it asks about: a passage, a table, a chart, a figure or tabs.
+  stimulus: Schema.NullOr(StimulusView),
   stem: Schema.String,
   options: Schema.Array(Schema.Struct({ label: Schema.String, text: Schema.String })),
   key: Schema.NullOr(Schema.String),

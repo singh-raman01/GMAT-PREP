@@ -19,6 +19,7 @@ import type { ApiKeyStore } from "../src/server/settings/ApiKeyStore.ts"
 import type { Settings } from "../src/server/settings/Settings.ts"
 import { workerServices } from "../src/server/worker/services.ts"
 import { WorkerSupervisor } from "../src/server/worker/WorkerSupervisor.ts"
+import { FigureFiles } from "../src/server/books/FigureFiles.ts"
 
 export const tempDataDir = () => mkdtempSync(join(tmpdir(), "gmat-prep-test-"))
 
@@ -92,6 +93,7 @@ export type WorkerTestServices =
   | ApiKeyStore
   | Db
   | AppConfig
+  | FigureFiles
 
 // Sets the fake clock before the app starts, as a start later in the day.
 const clockStartsAt = (millis: number | undefined) =>

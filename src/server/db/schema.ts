@@ -211,22 +211,51 @@ export const pageReadings = sqliteTable(
   (t) => [primaryKey({ columns: [t.bookId, t.page, t.role, t.group] })]
 )
 
-// A text several Questions are asked about, shown beside each of them: for
-// now a Reading Comprehension passage. Its Questions share one Mock Reserve
+// A table of typed values (ADR 0006): a Data Insights table, or the data a
+// chart draws. See api/dataset.ts for the columns and cells.
+export const datasets = sqliteTable("datasets", {
+  id: text("id").primaryKey(),
+  // JSON: each column's name, type and unit.
+  columns: text("columns").notNull(),
+  // JSON: rows of cells, each the text the Book prints and its value.
+  rows: text("rows").notNull(),
+  // book or generator
+  origin: text("origin").notNull(),
+  createdAt: integer("created_at").notNull()
+})
+
+// Material Questions are asked about, shown in its own pane beside each of
+// them: a Reading Comprehension passage, a table, a chart, a figure kept as
+// a page image, or the tabs of a Multi-Source Reasoning set, each tab a
+// Stimulus of its own. The Questions of one Stimulus share one Mock Reserve
 // decision and are served one after another.
 export const stimuli = sqliteTable(
   "stimuli",
   {
     id: text("id").primaryKey(),
-    // passage, for now
+    // passage, table, chart, figure or tabs
     kind: text("kind").notNull(),
-    // Markdown with LaTeX math; see api/richText.ts.
+    // Markdown with LaTeX math; see api/richText.ts. For a table, chart or
+    // figure, the words printed with it; empty for tabs.
     body: text("body").notNull(),
-    // The body as compared when looking for the same passage in another Book.
+    // The Stimulus as compared when looking for the same one in another Book.
     normalizedHash: text("normalized_hash").notNull(),
+    // A table's rows, or the data its chart draws.
+    datasetId: text("dataset_id").references(() => datasets.id, { onDelete: "restrict" }),
+    // JSON: a chart's Vega-Lite spec, its data named "dataset", or a Venn
+    // diagram's own spec.
+    chartSpec: text("chart_spec"),
+    // JSON: a figure kept as an image: its Book, page, the band of the page it
+    // takes (top and bottom, as shares of the page's height) and the image
+    // file's hash.
+    figure: text("figure"),
+    // A tab: the tabs Stimulus it belongs to, its place and its title.
+    parentId: text("parent_id"),
+    position: integer("position"),
+    title: text("title"),
     createdAt: integer("created_at").notNull()
   },
-  (t) => [index("stimuli_hash").on(t.normalizedHash)]
+  (t) => [index("stimuli_hash").on(t.normalizedHash), index("stimuli_parent").on(t.parentId)]
 )
 
 // The Question Bank. A Question keeps the model and prompt that extracted it.
@@ -298,7 +327,9 @@ export const parts = sqliteTable(
     id: text("id").primaryKey(),
     questionId: text("question_id").notNull().references(() => questions.id, { onDelete: "cascade" }),
     position: integer("position").notNull(),
-    // single-choice for PS, DS, CR and RC
+    // single-choice (one of five options, as in PS, DS, CR, RC and some
+    // MSR), two-choice (a statement row such as Yes or No), dropdown (a GI
+    // blank) or column-choice (one column of a TPA grid)
     kind: text("kind").notNull(),
     prompt: text("prompt"),
     // The right option's label, such as C; null while no key is known.

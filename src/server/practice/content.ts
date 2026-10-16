@@ -5,15 +5,18 @@ import {
   Debrief,
   DebriefApproach,
   Named,
+  type PartKind,
   PracticePart,
   PracticeQuestion,
   type Selection,
   TrapNoteView
 } from "../../api/Practice.ts"
 import { QuestionId } from "../../api/Review.ts"
+import type { StimulusView } from "../../api/Stimulus.ts"
 import type { TaxonomyView } from "../../api/Taxonomy.ts"
 import { Db } from "../db/Database.ts"
-import { approaches, books, difficulty, optionNotes, options, parts, questions, sources, stimuli } from "../db/schema.ts"
+import { approaches, books, difficulty, optionNotes, options, parts, questions, sources } from "../db/schema.ts"
+import { stimulusViews } from "../stimuli/stimuli.ts"
 import { currentDifficulty, isCorrect } from "./history.ts"
 
 // A served Question's stored content, and the Debrief built from it. The
@@ -23,8 +26,8 @@ export interface StoredQuestion {
   readonly id: string
   readonly section: string
   readonly questionType: string
-  // The passage it asks about, as Markdown.
-  readonly stimulus: string | null
+  // What it asks about: a passage, a table, a chart, a figure or tabs.
+  readonly stimulus: StimulusView | null
   readonly stem: string
   readonly primarySkill: string | null
   readonly difficulty: number
@@ -33,6 +36,7 @@ export interface StoredQuestion {
   readonly enrichment: string
   readonly parts: ReadonlyArray<{
     readonly position: number
+    readonly kind: PartKind
     readonly prompt: string | null
     readonly key: string | null
     readonly options: ReadonlyArray<{ readonly label: string; readonly text: string }>
@@ -62,11 +66,11 @@ export const storedQuestions = (ids: ReadonlyArray<string>) =>
     if (ids.length === 0) return found
     const db = yield* Db
     const wanted = [...new Set(ids)]
-    const rows = yield* db.select({ question: questions, difficulty: currentDifficulty, stimulus: stimuli.body })
+    const rows = yield* db.select({ question: questions, difficulty: currentDifficulty })
       .from(questions)
       .leftJoin(difficulty, eq(difficulty.questionId, questions.id))
-      .leftJoin(stimuli, eq(stimuli.id, questions.stimulusId))
       .where(inArray(questions.id, wanted))
+    const shown = yield* stimulusViews(rows.flatMap(({ question }) => (question.stimulusId === null ? [] : [question.stimulusId])))
     const partRows = yield* db.select().from(parts).where(inArray(parts.questionId, wanted)).orderBy(asc(parts.position))
     const partIds = partRows.map((part) => part.id)
     const optionRows = partIds.length === 0
@@ -87,18 +91,19 @@ export const storedQuestions = (ids: ReadonlyArray<string>) =>
     }).from(sources).innerJoin(books, eq(books.id, sources.bookId))
       .where(inArray(sources.questionId, wanted))
       .orderBy(asc(sources.createdAt))
-    for (const { question, difficulty: value, stimulus } of rows) {
+    for (const { question, difficulty: value } of rows) {
       found.set(question.id, {
         id: question.id,
         section: question.section,
         questionType: question.questionType,
-        stimulus,
+        stimulus: question.stimulusId === null ? null : shown.get(question.stimulusId) ?? null,
         stem: question.stem,
         primarySkill: question.primarySkill,
         difficulty: Number(value),
         enrichment: question.enrichment,
         parts: partRows.filter((part) => part.questionId === question.id).map((part) => ({
           position: part.position,
+          kind: part.kind as PartKind,
           prompt: part.prompt,
           key: part.key,
           options: optionRows.filter((option) => option.partId === part.id).map((option) => ({
@@ -151,13 +156,19 @@ export const practiceQuestion = (
     stimulus: question.stimulus,
     stem: question.stem,
     parts: question.parts.map((part) =>
-      new PracticePart({ position: part.position, prompt: part.prompt, options: part.options })
+      new PracticePart({ position: part.position, kind: part.kind, prompt: part.prompt, options: part.options })
     ),
     source: source === undefined
       ? null
       : { bookTitle: source.bookTitle, set: source.set, number: source.number, page: source.page }
   })
 }
+
+// An Approach's answer: the option it reaches in each Part, in order,
+// joined with commas, such as C for one Part or A,B for two; undefined
+// while a Part has no key.
+export const approachAnswer = (choices: ReadonlyArray<string | null>) =>
+  choices.every((choice) => choice !== null) ? choices.join(",") : undefined
 
 // The Trap Note for each wrong option picked, and the Approaches that reach
 // the current key, fastest first. Trap Notes written before a key change are
@@ -180,10 +191,10 @@ export const debriefOf = (question: StoredQuestion, selection: Selection, names:
       })
     ]
   })
-  // An Approach names one option, so it is checked against a single Part's
-  // key; one written against a key since replaced is left out.
-  const singleKey = keys.length === 1 ? keys[0]!.key : undefined
-  const valid = question.approaches.filter((approach) => singleKey === undefined || approach.answer === singleKey)
+  // An Approach names the option it reaches in each Part, in order; one
+  // written against a key since replaced is left out.
+  const answer = approachAnswer(keys.map((key) => key.key))
+  const valid = question.approaches.filter((approach) => answer !== undefined && approach.answer === answer)
   return new Debrief({
     correct: isCorrect(selection, keys),
     keys: keys.map((key) => ({ part: key.position, key: key.key })),
