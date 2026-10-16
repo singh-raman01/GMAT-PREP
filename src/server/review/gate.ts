@@ -2,8 +2,8 @@ import { and, asc, eq } from "drizzle-orm"
 import { Clock, Effect } from "effect"
 import type { TaxonomyView } from "../../api/Taxonomy.ts"
 import { type Band, bandOf, labelDifficulty, tagProblems } from "../../api/taxonomyRules.ts"
-import { holdForReview, readLinkReasons } from "../books/bankWrites.ts"
-import { SolverRuns } from "../books/enrichment.ts"
+import { holdForReview, readLinkReasons, UnsureCodes } from "../books/bankWrites.ts"
+import { ApproachSeconds, shownTextProblem, SolverRuns } from "../books/enrichment.ts"
 import type { Reason } from "../books/linking.ts"
 import { Db } from "../db/Database.ts"
 import { approaches, optionNotes, options, parts, questions, reviewItems, solverRuns } from "../db/schema.ts"
@@ -26,8 +26,20 @@ export interface GateInput {
   readonly difficultyEstimate: number | null
   readonly bookLabel: Band | null
   readonly solverAnswers: ReadonlyArray<string>
-  readonly approaches: ReadonlyArray<{ readonly strategy: string; readonly answer: string | null; readonly author: string }>
-  readonly notes: ReadonlyArray<{ readonly label: string; readonly mistakeType: string; readonly trapPattern: string | null }>
+  readonly approaches: ReadonlyArray<{
+    readonly strategy: string
+    readonly answer: string | null
+    readonly author: string
+    readonly steps: string
+    readonly validWhen: string
+    readonly expectedSeconds: number
+  }>
+  readonly notes: ReadonlyArray<{
+    readonly label: string
+    readonly mistakeType: string
+    readonly trapPattern: string | null
+    readonly trapNote: string
+  }>
 }
 
 const BandRank: Record<Band, number> = { easy: 0, medium: 1, hard: 2 }
@@ -37,7 +49,13 @@ const listed = (items: ReadonlyArray<string>) =>
 
 export const gateReasons = (taxonomy: TaxonomyView, input: GateInput): ReadonlyArray<Reason> => {
   const reasons: Array<Reason> = [...input.linkReasons]
-  if (!input.enriched) return reasons
+  if (!input.enriched) {
+    // Text in doubt is not enriched on purpose, and its reasons hold it.
+    if (!reasons.some((reason) => UnsureCodes.has(reason.code))) {
+      reasons.push({ code: "not-enriched", detail: "It has no tags, solves or Approaches yet." })
+    }
+    return reasons
+  }
 
   for (const problem of tagProblems(taxonomy, {
     questionType: input.questionType,
@@ -78,16 +96,25 @@ export const gateReasons = (taxonomy: TaxonomyView, input: GateInput): ReadonlyA
     })
   }
 
-  const written = input.approaches.filter((approach) => approach.author === "llm")
-  if (written.length === 0) {
+  if (!input.approaches.some((approach) => approach.author === "llm")) {
     reasons.push({ code: "approach-misses-key", detail: "No Approach could be written for it." })
   }
-  for (const approach of written) {
+  for (const approach of input.approaches) {
+    const which = approach.author === "book" ? "The book's explanation" : "An Approach"
     if (approach.answer !== key) {
       reasons.push({
         code: "approach-misses-key",
-        detail: `An Approach arrives at ${approach.answer ?? "no answer"}, not the key, ${key}, even after it was written again.`
+        detail: approach.author === "book"
+          ? `The book's explanation reaches ${approach.answer ?? "no stated answer"}, not the key, ${key}.`
+          : `An Approach arrives at ${approach.answer ?? "no answer"}, not the key, ${key}, even after it was written again.`
       })
+    }
+    for (const [what, text] of [["steps", approach.steps], ["note on when it is valid", approach.validWhen]] as const) {
+      const problem = shownTextProblem(text)
+      if (problem !== undefined) reasons.push({ code: "teaching-text", detail: `${which}'s ${what} cannot be shown: ${problem}.` })
+    }
+    if (approach.expectedSeconds < ApproachSeconds.minimum || approach.expectedSeconds > ApproachSeconds.maximum) {
+      reasons.push({ code: "teaching-text", detail: `${which} expects ${approach.expectedSeconds} seconds.` })
     }
   }
 
@@ -101,6 +128,12 @@ export const gateReasons = (taxonomy: TaxonomyView, input: GateInput): ReadonlyA
   }
   if (noted.includes(key)) {
     reasons.push({ code: "option-notes", detail: `A note treats the key, ${key}, as a wrong choice.` })
+  }
+  for (const note of input.notes) {
+    const problem = shownTextProblem(note.trapNote)
+    if (problem !== undefined) {
+      reasons.push({ code: "teaching-text", detail: `The note for ${note.label} cannot be shown: ${problem}.` })
+    }
   }
   return reasons
 }
@@ -117,8 +150,14 @@ export const gateInputOf = (questionId: string) =>
       : yield* db.select().from(options).where(eq(options.partId, part.id)).orderBy(asc(options.position))
     const solves = yield* db.select({ answer: solverRuns.answer }).from(solverRuns)
       .where(eq(solverRuns.questionId, questionId)).orderBy(asc(solverRuns.run))
-    const routes = yield* db.select({ strategy: approaches.strategy, answer: approaches.answer, author: approaches.author })
-      .from(approaches).where(eq(approaches.questionId, questionId)).orderBy(asc(approaches.position))
+    const routes = yield* db.select({
+      strategy: approaches.strategy,
+      answer: approaches.answer,
+      author: approaches.author,
+      steps: approaches.steps,
+      validWhen: approaches.validWhen,
+      expectedSeconds: approaches.expectedSeconds
+    }).from(approaches).where(eq(approaches.questionId, questionId)).orderBy(asc(approaches.position))
     const notes = part === undefined
       ? []
       : yield* db.select().from(optionNotes).where(eq(optionNotes.partId, part.id)).orderBy(asc(optionNotes.position))
@@ -137,7 +176,8 @@ export const gateInputOf = (questionId: string) =>
       notes: notes.map((note) => ({
         label: optionRows[note.position]?.label ?? "?",
         mistakeType: note.mistakeType,
-        trapPattern: note.trapPattern
+        trapPattern: note.trapPattern,
+        trapNote: note.trapNote
       }))
     }
     return { question, input }
@@ -145,8 +185,16 @@ export const gateInputOf = (questionId: string) =>
 
 // Runs the gate on a Question and records the outcome: published, or held
 // with every reason. Its starting Difficulty is set here, from the Book
-// Label, else the estimate. Withdrawn Questions are left alone.
+// Label, else the estimate. Withdrawn Questions are left alone. It reads and
+// writes in one transaction, so a change the Curator commits meanwhile is
+// either seen or waits for it.
 export const runGate = (questionId: string, taxonomy: TaxonomyView) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    return yield* db.transaction(() => gateOnce(questionId, taxonomy))
+  })
+
+const gateOnce = (questionId: string, taxonomy: TaxonomyView) =>
   Effect.gen(function*() {
     const db = yield* Db
     const now = yield* Clock.currentTimeMillis

@@ -18,7 +18,7 @@ import {
   ReviewReason,
   SourceView
 } from "../../api/Review.ts"
-import { readLinkReasons, recheckSources, RepeatCodes } from "../books/bankWrites.ts"
+import { KeyCodes, readLinkReasons, recheckSources, RepeatCodes } from "../books/bankWrites.ts"
 import { Db } from "../db/Database.ts"
 import {
   approaches,
@@ -70,8 +70,6 @@ type ItemRow = typeof reviewItems.$inferSelect
 // settles as a Variant or a merge.
 const RepeatReasons: ReadonlySet<string> = RepeatCodes
 
-// Reasons about the key that a Key Override settles.
-const KeyReasons: ReadonlySet<string> = new Set(["no-key", "key-conflict", "source-key"])
 
 export class ReviewQueue extends Context.Service<ReviewQueue, {
   readonly list: Effect.Effect<ReadonlyArray<ReviewItemView>>
@@ -402,7 +400,7 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
             }).pipe(Effect.orDie)
             yield* db.update(parts).set({ key, keyBasis: "override" }).where(eq(parts.id, part.id)).pipe(Effect.orDie)
             const [question] = yield* db.select().from(questions).where(eq(questions.id, questionId)).pipe(Effect.orDie)
-            const kept = readLinkReasons(question?.linkReasons ?? "[]").filter((each) => !KeyReasons.has(each.code))
+            const kept = readLinkReasons(question?.linkReasons ?? "[]").filter((each) => !KeyCodes.has(each.code))
             yield* db.update(questions).set({
               linkReasons: JSON.stringify(kept),
               status: "draft",

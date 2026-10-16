@@ -35,7 +35,9 @@ const ReasonLabels: Record<ReasonCode, string> = {
   "solver-disagreement": "Solver disagreement",
   "approach-misses-key": "Approach misses the key",
   "option-notes": "Option notes",
-  "difficulty": "Difficulty"
+  "teaching-text": "Teaching text",
+  "difficulty": "Difficulty",
+  "not-enriched": "Not enriched"
 }
 
 const RepeatCodes: ReadonlySet<ReasonCode> = new Set(["near-match", "same-text-other-key"])

@@ -28,7 +28,12 @@ export const ReasonCode = Schema.Literals([
   "solver-disagreement",
   "approach-misses-key",
   "option-notes",
+  // An Approach or a wrong-option note that cannot be shown: empty, not
+  // rendering, or with an expected time out of range.
+  "teaching-text",
   "difficulty",
+  // Enrichment has not run on it, as for a Question from before the gate.
+  "not-enriched",
   // A page, not a Question.
   "unread-page"
 ])

@@ -1,5 +1,6 @@
 import { and, asc, eq } from "drizzle-orm"
 import { Clock, Effect, Schema } from "effect"
+import { renderProblem } from "../../api/richText.ts"
 import type { TaxonomyView } from "../../api/Taxonomy.ts"
 import { optionMistakeTypes, skillsFor, strategiesFor, trapPatternsFor } from "../../api/taxonomyRules.ts"
 import { Db } from "../db/Database.ts"
@@ -181,20 +182,48 @@ ${listing(trapPatternsFor(taxonomy, question.questionType))}`,
     })
   })
 
+// An Approach is expected to take at least this long, and at most this.
+export const ApproachSeconds = { minimum: 5, maximum: 900 } as const
+
+// Text a Learner will read: none of it may be empty or fail to render.
+export const shownTextProblem = (text: string): string | undefined =>
+  text.trim() === "" ? "it is empty" : renderProblem(text)
+
 // What is wrong with a reply's Approaches and notes, against the key and
 // the wrong options, or nothing.
 export const approachesProblems = (reply: ApproachesReply, question: QuestionText): ReadonlyArray<string> => {
   const problems: Array<string> = []
   reply.approaches.forEach((approach, index) => {
+    const which = `Approach ${index + 1}`
     if (approach.answer !== question.key) {
-      problems.push(`Approach ${index + 1} arrives at ${approach.answer}, not the key, ${question.key}.`)
+      problems.push(`${which} arrives at ${approach.answer}, not the key, ${question.key}.`)
+    }
+    if (approach.expectedSeconds < ApproachSeconds.minimum || approach.expectedSeconds > ApproachSeconds.maximum) {
+      problems.push(
+        `${which} expects ${approach.expectedSeconds} seconds; give a time from ${ApproachSeconds.minimum} to ${ApproachSeconds.maximum}.`
+      )
+    }
+    for (const [field, text] of [["steps", approach.steps], ["validWhen", approach.validWhen]] as const) {
+      const problem = shownTextProblem(text)
+      if (problem !== undefined) problems.push(`${which}'s ${field} cannot be shown: ${problem}.`)
     }
   })
+  const book = reply.bookApproach
+  if (
+    book !== null && question.explanation !== null &&
+    (book.expectedSeconds < ApproachSeconds.minimum || book.expectedSeconds > ApproachSeconds.maximum)
+  ) {
+    problems.push(`The book's Approach expects ${book.expectedSeconds} seconds; give a time from ${ApproachSeconds.minimum} to ${ApproachSeconds.maximum}.`)
+  }
   const wrong = question.options.map((option) => option.label).filter((label) => label !== question.key)
   const noted: ReadonlyArray<string> = reply.wrongOptions.map((option) => option.label)
   const missing = wrong.filter((label) => !noted.includes(label))
   if (missing.length > 0) problems.push(`No note for the wrong ${missing.length === 1 ? "choice" : "choices"} ${missing.join(", ")}.`)
   if (question.key !== null && noted.includes(question.key)) problems.push(`A note treats the key, ${question.key}, as wrong.`)
+  for (const note of reply.wrongOptions) {
+    const problem = shownTextProblem(note.trapNote)
+    if (problem !== undefined) problems.push(`The note for ${note.label} cannot be shown: ${problem}.`)
+  }
   return problems
 }
 
@@ -219,8 +248,11 @@ const loadQuestion = (questionId: string) =>
     if (part === undefined) return undefined
     const optionRows = yield* db.select().from(options).where(eq(options.partId, part.id)).orderBy(asc(options.position))
     // The Question's own Source first, then the others, oldest first.
-    const given = yield* db.select({ explanation: sources.explanation, answer: sources.explanationAnswer })
-      .from(sources).where(eq(sources.questionId, questionId)).orderBy(asc(sources.merged), asc(sources.createdAt))
+    const given = yield* db.select({
+      explanation: sources.explanation,
+      answer: sources.explanationAnswer,
+      bookKey: sources.bookKey
+    }).from(sources).where(eq(sources.questionId, questionId)).orderBy(asc(sources.merged), asc(sources.createdAt))
     const explained = given.find((source) => source.explanation !== null)
     const text: QuestionText = {
       questionType: question.questionType,
@@ -229,7 +261,11 @@ const loadQuestion = (questionId: string) =>
       key: part.key,
       explanation: explained?.explanation ?? null
     }
-    return { question, partId: part.id, text, explanationAnswer: explained?.answer ?? null }
+    // The answer the explanation reaches: the one it states, else its own
+    // Book's key for the item. One that states none is not taken to reach a
+    // key from elsewhere, such as a Key Override.
+    const reaches = explained === undefined ? null : explained.answer ?? explained.bookKey
+    return { question, partId: part.id, text, explanationReaches: reaches }
   })
 
 const retryNote = (problems: ReadonlyArray<string>) =>
@@ -245,7 +281,12 @@ const writeContent = (
 ) =>
   Effect.gen(function*() {
     const db = yield* Db
-    const { question, partId, text, explanationAnswer } = loaded
+    const { question, partId, explanationReaches } = loaded
+    // The Book's explanation is an Approach of its own, and is shown to the
+    // model, only when it reaches the key and can be shown.
+    const bookExplains = loaded.text.explanation !== null && explanationReaches !== null &&
+      explanationReaches === loaded.text.key && shownTextProblem(loaded.text.explanation) === undefined
+    const text: QuestionText = bookExplains ? loaded.text : { ...loaded.text, explanation: null }
     const first = yield* unlessInvalid(writeApproaches(jobId, taxonomy, text, undefined))
     const problems = first === undefined ? [] : approachesProblems(first.value, text)
     const final = first !== undefined && problems.length === 0
@@ -259,22 +300,18 @@ const writeContent = (
         yield* db.delete(optionNotes).where(eq(optionNotes.partId, partId))
         if (final === undefined) return
         const provenance = { model: final.model, promptVersion: final.promptVersion, createdAt: now }
-        // The Book's explanation is an Approach of its own, unless it argues
-        // for another answer than the key.
         const book = final.value.bookApproach
-        if (
-          book !== null && text.explanation !== null && (explanationAnswer === null || explanationAnswer === text.key)
-        ) {
+        if (book !== null && bookExplains) {
           yield* db.insert(approaches).values({
             id: crypto.randomUUID(),
             questionId: question.id,
             position: 0,
             strategy: book.strategy,
-            steps: text.explanation,
+            steps: text.explanation!,
             expectedSeconds: book.expectedSeconds,
             validWhen: book.validWhen,
             author: "book",
-            answer: text.key,
+            answer: explanationReaches,
             ...provenance
           })
         }

@@ -413,6 +413,62 @@ describe("The Publish Gate", () => {
       AllJobKinds
     ))
 
+  test("after a Key Override, the Book's explanation stays an Approach only if it reaches the new key", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        // The explanations state no letter, and the second argues for the
+        // Book's C, an erratum: every solve says D.
+        const base = makeFakeBookModel({ solve: (stem) => (stem.startsWith("A shirt") ? "D" : "C") })
+        yield* (yield* FakeLlm).respondWith((request) => {
+          const reply = base(request)
+          if (!("content" in reply) || !(request.messages[0]?.content ?? "").includes("worked explanations")) return reply
+          const value = JSON.parse(reply.content) as {
+            explanations: Array<{ number: number; explanation: string; answer: string | null }>
+          }
+          return {
+            ...reply,
+            content: JSON.stringify({
+              explanations: value.explanations.map((item) => ({
+                ...item,
+                answer: null,
+                explanation: item.number === 2 ? "Divide $25 by 0.8 to get $31.25, so choose C." : item.explanation
+              }))
+            })
+          }
+        })
+        const curator = yield* curatorBrowser
+        const proposed = yield* proposedBook(curator)
+        yield* confirmAndExtract(curator, proposed.book.id, rangesOf(proposed))
+        // An explanation stating no letter reaches its own Book's key.
+        const db = yield* Db
+        const first = yield* bankItem(proposed.book.id, 1)
+        const routesOf = (questionId: string) =>
+          db.select().from(approaches).where(eq(approaches.questionId, questionId)).orderBy(asc(approaches.position))
+            .pipe(Effect.orDie)
+        expect((yield* routesOf(first.question.id)).map((route) => [route.author, route.answer])).toEqual([
+          ["book", "C"],
+          ["llm", "C"]
+        ])
+        const second = byNumber(yield* curator.api.review.list(), 2)
+        expect(codes(second)).toEqual(["solver-disagreement"])
+        const written = (yield* sentFor("You write teaching material")).length
+
+        yield* curator.api.review.overrideKey({ params: { id: second.id }, payload: { key: "D", reason: "Erratum: D." } })
+        const id = second.question!.id
+        yield* advanceUntil(bankItem(proposed.book.id, 2).pipe(
+          Effect.map((row) => (row.question.status !== "draft" ? row : undefined))
+        ), { step: "200 millis", maxSteps: 3000 })
+        expect((yield* bankItem(proposed.book.id, 2)).question.status).toBe("published")
+        expect((yield* routesOf(id)).map((route) => [route.author, route.answer])).toEqual([["llm", "D"]])
+        // The model was not shown the explanation that argues for C.
+        const rewrite = (yield* sentFor("You write teaching material")).slice(written)
+        expect(rewrite).toHaveLength(1)
+        expect(rewrite[0]?.messages.at(-1)?.content).not.toContain("so choose C")
+      }),
+      AllJobKinds
+    ))
+
   test("a Book Map fix that changes a key rewrites the key's content and reuses the rest", () =>
     runWithWorker(
       Effect.gen(function*() {
@@ -494,24 +550,95 @@ describe("Fixing a Book Map", () => {
       AllJobKinds
     ))
 
-  test("an explanation that comes or goes is checked again, even when the key stays", () =>
+  test("an explanation that comes or goes is checked again and its Approach follows it, even when the key stays", () =>
     runWithWorker(
       Effect.gen(function*() {
         yield* configure
         const curator = yield* curatorBrowser
         const proposed = yield* proposedBook(curator)
         const full = rangesOf(proposed)
+        const db = yield* Db
+        const authorsOf = (number: number) =>
+          Effect.gen(function*() {
+            const item = yield* bankItem(proposed.book.id, number)
+            const routes = yield* db.select({ author: approaches.author }).from(approaches)
+              .where(eq(approaches.questionId, item.question.id)).orderBy(asc(approaches.position)).pipe(Effect.orDie)
+            return routes.map((route) => route.author)
+          })
         yield* confirmAndExtract(curator, proposed.book.id, withoutRole(full, "explanations"))
         expect((yield* bankItem(proposed.book.id, 6)).question.status).toBe("published")
+        expect(yield* authorsOf(1)).toEqual(["llm"])
 
         // The sixth explanation says D, against the key's C.
         yield* confirmAndExtract(curator, proposed.book.id, full)
         const items = yield* curator.api.review.list()
         expect(byNumber(items, 6).question).toMatchObject({ key: "C", status: "held" })
         expect(codes(byNumber(items, 6))).toEqual(["key-conflict"])
+        expect(yield* authorsOf(1)).toEqual(["book", "llm"])
 
         yield* confirmAndExtract(curator, proposed.book.id, withoutRole(full, "explanations"))
         expect((yield* bankItem(proposed.book.id, 6)).question.status).toBe("published")
+        expect(yield* authorsOf(1)).toEqual(["llm"])
+      }),
+      AllJobKinds
+    ))
+
+  test("a Book Label that a fix brings sends the Question through the gate again", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        // The Book labels the first question hard; the model estimates it easy.
+        yield* withModel({
+          label: (number) => (number === 1 ? "hard" : null),
+          difficulty: (stem) => (stem.startsWith("If \\(3x + 1") ? -1.2 : 0)
+        })
+        const curator = yield* curatorBrowser
+        const proposed = yield* proposedBook(curator)
+        const full = rangesOf(proposed)
+        // The labels are printed with the explanations.
+        yield* confirmAndExtract(curator, proposed.book.id, withoutRole(full, "explanations"))
+        expect((yield* bankItem(proposed.book.id, 1)).question).toMatchObject({
+          status: "published",
+          difficultySeed: -1.2,
+          difficultyBasis: "estimate"
+        })
+        yield* confirmAndExtract(curator, proposed.book.id, full)
+        expect((yield* bankItem(proposed.book.id, 1)).question).toMatchObject({
+          status: "held",
+          bookLabel: "hard",
+          difficultySeed: 1,
+          difficultyBasis: "book-label"
+        })
+        expect(codes(byNumber(yield* curator.api.review.list(), 1))).toEqual(["difficulty"])
+      }),
+      AllJobKinds
+    ))
+
+  test("a fix keeps the questions about a key that a Key Override settled", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const proposed = yield* proposedBook(curator)
+        const full = rangesOf(proposed)
+        yield* confirmAndExtract(curator, proposed.book.id, full)
+        const sixth = byNumber(yield* curator.api.review.list(), 6)
+        expect(codes(sixth)).toEqual(["key-conflict"])
+        yield* curator.api.review.overrideKey({ params: { id: sixth.id }, payload: { key: "D", reason: "Errata say D." } })
+        const back = yield* advanceUntil(
+          curator.api.review.list().pipe(Effect.map((items) => items.find((item) => item.id === sixth.id))),
+          { step: "200 millis", maxSteps: 3000 }
+        )
+        expect(codes(back)).toEqual(["solver-disagreement"])
+        yield* curator.api.review.publish({ params: { id: back.id } })
+
+        // The answer key range is dropped, then restored.
+        yield* confirmAndExtract(curator, proposed.book.id, withoutRole(full, "answer-key"))
+        yield* confirmAndExtract(curator, proposed.book.id, full)
+        const now = yield* bankItem(proposed.book.id, 6)
+        expect(now).toMatchObject({ key: "D", keyBasis: "override" })
+        expect(now.question.status).toBe("published")
+        expect(now.question.linkReasons).not.toContain("key-conflict")
       }),
       AllJobKinds
     ))
