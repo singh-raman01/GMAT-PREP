@@ -87,7 +87,7 @@ describe("Strict JSON Schema", () => {
     const outputs = [
       ConnectionTestReply,
       surveyReply([3, 4, 5]),
-      ...readingOutputs,
+      ...readingOutputs(taxonomy),
       ...["quant.ps", "di.ds", "verbal.cr-assumption"].flatMap((questionType) => [
         tagOutput(taxonomy, questionType),
         approachesOutput(taxonomy, questionType)

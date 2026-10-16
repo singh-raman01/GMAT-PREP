@@ -1,8 +1,13 @@
 import { describe, expect, test } from "bun:test"
 import { type GoldenEntry, goldenReport } from "../src/server/review/goldenReport.ts"
 
-const item = { stem: "What is \\(x\\)?", options: [{ label: "A", text: "1" }, { label: "B", text: "2" }], key: "B" }
-const tags = { primarySkill: "quant.algebra.linear-equations", secondarySkills: [] }
+const item = {
+  passage: null,
+  stem: "What is \\(x\\)?",
+  options: [{ label: "A", text: "1" }, { label: "B", text: "2" }],
+  key: "B"
+}
+const tags = { questionType: "quant.ps", primarySkill: "quant.algebra.linear-equations", secondarySkills: [] }
 
 const entry = (number: number, agrees: boolean, exact = true): GoldenEntry => ({
   questionId: `q${number}`,
@@ -10,7 +15,7 @@ const entry = (number: number, agrees: boolean, exact = true): GoldenEntry => ({
   number,
   expected: { ...item, ...tags },
   item: exact ? item : { ...item, key: "A" },
-  tags: agrees ? tags : { primarySkill: "quant.algebra.quadratics", secondarySkills: [] }
+  tags: agrees ? tags : { ...tags, primarySkill: "quant.algebra.quadratics" }
 })
 
 describe("The golden report", () => {
@@ -23,6 +28,24 @@ describe("The golden report", () => {
       0
     )
     expect(eightOfTen).toMatchObject({ tagAgreement: 0.8, passed: false })
+  })
+
+  test("a passage that differs fails it, and a Question Type that differs counts against tag agreement", () => {
+    const passage = "The committee met twice."
+    const reading: GoldenEntry = {
+      questionId: "q1",
+      set: "Reading Comprehension",
+      number: 1,
+      expected: { ...item, passage, ...tags, questionType: "verbal.rc-inference" },
+      item: { ...item, passage: "The committee met once." },
+      tags: { ...tags, questionType: "verbal.rc-inference" }
+    }
+    const report = goldenReport([reading], 0)
+    expect(report).toMatchObject({ textExact: 0, passed: false })
+    expect(report.misses[0]?.detail).toContain("The passage text differs.")
+    const typed = goldenReport([{ ...reading, item: { ...item, passage }, tags: { ...tags, questionType: "verbal.rc-main-idea" } }], 0)
+    expect(typed).toMatchObject({ textExact: 1, tagAgreement: 0, passed: false })
+    expect(typed.misses[0]?.detail).toContain("verbal.rc-main-idea")
   })
 
   test("one key that differs fails it, whatever the tags", () => {

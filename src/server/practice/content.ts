@@ -13,7 +13,7 @@ import {
 import { QuestionId } from "../../api/Review.ts"
 import type { TaxonomyView } from "../../api/Taxonomy.ts"
 import { Db } from "../db/Database.ts"
-import { approaches, books, difficulty, optionNotes, options, parts, questions, sources } from "../db/schema.ts"
+import { approaches, books, difficulty, optionNotes, options, parts, questions, sources, stimuli } from "../db/schema.ts"
 import { currentDifficulty, isCorrect } from "./history.ts"
 
 // A served Question's stored content, and the Debrief built from it. The
@@ -23,6 +23,8 @@ export interface StoredQuestion {
   readonly id: string
   readonly section: string
   readonly questionType: string
+  // The passage it asks about, as Markdown.
+  readonly stimulus: string | null
   readonly stem: string
   readonly primarySkill: string | null
   readonly difficulty: number
@@ -60,8 +62,10 @@ export const storedQuestions = (ids: ReadonlyArray<string>) =>
     if (ids.length === 0) return found
     const db = yield* Db
     const wanted = [...new Set(ids)]
-    const rows = yield* db.select({ question: questions, difficulty: currentDifficulty }).from(questions)
+    const rows = yield* db.select({ question: questions, difficulty: currentDifficulty, stimulus: stimuli.body })
+      .from(questions)
       .leftJoin(difficulty, eq(difficulty.questionId, questions.id))
+      .leftJoin(stimuli, eq(stimuli.id, questions.stimulusId))
       .where(inArray(questions.id, wanted))
     const partRows = yield* db.select().from(parts).where(inArray(parts.questionId, wanted)).orderBy(asc(parts.position))
     const partIds = partRows.map((part) => part.id)
@@ -83,11 +87,12 @@ export const storedQuestions = (ids: ReadonlyArray<string>) =>
     }).from(sources).innerJoin(books, eq(books.id, sources.bookId))
       .where(inArray(sources.questionId, wanted))
       .orderBy(asc(sources.createdAt))
-    for (const { question, difficulty: value } of rows) {
+    for (const { question, difficulty: value, stimulus } of rows) {
       found.set(question.id, {
         id: question.id,
         section: question.section,
         questionType: question.questionType,
+        stimulus,
         stem: question.stem,
         primarySkill: question.primarySkill,
         difficulty: Number(value),
@@ -143,6 +148,7 @@ export const practiceQuestion = (
     id: QuestionId.make(question.id),
     section: names.named(question.section),
     questionType: names.named(question.questionType),
+    stimulus: question.stimulus,
     stem: question.stem,
     parts: question.parts.map((part) =>
       new PracticePart({ position: part.position, prompt: part.prompt, options: part.options })

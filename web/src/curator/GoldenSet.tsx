@@ -323,6 +323,12 @@ const Candidate = (
         {candidate.approved && <span className="tag golden-tag">Approved</span>}
       </h3>
       <div className="question-body">
+        {candidate.passage !== null && (
+          <details className="explanation">
+            <summary>The passage</summary>
+            <RichText source={candidate.passage} />
+          </details>
+        )}
         <RichText source={candidate.stem} />
         <ol className="choices">
           {candidate.options.map((option) => (

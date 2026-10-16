@@ -49,6 +49,28 @@ describe("The Publish Gate", () => {
     expect(gateReasons(taxonomy, passing)).toEqual([])
   })
 
+  test("a Data Sufficiency Question takes its maths as its primary Skill and one sufficiency Skill", () => {
+    const ds: GateInput = {
+      ...passing,
+      questionType: "di.ds",
+      primarySkill: "quant.number-properties.even-odd",
+      secondarySkills: ["di.sufficiency.yes-no"]
+    }
+    expect(gateReasons(taxonomy, ds)).toEqual([])
+    expect(gateReasons(taxonomy, { ...ds, secondarySkills: [] })).toEqual([
+      { code: "tags", detail: "It needs exactly one sufficiency Skill among its secondary Skills." }
+    ])
+    expect(codes({ ...ds, secondarySkills: ["di.sufficiency.yes-no", "di.sufficiency.value"] })).toEqual(["tags"])
+    expect(gateReasons(taxonomy, { ...ds, primarySkill: "di.sufficiency.value", secondarySkills: [] })).toEqual([
+      { code: "tags", detail: "Its primary Skill is a sufficiency Skill, not its maths." }
+    ])
+    // A table Skill may join as a secondary, but the primary is the maths.
+    expect(codes({ ...ds, secondarySkills: ["di.sufficiency.yes-no", "di.displays.tables"] })).toEqual([])
+    expect(gateReasons(taxonomy, { ...ds, primarySkill: "di.displays.tables" })).toEqual([
+      { code: "tags", detail: "Its primary Skill should be the maths it tests, a Quant Skill." }
+    ])
+  })
+
   test("any solve that disagrees with the key holds the Question, as does a missing solve", () => {
     expect(gateReasons(taxonomy, { ...passing, solverAnswers: ["C", "D", "C"] })).toEqual([
       { code: "solver-disagreement", detail: "Independent solves answered C, D and C; the key is C." }
@@ -117,6 +139,7 @@ const unit = (id: string, questionType: string, band: ReserveUnit["band"], reser
 describe("An Approaches reply", () => {
   const explained: QuestionText = {
     questionType: "quant.ps",
+    stimulus: null,
     stem: "If \\(3x + 1 = 13\\), what is the value of x?",
     options: ["A", "B", "C", "D", "E"].map((label) => ({ label, text: label })),
     key: "C",
@@ -195,5 +218,14 @@ describe("The Mock Reserve", () => {
     const decisions = reserveDecisions(passages)
     expect(decisions.get("p1")).toBe(false)
     expect([...decisions].filter(([, reserve]) => reserve).map(([id]) => id)).toEqual(["p2"])
+  })
+
+  test("a passage counts toward its Blueprint group's share, whatever its Questions' types", () => {
+    // Shares by Question Type would give each passage a quarter of three
+    // Questions, too few for any to join.
+    const passages = ["verbal.rc-detail", "verbal.rc-main-idea", "verbal.rc-inference", "verbal.rc-tone"].map((type, i) =>
+      unit(`p${i + 1}`, type, "medium", null, 3)
+    )
+    expect([...reserveDecisions(passages)].filter(([, reserve]) => reserve).map(([id]) => id)).toEqual(["p1"])
   })
 })

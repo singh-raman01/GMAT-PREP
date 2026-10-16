@@ -96,9 +96,9 @@ export const historyOf = (profileId: string) =>
     return { seen, bookmarked: yield* bookmarkedBy(profileId), missed } satisfies History
   })
 
-// Every published Question as Practice Sets choose among them. The set
-// screen shows one Part and no Stimulus yet, so a Question with several
-// Parts waits for a later version.
+// Every published Question as Practice Sets choose among them, in the order
+// the Bank took them in. The set screen shows one Part, so a Question with
+// several Parts waits for a later version.
 export const publishedPool = Effect.gen(function*() {
   const db = yield* Db
   const rows = yield* db.select({
@@ -109,7 +109,8 @@ export const publishedPool = Effect.gen(function*() {
     secondarySkills: questions.secondarySkills,
     difficulty: currentDifficulty,
     reserve: questions.reserve,
-    releasedAt: questions.releasedAt
+    releasedAt: questions.releasedAt,
+    stimulusId: questions.stimulusId
   }).from(questions)
     .leftJoin(difficulty, eq(difficulty.questionId, questions.id))
     .where(and(eq(questions.status, "published"), singlePart))
@@ -122,7 +123,8 @@ export const publishedPool = Effect.gen(function*() {
     secondarySkills: JSON.parse(row.secondarySkills) as ReadonlyArray<string>,
     difficulty: Number(row.difficulty),
     reserve: row.reserve,
-    released: row.releasedAt !== null
+    released: row.releasedAt !== null,
+    stimulusId: row.stimulusId
   }))
 })
 

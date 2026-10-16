@@ -46,6 +46,12 @@ export const TimePressure = "time-pressure"
 export const optionMistakeTypes = (taxonomy: TaxonomyView): ReadonlyArray<TaxonomyMistakeType> =>
   taxonomy.mistakeTypes.filter((mistakeType) => mistakeType.id !== TimePressure)
 
+// A Data Sufficiency Question's Skills are its maths, from Quantitative
+// Reasoning, and one secondary Skill from this Topic for whether it asks for
+// a value or for a yes or no.
+export const SufficiencyTopic = "di.sufficiency"
+const isSufficiency = (skill: string) => skill.startsWith(`${SufficiencyTopic}.`)
+
 export interface QuestionTags {
   readonly questionType: string
   readonly primarySkill: string | null
@@ -75,6 +81,15 @@ export const tagProblems = (taxonomy: TaxonomyView, tags: QuestionTags): Readonl
   for (const skill of tags.secondarySkills) checkSkill(skill, "secondary")
   if (tags.primarySkill !== null && tags.secondarySkills.includes(tags.primarySkill)) {
     problems.push("Its primary Skill is also a secondary one.")
+  }
+  if (tags.questionType === "di.ds" && tags.primarySkill !== null) {
+    if (isSufficiency(tags.primarySkill)) problems.push("Its primary Skill is a sufficiency Skill, not its maths.")
+    else if (allSkills.has(tags.primarySkill) && sectionOf(tags.primarySkill) !== "quant") {
+      problems.push("Its primary Skill should be the maths it tests, a Quant Skill.")
+    }
+    if (!isSufficiency(tags.primarySkill) && tags.secondarySkills.filter(isSufficiency).length !== 1) {
+      problems.push("It needs exactly one sufficiency Skill among its secondary Skills.")
+    }
   }
   const strategies = known(strategiesFor(taxonomy, tags.questionType))
   for (const strategy of tags.strategies) {

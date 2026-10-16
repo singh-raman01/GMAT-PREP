@@ -1824,6 +1824,54 @@ input.number-input {
   font-size: var(--step-0);
 }
 
+/* A passage beside its Question on a wide screen, above it on a narrow one.
+   On a wide screen it scrolls in its own pane, so the choices stay in view. */
+.with-passage {
+  display: grid;
+  gap: 1.5rem 2.5rem;
+}
+
+.with-passage > * {
+  min-width: 0;
+}
+
+.passage {
+  max-width: 68ch;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.passage-title {
+  margin-bottom: 0.6rem;
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+@media (min-width: 64rem) {
+  .with-passage {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .passage {
+    position: sticky;
+    top: 1rem;
+    max-height: calc(100vh - 2rem);
+    overflow: auto;
+  }
+}
+
+.review-passage summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.review-passage .rich-text {
+  max-width: 68ch;
+  margin-top: 0.6rem;
+}
+
 .practice-set h1.question-count {
   margin-top: 0.75rem;
   font-size: var(--step-3);

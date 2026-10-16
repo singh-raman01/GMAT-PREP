@@ -4,12 +4,16 @@ import { QuestionId } from "../../api/Review.ts"
 // Comparing a check of the golden set with what the Curator approved.
 
 export interface GoldenItem {
+  // The passage a Reading Comprehension Question asks about.
+  readonly passage: string | null
   readonly stem: string
   readonly options: ReadonlyArray<{ readonly label: string; readonly text: string }>
   readonly key: string | null
 }
 
+// The Question Type the reading gives, and the Skills tagging gives.
 export interface GoldenTags {
+  readonly questionType: string
   readonly primarySkill: string | null
   readonly secondarySkills: ReadonlyArray<string>
 }
@@ -28,13 +32,14 @@ export interface GoldenEntry {
 const clip = (text: string) => (text.length > 120 ? `${text.slice(0, 119)}…` : text)
 
 const sameTags = (a: GoldenTags, b: GoldenTags) =>
-  a.primarySkill === b.primarySkill && a.secondarySkills.length === b.secondarySkills.length &&
-  a.secondarySkills.every((skill) => b.secondarySkills.includes(skill))
+  a.questionType === b.questionType && a.primarySkill === b.primarySkill &&
+  a.secondarySkills.length === b.secondarySkills.length && a.secondarySkills.every((skill) => b.secondarySkills.includes(skill))
 
 export const goldenReport = (entries: ReadonlyArray<GoldenEntry>, finishedAt: number): GoldenReport => {
   const results = entries.map((entry) => {
     const { expected, item, tags } = entry
-    const text = item !== null && item.stem === expected.stem && item.options.length === expected.options.length &&
+    const text = item !== null && item.passage === expected.passage && item.stem === expected.stem &&
+      item.options.length === expected.options.length &&
       item.options.every((option, index) => option.text === expected.options[index]?.text)
     const parts = item !== null && item.options.map((option) => option.label).join() ===
         expected.options.map((option) => option.label).join()
@@ -42,6 +47,7 @@ export const goldenReport = (entries: ReadonlyArray<GoldenEntry>, finishedAt: nu
     const agrees = tags !== null && sameTags(tags, expected)
     const detail = [
       item === null ? "Not found when its page was read again." : undefined,
+      item !== null && item.passage !== expected.passage ? "The passage text differs." : undefined,
       item !== null && item.stem !== expected.stem
         ? `Text: "${clip(item.stem)}", not "${clip(expected.stem)}".`
         : undefined,
@@ -55,8 +61,8 @@ export const goldenReport = (entries: ReadonlyArray<GoldenEntry>, finishedAt: nu
       !agrees
         ? tags === null
           ? "Tagging gave no usable reply."
-          : `Tags ${[tags.primarySkill ?? "none", ...tags.secondarySkills].join(", ")}, not ${
-            [expected.primarySkill ?? "none", ...expected.secondarySkills].join(", ")
+          : `Tags ${[tags.questionType, tags.primarySkill ?? "none", ...tags.secondarySkills].join(", ")}, not ${
+            [expected.questionType, expected.primarySkill ?? "none", ...expected.secondarySkills].join(", ")
           }.`
         : undefined
     ].filter((part) => part !== undefined).join(" ")

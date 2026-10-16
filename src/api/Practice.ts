@@ -89,7 +89,9 @@ export class PracticeQuestion extends Schema.Class<PracticeQuestion>("gmat-prep/
   id: QuestionId,
   section: Named,
   questionType: Named,
-  // Markdown with LaTeX; see richText.ts.
+  // The passage a Reading Comprehension Question asks about, shown beside
+  // it; Markdown with LaTeX, like the stem. See richText.ts.
+  stimulus: Schema.NullOr(Schema.String),
   stem: Schema.String,
   parts: Schema.Array(PracticePart),
   // Where a Book prints it: the Book the set follows, else its first Source.

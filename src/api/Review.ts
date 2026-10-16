@@ -90,7 +90,9 @@ export class QuestionView extends Schema.Class<QuestionView>("gmat-prep/api/Ques
   id: QuestionId,
   section: Schema.String,
   questionType: Schema.String,
-  // Markdown with LaTeX; see richText.ts.
+  // The passage a Reading Comprehension Question asks about. Markdown with
+  // LaTeX, like the stem; see richText.ts.
+  passage: Schema.NullOr(Schema.String),
   stem: Schema.String,
   options: Schema.Array(Schema.Struct({ label: Schema.String, text: Schema.String })),
   key: Schema.NullOr(Schema.String),

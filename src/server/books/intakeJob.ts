@@ -9,6 +9,7 @@ import { ApiKeyStore } from "../settings/ApiKeyStore.ts"
 import { missingSettings, Settings, taskReadsImages } from "../settings/Settings.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { BookFiles } from "./BookFiles.ts"
+import { linkSet } from "./linking.ts"
 import { readPdfPages, unreadableNote } from "./pdf.ts"
 import { readPage, readsGroup } from "./readings.ts"
 import { readSurvey, surveyPages } from "./survey.ts"
@@ -183,14 +184,22 @@ const sampleStep = (jobId: string, bookId: string, at: typeof Checkpoint.Type) =
         ? [{ page: row.number, role: survey.role, group: survey.group }]
         : []
     })
+    // The sample's Questions, each page read on its own: a passage that
+    // starts on an earlier page is left out.
     const sampledQuestions: Array<QuestionText> = []
     for (const page of extractable) {
       const { reading } = yield* readPage({ jobId, bookId, page: page.page, role: page.role, group: page.group })
-      if (reading.role === "questions" && reading.group === "ps") {
-        for (const item of reading.value.questions) {
-          if (item.retired !== null) continue
-          sampledQuestions.push({ questionType: "quant.ps", stem: item.stem, options: item.options, key: null, explanation: null })
-        }
+      if (reading.role !== "questions") continue
+      for (const item of linkSet({ questions: [{ page: page.page, reading }], answers: [], explanations: [], labels: [] })) {
+        if (item._tag !== "Candidate") continue
+        sampledQuestions.push({
+          questionType: item.questionType,
+          stimulus: item.passage,
+          stem: item.stem,
+          options: item.options,
+          key: null,
+          explanation: null
+        })
       }
     }
     const toEnrich = (yield* enrichmentReady) ? Math.min(SampleQuestions, sampledQuestions.length) : 0

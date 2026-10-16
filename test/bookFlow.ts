@@ -85,10 +85,17 @@ export const proposedBook = (
   psPages?: number,
   keys?: Readonly<Record<number, string>>
 ) =>
+  proposedFrom(curator, {
+    edition,
+    ...(psPages === undefined ? {} : { psPages }),
+    ...(keys === undefined ? {} : { keys })
+  })
+
+// The same, for a fixture Book with any of its options.
+export const proposedFrom = (curator: Curator, options: Parameters<typeof makeBook>[0] & { readonly edition: string }) =>
   Effect.gen(function*() {
-    const fixture = yield* Effect.promise(() =>
-      makeBook({ edition, ...(psPages === undefined ? {} : { psPages }), ...(keys === undefined ? {} : { keys }) })
-    )
+    const edition = options.edition
+    const fixture = yield* Effect.promise(() => makeBook(options))
     const book = yield* upload(curator, fixture.bytes, `Practice Questions, ${edition}`)
     yield* waitFor(curator, book.id, statusIs("previewed"))
     yield* curator.api.books.start({ params: { id: book.id }, payload: { spendCap: 1 } })

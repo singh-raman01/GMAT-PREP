@@ -328,6 +328,12 @@ const OptionNote = ({ note, names }: { readonly note: OptionNoteView; readonly n
 
 const QuestionBody = ({ question, names }: { readonly question: QuestionView; readonly names: Names }) => (
   <div className="question-body">
+    {question.passage !== null && (
+      <details className="explanation">
+        <summary>The passage</summary>
+        <RichText source={question.passage} />
+      </details>
+    )}
     <RichText source={question.stem} />
     <ol className="choices">
       {question.options.map((option) => {

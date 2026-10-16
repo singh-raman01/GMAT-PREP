@@ -4,7 +4,7 @@ import { renderProblem } from "../../api/richText.ts"
 import type { TaxonomyView } from "../../api/Taxonomy.ts"
 import { optionMistakeTypes, skillsFor, strategiesFor, trapPatternsFor } from "../../api/taxonomyRules.ts"
 import { Db } from "../db/Database.ts"
-import { approaches, optionNotes, options, parts, questions, solverRuns } from "../db/schema.ts"
+import { approaches, optionNotes, options, parts, questions, solverRuns, stimuli } from "../db/schema.ts"
 import { LlmAdapter, type LlmError } from "../llm/LlmAdapter.ts"
 import { quoteData } from "../llm/quoting.ts"
 import { explanationOf, readLinkReasons, UnsureCodes } from "./bankWrites.ts"
@@ -16,6 +16,8 @@ import { explanationOf, readLinkReasons, UnsureCodes } from "./bankWrites.ts"
 
 export interface QuestionText {
   readonly questionType: string
+  // The passage a Reading Comprehension Question asks about.
+  readonly stimulus: string | null
   readonly stem: string
   readonly options: ReadonlyArray<{ readonly label: string; readonly text: string }>
   readonly key: string | null
@@ -33,6 +35,7 @@ const oneOf = (ids: ReadonlyArray<string>) => {
 
 const quoteQuestion = (question: QuestionText, show: { readonly key: boolean; readonly explanation: boolean }) => {
   const body = [
+    ...(question.stimulus === null ? [] : ["The passage:", question.stimulus, "", "The question:"]),
     question.stem,
     "",
     "Answer choices:",
@@ -50,7 +53,7 @@ const listing = (entries: ReadonlyArray<{ readonly id: string; readonly name: st
 
 // Tagging ------------------------------------------------------------------
 
-export const TagPromptVersion = "tag-question@1"
+export const TagPromptVersion = "tag-question@2"
 
 export const tagOutput = (taxonomy: TaxonomyView, questionType: string) => {
   const skill = oneOf(skillsFor(taxonomy, questionType).map((entry) => entry.id))
@@ -67,6 +70,12 @@ export const tagOutput = (taxonomy: TaxonomyView, questionType: string) => {
 export const secondaryOnly = (primarySkill: string, secondarySkills: ReadonlyArray<string>) =>
   [...new Set(secondarySkills)].filter((skill) => skill !== primarySkill)
 
+// A Data Sufficiency Question's maths Skills come from Quantitative
+// Reasoning, and one secondary Skill says whether it asks for a value or a
+// yes or no.
+const dsRule =
+  `This is a Data Sufficiency question. Its primarySkill is the maths Skill it mainly tests. Its secondarySkills hold exactly one of di.sufficiency.value (it asks for a value or a choice) or di.sufficiency.yes-no (it asks a yes or no question), and at most one other maths Skill.`
+
 export const tagQuestion = (jobId: string, taxonomy: TaxonomyView, question: QuestionText) =>
   Effect.gen(function*() {
     const llm = yield* LlmAdapter
@@ -81,7 +90,7 @@ Give:
 - primarySkill: the one Skill the question mainly tests, by its id.
 - secondarySkills: up to two other Skills it also needs, by id, or none. Leave out a Skill it uses only in passing.
 - difficulty: how hard it is for GMAT test takers, as a number from -2 to 2, where -1 is a typical easy question, 0 a typical medium one and 1 a typical hard one.
-
+${question.questionType === "di.ds" ? `\n${dsRule}\n` : ""}
 Skills:
 ${listing(skillsFor(taxonomy, question.questionType))}`,
       user: quoteQuestion(question, { key: true, explanation: true }),
@@ -257,8 +266,12 @@ const loadQuestion = (questionId: string) =>
     if (part === undefined) return undefined
     const optionRows = yield* db.select().from(options).where(eq(options.partId, part.id)).orderBy(asc(options.position))
     const explained = yield* explanationOf(questionId)
+    const [stimulus] = question.stimulusId === null
+      ? []
+      : yield* db.select({ body: stimuli.body }).from(stimuli).where(eq(stimuli.id, question.stimulusId))
     const text: QuestionText = {
       questionType: question.questionType,
+      stimulus: stimulus?.body ?? null,
       stem: question.stem,
       options: optionRows.map((option) => ({ label: option.label, text: option.text })),
       key: part.key,

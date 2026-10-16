@@ -10,7 +10,16 @@ import { runGate } from "../review/gate.ts"
 import { QuestionRefresh, RefreshCap } from "../review/refreshJob.ts"
 import { assignReserve, assignUndecided } from "../review/reserve.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
-import { heldPages, holdUnreadPage, type Linked, linkCandidate, loadBank, recordSkip, retireStale } from "./bankWrites.ts"
+import {
+  type BankEntry,
+  heldPages,
+  holdUnreadPage,
+  type Linked,
+  linkCandidate,
+  loadBank,
+  recordSkip,
+  retireStale
+} from "./bankWrites.ts"
 import { enrichQuestion } from "./enrichment.ts"
 import { linkSet } from "./linking.ts"
 import { type PageReading, readPage, readsGroup, storedReading } from "./readings.ts"
@@ -195,13 +204,25 @@ const linkStep = (params: typeof Params.Type, setsLinked: number, stepsDone: num
       labels: labelReadings.map((each) => each.reading)
     })
     // Each Question keeps the model and prompt that read its own page.
+    const groups = [...new Set(set.ranges.filter((range) => range.role === "questions").map((range) => range.group))]
     const readers = new Map(
       (yield* db.select({ page: pageReadings.page, model: pageReadings.model, promptVersion: pageReadings.promptVersion })
         .from(pageReadings)
-        .where(and(eq(pageReadings.bookId, params.bookId), eq(pageReadings.role, "questions"), eq(pageReadings.group, "ps")))
+        .where(and(
+          eq(pageReadings.bookId, params.bookId),
+          eq(pageReadings.role, "questions"),
+          inArray(pageReadings.group, groups)
+        ))
         .pipe(Effect.orDie)).map((row) => [row.page, row] as const)
     )
-    const bank = yield* loadBank("quant")
+    // Each Section's Questions, compared with the new ones of that Section.
+    const banks = new Map<string, Array<BankEntry>>()
+    const bankFor = (section: string) =>
+      Effect.gen(function*() {
+        const loaded = banks.get(section) ?? (yield* loadBank(section))
+        banks.set(section, loaded)
+        return loaded
+      })
     const counts: Record<Linked, number> = { created: 0, merged: 0, relinked: 0, unchanged: 0, skipped: 0 }
     for (const item of linked) {
       const reader = readers.get(item.page)
@@ -212,13 +233,8 @@ const linkStep = (params: typeof Params.Type, setsLinked: number, stepsDone: num
           set: set.name,
           mapVersion: params.mapVersion,
           candidate: item,
-          origin: {
-            section: "quant",
-            questionType: "quant.ps",
-            model: reader?.model ?? "",
-            promptVersion: reader?.promptVersion ?? ""
-          }
-        }, bank)
+          origin: { model: reader?.model ?? "", promptVersion: reader?.promptVersion ?? "" }
+        }, yield* bankFor(item.section))
       counts[outcome] += 1
     }
     const summary = [

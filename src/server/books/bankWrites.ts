@@ -11,8 +11,10 @@ import {
   questions,
   reviewItems,
   sources,
+  stimuli,
   taxonomyVersions
 } from "../db/schema.ts"
+import { normalizeText } from "../../api/richText.ts"
 import {
   type Candidate,
   candidateProblems,
@@ -33,12 +35,14 @@ import {
 // Question, or one whose reasons or key changed, is a draft: enrichment and
 // the Publish Gate decide whether it is published or held.
 
-// A Question as compared with new items.
+// A Question as compared with new items. A passage's Questions are compared
+// only with Questions on the same passage.
 export interface BankEntry {
   readonly id: string
   readonly hash: string
   readonly trigrams: ReadonlySet<string>
   readonly key: string | null
+  readonly stimulusId: string | null
 }
 
 // The Questions of a Section, other than withdrawn ones, for comparing.
@@ -49,19 +53,38 @@ export const loadBank = (section: string) =>
       id: questions.id,
       hash: questions.normalizedHash,
       text: questions.normalizedText,
-      key: parts.key
+      key: parts.key,
+      stimulusId: questions.stimulusId
     }).from(questions)
       .leftJoin(parts, and(eq(parts.questionId, questions.id), eq(parts.position, 0)))
       .where(and(eq(questions.section, section), ne(questions.status, "withdrawn")))
       .pipe(Effect.orDie)
-    return rows.map((row): BankEntry => ({ id: row.id, hash: row.hash, trigrams: trigrams(row.text), key: row.key }))
+    return rows.map((row): BankEntry => ({
+      id: row.id,
+      hash: row.hash,
+      trigrams: trigrams(row.text),
+      key: row.key,
+      stimulusId: row.stimulusId
+    }))
+  })
+
+// The stored passage with this text, or a new one. Passages compare by their
+// normalized text, so the same passage from two Books is one Stimulus.
+const stimulusFor = (passage: string, now: number) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const hash = sha256(normalizeText(passage))
+    const [found] = yield* db.select({ id: stimuli.id }).from(stimuli).where(eq(stimuli.normalizedHash, hash)).limit(1)
+    if (found !== undefined) return { id: found.id, hash }
+    const id = crypto.randomUUID()
+    yield* db.insert(stimuli).values({ id, kind: "passage", body: passage, normalizedHash: hash, createdAt: now })
+    return { id, hash }
   })
 
 export type Linked = "created" | "merged" | "relinked" | "unchanged" | "skipped"
 
+// The model and prompt that read the Question's page.
 export interface QuestionOrigin {
-  readonly section: string
-  readonly questionType: string
   readonly model: string
   readonly promptVersion: string
 }
@@ -289,8 +312,10 @@ export const linkCandidate = (
           return "relinked" as const
         }
 
+        // A passage's Question is the same Question only on the same passage.
+        const stimulus = candidate.passage === null ? null : yield* stimulusFor(candidate.passage, now)
         const text = comparableText(candidate.stem, candidate.options)
-        const hash = sha256(text)
+        const hash = sha256(stimulus === null ? text : `${stimulus.hash}|${text}`)
         const pieces = trigrams(text)
         const problems = candidateProblems(candidate)
         // An item whose text may be wrong, or that needs a figure, is never
@@ -371,6 +396,7 @@ export const linkCandidate = (
         } else {
           let best: { readonly id: string; readonly score: number } | undefined
           for (const entry of bank) {
+            if (entry.stimulusId !== (stimulus?.id ?? null)) continue
             const score = similarity(pieces, entry.trigrams)
             if (score >= NearMatch && (best === undefined || score > best.score)) best = { id: entry.id, score }
           }
@@ -390,8 +416,9 @@ export const linkCandidate = (
         const partId = crypto.randomUUID()
         yield* db.insert(questions).values({
           id: questionId,
-          section: origin.section,
-          questionType: origin.questionType,
+          section: candidate.section,
+          questionType: candidate.questionType,
+          stimulusId: stimulus?.id ?? null,
           stem: candidate.stem,
           status: "draft",
           normalizedText: text,
@@ -424,7 +451,7 @@ export const linkCandidate = (
           })))
         }
         yield* addSource(questionId, false)
-        bank.push({ id: questionId, hash, trigrams: pieces, key: candidate.key })
+        bank.push({ id: questionId, hash, trigrams: pieces, key: candidate.key, stimulusId: stimulus?.id ?? null })
         return "created" as const
       })
     ).pipe(Effect.orDie)
