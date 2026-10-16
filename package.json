@@ -1,0 +1,33 @@
+{
+  "name": "gmat-prep",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun scripts/dev.ts",
+    "start": "bun src/server/main.ts",
+    "build:web": "vite build --config web/vite.config.ts",
+    "build": "bun scripts/build.ts",
+    "build:all": "bun scripts/build.ts --all",
+    "db:generate": "drizzle-kit generate && bun scripts/gen-migrations-index.ts",
+    "typecheck": "tsc -p . && tsc -p web",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "4.0.5",
+    "@effect/sql-sqlite-bun": "4.0.5",
+    "@fontsource-variable/atkinson-hyperlegible-next": "5.3.0",
+    "drizzle-orm": "1.0.0-rc.5-5935859",
+    "effect": "4.0.5",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.3",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "drizzle-kit": "1.0.0-rc.5-5935859",
+    "typescript": "7.0.2",
+    "vite": "8.3.4"
+  }
+}
