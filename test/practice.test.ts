@@ -635,6 +635,9 @@ describe("When the Question Bank changes under a set", () => {
       const ended = yield* asha.api.practice.next({ params: { id: answered.id }, payload: { position: 1 } })
       expect(ended).toMatchObject({ status: "finished", total: 1 })
       expect(ended.results).toHaveLength(1)
+      // Asking past the plan is still refused.
+      const past = yield* asha.api.practice.next({ params: { id: answered.id }, payload: { position: 2 } }).pipe(Effect.flip)
+      expect(past).toMatchObject({ _tag: "PracticeOutOfStep", reason: "finished" })
     })))
 
   test("a planned Question merged into one the set lacks gives way to it", () =>

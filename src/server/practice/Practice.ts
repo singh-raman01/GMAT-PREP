@@ -626,6 +626,7 @@ export class Practice extends Context.Service<Practice, {
           const current = served.at(-1)!
           const answered = (yield* responsesOf(id)).some((each) => each.questionId === current.questionId)
           if (!answered) return yield* outOfStep(session, "not-answered")
+          if (position >= decodeConfig(session.config).planned.length) return yield* outOfStep(session, "no-more")
           const questionId = yield* servable(session, position)
           // What was left of the plan has left the Question Bank: the set is over.
           if (questionId === undefined) {
