@@ -2458,3 +2458,55 @@ input.number-input {
   max-width: 40rem;
   margin-top: 1.5rem;
 }
+
+/* Generation batches */
+
+.new-batch {
+  display: grid;
+  gap: 1rem;
+  max-width: 52rem;
+}
+
+.new-batch select {
+  max-width: 100%;
+}
+
+.count-field input {
+  max-width: 6rem;
+}
+
+.batches {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rule);
+  max-width: 52rem;
+}
+
+.batch {
+  padding: 1.25rem 0 1rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.batch > * {
+  min-width: 0;
+}
+
+.batch-title {
+  margin: 0;
+  font-size: var(--step-1);
+}
+
+.batch-asked {
+  margin: 0.3rem 0 0;
+  color: var(--pencil);
+}
+
+.batch-counts {
+  margin: 0.5rem 0 0.25rem;
+}
+
+.batch .job-note {
+  margin: 0.25rem 0;
+}

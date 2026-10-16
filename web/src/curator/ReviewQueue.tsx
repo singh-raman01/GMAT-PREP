@@ -583,17 +583,19 @@ const ReviewItem = (
   return (
     <li className="review-item">
       {title}
-      <p className="review-source">
-        {sourceText(question)}
-        {first !== undefined && (
-          <>
-            {". "}
-            <a href={`${bookFilePath(first.bookId)}#page=${first.page}`} target="_blank" rel="noopener">
-              Open page {first.page}
-            </a>
-          </>
-        )}
-      </p>
+      {question.generated === null && (
+        <p className="review-source">
+          {sourceText(question)}
+          {first !== undefined && (
+            <>
+              {". "}
+              <a href={`${bookFilePath(first.bookId)}#page=${first.page}`} target="_blank" rel="noopener">
+                Open page {first.page}
+              </a>
+            </>
+          )}
+        </p>
+      )}
       {item.reasons.length === 0
         ? <p className="review-clear">No problems found. Check it against the book, then publish it.</p>
         : <Reasons reasons={item.reasons} />}
