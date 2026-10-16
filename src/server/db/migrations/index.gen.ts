@@ -12,6 +12,7 @@ import m9 from "./20261016135736_timed_sessions/migration.sql" with { type: "tex
 import m10 from "./20261016142308_stimuli/migration.sql" with { type: "text" }
 import m11 from "./20261016153057_di_stimuli/migration.sql" with { type: "text" }
 import m12 from "./20261016181318_di_generation/migration.sql" with { type: "text" }
+import m13 from "./20261016201610_mocks_and_scores/migration.sql" with { type: "text" }
 
 export const bundledMigrations: ReadonlyArray<{ readonly name: string; readonly sql: string }> = [
   { name: "20261016072200_init", sql: m0 },
@@ -27,4 +28,5 @@ export const bundledMigrations: ReadonlyArray<{ readonly name: string; readonly 
   { name: "20261016142308_stimuli", sql: m10 },
   { name: "20261016153057_di_stimuli", sql: m11 },
   { name: "20261016181318_di_generation", sql: m12 },
+  { name: "20261016201610_mocks_and_scores", sql: m13 },
 ]
