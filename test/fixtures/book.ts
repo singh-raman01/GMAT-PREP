@@ -18,8 +18,27 @@ const greyPng = Uint8Array.from(
   (char) => char.charCodeAt(0)
 )
 
+// Nine Problem Solving questions, each keyed C. The seventh is geometry, a
+// Retired item; the eighth nearly repeats the first; the explanation of the
+// sixth gives D, against the answer key.
+const practice: ReadonlyArray<readonly [string, string]> = [
+  ["If 3x + 1 = 13, what is the value of x?", "(A) 2   (B) 3   (C) 4   (D) 5   (E) 6"],
+  [
+    "A shirt costs $25 after a 20 percent discount. What was its price before the discount?",
+    "(A) $20   (B) $30   (C) $31.25   (D) $35   (E) $45"
+  ],
+  ["What is the average of 4, 8 and 12?", "(A) 6   (B) 7   (C) 8   (D) 9   (E) 10"],
+  ["In how many ways can 3 different books be arranged on a shelf?", "(A) 3   (B) 4   (C) 6   (D) 8   (E) 9"],
+  ["If y squared is 49 and y is negative, what is y?", "(A) -49   (B) -9   (C) -7   (D) 7   (E) 49"],
+  ["What is 15 percent of 80?", "(A) 8   (B) 10   (C) 12   (D) 15   (E) 18"],
+  ["A right triangle has legs of 3 and 4. What is its area?", "(A) 5   (B) 5.5   (C) 6   (D) 7   (E) 12"],
+  ["If 3x + 8 = 20, what is the value of x?", "(A) 2   (B) 3   (C) 4   (D) 5   (E) 6"],
+  ["What is the remainder when 17 is divided by 5?", "(A) 0   (B) 1   (C) 2   (D) 3   (E) 4"]
+]
+
 // psPages sets how many pages of Problem Solving questions it has, three
-// questions to a page, each with a page of explanations.
+// questions to a page, each with a page of explanations; past nine, the
+// questions repeat.
 export const makeBook = async (
   options: { readonly title?: string; readonly edition?: string; readonly psPages?: number } = {}
 ): Promise<BookFixture> => {
@@ -42,10 +61,8 @@ export const makeBook = async (
       "Problem Solving",
       ...[1, 2, 3].flatMap((k) => {
         const n = set * 3 + k
-        return [
-          `${n}. If 3x + ${n} = ${n + 12}, what is the value of x?`,
-          "(A) 2   (B) 3   (C) 4   (D) 5   (E) 6"
-        ]
+        const [stem, choices] = practice[(n - 1) % practice.length]!
+        return [`${n}. ${stem}`, choices]
       })
     ])
   }
@@ -53,7 +70,10 @@ export const makeBook = async (
   for (let k = 1; k <= questions; k += 3) {
     page([
       "Answer Explanations",
-      ...[k, k + 1, k + 2].flatMap((n) => [`${n}. Subtract ${n} from both sides, then divide by 3.`, "The answer is C."])
+      ...[k, k + 1, k + 2].flatMap((n) => [
+        `${n}. Work it out step by step from what the question gives.`,
+        `The answer is ${n === 6 ? "D" : "C"}.`
+      ])
     ])
   }
   page([

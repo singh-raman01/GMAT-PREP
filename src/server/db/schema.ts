@@ -1,4 +1,4 @@
-import { index, integer, primaryKey, real, sqliteTable, text } from "drizzle-orm/sqlite-core"
+import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core"
 
 // Times are stored as epoch milliseconds read from the Effect Clock, so tests
 // can drive them with TestClock.
@@ -133,8 +133,12 @@ export const books = sqliteTable("books", {
   scannedRoute: text("scanned_route"),
   // The cost preview, as JSON, once the sample has run.
   preview: text("preview"),
-  // The job reading the Book or proposing its Book Map.
+  // The job working on the Book now: reading it, proposing its Book Map or
+  // extracting its Questions.
   jobId: text("job_id").references(() => jobs.id, { onDelete: "set null" }),
+  // The spend cap the Curator set for the full run, in dollars; the jobs of
+  // the run share it.
+  runCap: real("run_cap"),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull()
 })
@@ -182,4 +186,143 @@ export const bookMaps = sqliteTable(
     confirmedAt: integer("confirmed_at").notNull()
   },
   (t) => [primaryKey({ columns: [t.bookId, t.version] })]
+)
+
+// What extraction read on one page in one role, as the model returned it. A
+// Book Map fix reads again only the pages whose role or group changed.
+export const pageReadings = sqliteTable(
+  "page_readings",
+  {
+    bookId: text("book_id").notNull().references(() => books.id, { onDelete: "cascade" }),
+    page: integer("page").notNull(),
+    // questions, answer-key, explanations or difficulty-labels
+    role: text("role").notNull(),
+    // The Question Type group the page was read as, such as ps.
+    group: text("group_name").notNull(),
+    // JSON: the items found on the page.
+    items: text("items").notNull(),
+    model: text("model").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    createdAt: integer("created_at").notNull()
+  },
+  (t) => [primaryKey({ columns: [t.bookId, t.page, t.role, t.group] })]
+)
+
+// The Question Bank. A Question keeps the model and prompt that extracted it.
+export const questions = sqliteTable(
+  "questions",
+  {
+    id: text("id").primaryKey(),
+    section: text("section").notNull(),
+    // A Question Type id from the Taxonomy, such as quant.ps.
+    questionType: text("question_type").notNull(),
+    // Markdown with LaTeX math; see api/richText.ts.
+    stem: text("stem").notNull(),
+    // draft, held, published or withdrawn
+    status: text("status").notNull(),
+    // Stem and options as compared when looking for the same Question.
+    normalizedText: text("normalized_text").notNull(),
+    normalizedHash: text("normalized_hash").notNull(),
+    // easy, medium or hard, as a Book printed it.
+    bookLabel: text("book_label"),
+    taxonomyVersion: integer("taxonomy_version").notNull(),
+    model: text("model").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull()
+  },
+  (t) => [index("questions_hash").on(t.normalizedHash), index("questions_status").on(t.status)]
+)
+
+export const parts = sqliteTable(
+  "parts",
+  {
+    id: text("id").primaryKey(),
+    questionId: text("question_id").notNull().references(() => questions.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    // single-choice for PS, DS, CR and RC
+    kind: text("kind").notNull(),
+    prompt: text("prompt"),
+    // The right option's label, such as C; null while no key is known.
+    key: text("key"),
+    // book, computed or override
+    keyBasis: text("key_basis")
+  },
+  (t) => [uniqueIndex("parts_question_position").on(t.questionId, t.position)]
+)
+
+export const options = sqliteTable(
+  "options",
+  {
+    partId: text("part_id").notNull().references(() => parts.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    label: text("label").notNull(),
+    text: text("text").notNull()
+  },
+  (t) => [primaryKey({ columns: [t.partId, t.position] })]
+)
+
+// Where a Question came from. One per extracted item: a Book's item that
+// repeats a Question already in the Bank joins it as another Source.
+export const sources = sqliteTable(
+  "sources",
+  {
+    id: text("id").primaryKey(),
+    questionId: text("question_id").notNull().references(() => questions.id, { onDelete: "cascade" }),
+    bookId: text("book_id").notNull().references(() => books.id, { onDelete: "cascade" }),
+    // The question set's name as the Book Map gives it.
+    set: text("set_name").notNull(),
+    number: integer("number").notNull(),
+    page: integer("page").notNull(),
+    // What the Book gives for this item.
+    bookKey: text("book_key"),
+    explanation: text("explanation"),
+    bookLabel: text("book_label"),
+    // True when the item joined a Question that was already in the Bank.
+    merged: integer("merged", { mode: "boolean" }).notNull(),
+    createdAt: integer("created_at").notNull()
+  },
+  (t) => [uniqueIndex("sources_book_item").on(t.bookId, t.set, t.number), index("sources_question").on(t.questionId)]
+)
+
+// Items a Book holds that do not become Questions, such as Retired items.
+export const bookSkips = sqliteTable(
+  "book_skips",
+  {
+    bookId: text("book_id").notNull().references(() => books.id, { onDelete: "cascade" }),
+    set: text("set_name").notNull(),
+    number: integer("number").notNull(),
+    page: integer("page").notNull(),
+    // sentence-correction or geometry
+    reason: text("reason").notNull()
+  },
+  (t) => [primaryKey({ columns: [t.bookId, t.set, t.number] })]
+)
+
+// The Review Queue: a Question held with every reason, or a page extraction
+// could not read.
+export const reviewItems = sqliteTable(
+  "review_items",
+  {
+    id: text("id").primaryKey(),
+    questionId: text("question_id").references(() => questions.id, { onDelete: "cascade" }),
+    // For a page that could not be read.
+    bookId: text("book_id").references(() => books.id, { onDelete: "cascade" }),
+    page: integer("page"),
+    // JSON array of { code, detail }.
+    reasons: text("reasons").notNull(),
+    // The Question this one may repeat.
+    relatedQuestionId: text("related_question_id").references(() => questions.id, { onDelete: "set null" }),
+    // open or decided
+    status: text("status").notNull(),
+    // published, withdrawn, variant, merged or dismissed
+    decision: text("decision"),
+    createdAt: integer("created_at").notNull(),
+    decidedAt: integer("decided_at")
+  },
+  (t) => [
+    index("review_items_status").on(t.status),
+    index("review_items_question").on(t.questionId),
+    uniqueIndex("review_items_page").on(t.bookId, t.page)
+  ]
 )

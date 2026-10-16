@@ -16,6 +16,7 @@ import { CuratorCookie } from "../../api/Curator.ts"
 import { BookFiles } from "../books/BookFiles.ts"
 import { Books } from "../books/Books.ts"
 import { Curator } from "../curator/Curator.ts"
+import { ReviewQueue } from "../review/ReviewQueue.ts"
 
 export const BooksHandlers = HttpApiBuilder.group(
   Api,
@@ -27,7 +28,23 @@ export const BooksHandlers = HttpApiBuilder.group(
       get: ({ params }) => books.get(params.id),
       readAgain: ({ params }) => books.readAgain(params.id),
       start: ({ params, payload }) => books.start(params.id, payload.spendCap),
-      confirmMap: ({ params, payload }) => books.confirmMap(params.id, payload.ranges)
+      confirmMap: ({ params, payload }) => books.confirmMap(params.id, payload.ranges, payload.spendCap)
+    })
+  })
+)
+
+export const ReviewHandlers = HttpApiBuilder.group(
+  Api,
+  "review",
+  Effect.fn(function*(handlers) {
+    const queue = yield* ReviewQueue
+    return handlers.handleAll({
+      list: () => queue.list,
+      publish: ({ params }) => queue.publish(params.id),
+      withdraw: ({ params }) => queue.withdraw(params.id),
+      keepAsVariant: ({ params }) => queue.keepAsVariant(params.id),
+      merge: ({ params }) => queue.merge(params.id),
+      dismiss: ({ params }) => queue.dismiss(params.id)
     })
   })
 )
