@@ -1,6 +1,8 @@
 import { Context, type Effect, Layer, Schema } from "effect"
+import type { BookFiles } from "../books/BookFiles.ts"
 import type { Db } from "../db/Database.ts"
 import type { LlmAdapter, LlmError } from "../llm/LlmAdapter.ts"
+import type { Settings } from "../settings/Settings.ts"
 
 // A kind of job: what its parameters and checkpoint look like, and one step
 // of work. The runner saves the checkpoint after every step, so a job that
@@ -28,7 +30,7 @@ export interface StepInput<P, C> {
 }
 
 // What a step may use.
-export type StepServices = LlmAdapter | Db
+export type StepServices = LlmAdapter | Db | Settings | BookFiles
 
 export interface JobKind<P, C> {
   readonly kind: string

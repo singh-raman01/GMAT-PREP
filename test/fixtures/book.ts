@@ -18,9 +18,11 @@ const greyPng = Uint8Array.from(
   (char) => char.charCodeAt(0)
 )
 
-export const makeBook = async (options: { readonly title?: string; readonly edition?: string } = {}): Promise<
-  BookFixture
-> => {
+// psPages sets how many pages of Problem Solving questions it has, three
+// questions to a page, each with a page of explanations.
+export const makeBook = async (
+  options: { readonly title?: string; readonly edition?: string; readonly psPages?: number } = {}
+): Promise<BookFixture> => {
   const doc = await PDFDocument.create()
   doc.setTitle(options.title ?? "GMAT Practice Questions")
   // pdf-lib stamps the current time, which would change the file's hash.
@@ -33,7 +35,9 @@ export const makeBook = async (options: { readonly title?: string; readonly edit
   }
 
   page([options.title ?? "GMAT Practice Questions", options.edition ?? "First edition", "A made-up book for tests"])
-  for (let set = 0; set < 3; set++) {
+  const psPages = options.psPages ?? 3
+  const questions = psPages * 3
+  for (let set = 0; set < psPages; set++) {
     page([
       "Problem Solving",
       ...[1, 2, 3].flatMap((k) => {
@@ -45,8 +49,8 @@ export const makeBook = async (options: { readonly title?: string; readonly edit
       })
     ])
   }
-  page(["Answer Key", ...Array.from({ length: 9 }, (_, i) => `${i + 1}. C`)])
-  for (let k = 1; k <= 9; k += 3) {
+  page(["Answer Key", ...Array.from({ length: questions }, (_, i) => `${i + 1}. C`)])
+  for (let k = 1; k <= questions; k += 3) {
     page([
       "Answer Explanations",
       ...[k, k + 1, k + 2].flatMap((n) => [`${n}. Subtract ${n} from both sides, then divide by 3.`, "The answer is C."])
@@ -54,17 +58,17 @@ export const makeBook = async (options: { readonly title?: string; readonly edit
   }
   page([
     "Data Sufficiency",
-    "10. What is the value of x?",
+    `${questions + 1}. What is the value of x?`,
     "(1) x + 2 = 5",
     "(2) x is a prime number.",
-    "11. Is n even?",
+    `${questions + 2}. Is n even?`,
     "(1) n + 1 is odd.",
     "(2) 3n is even."
   ])
   const scanned = doc.addPage([612, 792])
   scanned.drawImage(await doc.embedPng(greyPng), { x: 60, y: 300, width: 480, height: 400 })
   const scannedPage = doc.getPageCount()
-  page(["Data Sufficiency Answer Key", "10. A", "11. D"])
+  page(["Data Sufficiency Answer Key", `${questions + 1}. A`, `${questions + 2}. D`])
 
   const bytes = await doc.save()
   return { bytes, pageCount: doc.getPageCount(), scannedPages: [scannedPage] }

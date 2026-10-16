@@ -293,10 +293,12 @@ describe("the server process", () => {
     const insert = db.prepare("INSERT INTO filler (body) VALUES (?)")
     for (let i = 0; i < 400; i++) insert.run(`${"x".repeat(200)}${i}`)
     const pageSize = (db.query("PRAGMA page_size").get() as { page_size: number }).page_size
-    const pageCount = (db.query("PRAGMA page_count").get() as { page_count: number }).page_count
+    // The filler table's root page holds data, so damage there always shows.
+    const root = (db.query("SELECT rootpage FROM sqlite_master WHERE name = 'filler'").get() as { rootpage: number })
+      .rootpage
     db.close()
     const fd = openSync(file, "r+")
-    writeSync(fd, Buffer.alloc(64, 0xff), 0, 64, Math.floor(pageCount / 2) * pageSize + 8)
+    writeSync(fd, Buffer.alloc(64, 0xff), 0, 64, (root - 1) * pageSize + 8)
     closeSync(fd)
     const again = startApp(dataDir, freePort())
     const output = await outputOf(again)

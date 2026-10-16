@@ -62,7 +62,7 @@ describe("Curator access", () => {
       const tags = yield* Effect.all([
         stranger.settings.llm().pipe(Effect.flip),
         stranger.settings.saveLlm({
-          payload: { baseUrl: "https://api.example.com/v1", jsonMode: "json-schema", models: [], prices: [] }
+          payload: { baseUrl: "https://api.example.com/v1", jsonMode: "json-schema", models: [], prices: [], readsImages: [] }
         }).pipe(Effect.flip),
         stranger.settings.saveApiKey({ payload: { apiKey: "sk-test-123456789" } }).pipe(Effect.flip),
         stranger.settings.removeApiKey().pipe(Effect.flip),

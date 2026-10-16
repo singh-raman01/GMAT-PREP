@@ -109,9 +109,9 @@ export class BookView extends Schema.Class<BookView>("gmat-prep/api/BookView")({
   note: Schema.NullOr(Schema.String),
   pageCount: Schema.NullOr(Schema.Int),
   textPages: Schema.NullOr(Schema.Int),
-  // Pages with no text layer, and how they will be read; null when there
-  // are none.
+  // Pages with no text layer.
   scannedPages: Schema.Array(Schema.Int),
+  // How those pages will be read; null when there are none.
   scannedRoute: Schema.NullOr(PageRoute),
   preview: Schema.NullOr(CostPreview),
   // The latest confirmed Book Map version.
@@ -243,7 +243,15 @@ export class AddedBook extends Schema.Class<AddedBook>("gmat-prep/api/AddedBook"
   alreadyAdded: Schema.Boolean
 }) {}
 
-export const UploadProblem = Schema.Literals(["not-unlocked", "details", "not-a-pdf", "too-large", "empty"])
+export const UploadProblem = Schema.Literals([
+  "not-unlocked",
+  "details",
+  "not-a-pdf",
+  "too-large",
+  "empty",
+  "incomplete",
+  "disk-full"
+])
 export type UploadProblem = typeof UploadProblem.Type
 
 export class UploadRefused extends Schema.Class<UploadRefused>("gmat-prep/api/UploadRefused")({
