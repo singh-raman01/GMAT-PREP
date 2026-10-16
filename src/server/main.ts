@@ -96,7 +96,9 @@ const explainStartupFailure = (error: unknown): string | undefined => {
       return "The database file is damaged. Restore a snapshot from the data folder's snapshots folder."
     case "SqlError": {
       const messages = causeMessages(error)
-      return messages.some((message) => message.includes("not a database"))
+      // SQLite says "file is not a database" for a file that is something else,
+      // and "database disk image is malformed" for one with a damaged page.
+      return messages.some((message) => message.includes("not a database") || message.includes("malformed"))
         ? "The database file is damaged or is not a GMAT prep database. Restore a snapshot from the data folder's snapshots folder."
         : `The database could not be opened: ${messages.at(-1) ?? "unknown error"}`
     }
