@@ -16,7 +16,18 @@ export type BookId = typeof BookId.Type
 // mapping: the Book Map model reads the pages to propose a Book Map.
 // map-proposed: the proposal waits for the Curator to correct and confirm it.
 // mapped: a Book Map version is confirmed.
-export const BookStatus = Schema.Literals(["added", "unreadable", "previewed", "mapping", "map-proposed", "mapped"])
+// extracting: Questions are being extracted for the latest Book Map version.
+// extracted: they are in the Review Queue.
+export const BookStatus = Schema.Literals([
+  "added",
+  "unreadable",
+  "previewed",
+  "mapping",
+  "map-proposed",
+  "mapped",
+  "extracting",
+  "extracted"
+])
 export type BookStatus = typeof BookStatus.Type
 
 export const BookTitle = Schema.String.check(
@@ -96,6 +107,22 @@ export class CostPreview extends Schema.Class<CostPreview>("gmat-prep/api/CostPr
   projectedCost: Schema.Number
 }) {}
 
+// What happened to every item extracted from a Book.
+export class BookReport extends Schema.Class<BookReport>("gmat-prep/api/BookReport")({
+  // Items that became Questions or joined one, and what became of them.
+  extracted: Schema.Int,
+  // Joined a Question already in the Question Bank as another Source.
+  merged: Schema.Int,
+  held: Schema.Int,
+  published: Schema.Int,
+  withdrawn: Schema.Int,
+  // Retired items, which never become Questions.
+  skippedGeometry: Schema.Int,
+  skippedSentenceCorrection: Schema.Int,
+  // Pages extraction could not read, waiting in the Review Queue.
+  unreadPages: Schema.Array(Schema.Int)
+}) {}
+
 export class BookView extends Schema.Class<BookView>("gmat-prep/api/BookView")({
   id: BookId,
   title: Schema.String,
@@ -116,7 +143,11 @@ export class BookView extends Schema.Class<BookView>("gmat-prep/api/BookView")({
   preview: Schema.NullOr(CostPreview),
   // The latest confirmed Book Map version.
   mapVersion: Schema.NullOr(Schema.Int),
-  // The job reading the Book or proposing its Book Map.
+  // The spend cap of the full run, which its jobs share; null before it starts.
+  runCap: Schema.NullOr(Schema.Number),
+  report: Schema.NullOr(BookReport),
+  // The job working on the Book: reading it, proposing its Book Map or
+  // extracting its Questions.
   job: Schema.NullOr(JobView),
   createdAt: Schema.Number
 }) {}
@@ -183,6 +214,14 @@ export class BookNotReady extends Schema.TaggedError<BookNotReady>()(
   { httpApiStatus: 409 }
 ) {}
 
+// Confirming a Book Map starts extraction, which needs a spend cap: the full
+// run's, or one given with the map when the Curator mapped the Book by hand.
+export class RunCapNeeded extends Schema.TaggedError<RunCapNeeded>()(
+  "RunCapNeeded",
+  {},
+  { httpApiStatus: 409 }
+) {}
+
 // A Book Map that cannot be right, with every problem found.
 export class BookMapInvalid extends Schema.TaggedError<BookMapInvalid>()(
   "BookMapInvalid",
@@ -215,14 +254,16 @@ export class BooksApi extends HttpApiGroup.make("books")
       success: BookView,
       error: [BookNotFound, BookNotReady, LlmNotConfigured]
     }),
-    // Each confirmation makes a new Book Map version.
+    // Each confirmation makes a new Book Map version and starts extraction
+    // for it. spendCap sets the run's cap when the full run never started.
     HttpApiEndpoint.put("confirmMap", "/books/:id/map", {
       ...bookParams,
       payload: Schema.Struct({
-        ranges: Schema.Array(MapRangeInput).check(Schema.isMaxLength(MaxMapRanges))
+        ranges: Schema.Array(MapRangeInput).check(Schema.isMaxLength(MaxMapRanges)),
+        spendCap: Schema.optional(SpendCap)
       }),
       success: BookDetail,
-      error: [BookNotFound, BookNotReady, BookMapInvalid]
+      error: [BookNotFound, BookNotReady, BookMapInvalid, RunCapNeeded]
     })
   )
   .middleware(CuratorSession)

@@ -14,9 +14,10 @@ import {
 } from "../src/api/Books.ts"
 import { AppConfig } from "../src/server/AppConfig.ts"
 import { AllJobKinds } from "../src/server/jobs/kinds/index.ts"
-import { FakeLlm, type TransportRequest } from "../src/server/llm/LlmTransport.ts"
+import { FakeLlm } from "../src/server/llm/LlmTransport.ts"
 import { ApiKeyStore } from "../src/server/settings/ApiKeyStore.ts"
 import { Settings } from "../src/server/settings/Settings.ts"
+import { fakeBookModel, surveyedPages } from "./fakeBookModel.ts"
 import { makeBook } from "./fixtures/book.ts"
 import { advanceUntil, openInspectableBrowser, runWithWorker, runWithWorkers } from "./harness.ts"
 
@@ -81,35 +82,14 @@ const configure = (extractionReadsImages = false) =>
   })
 
 // The pages quoted in a survey request.
-const quotedPages = (request: TransportRequest) =>
-  [...(request.messages.at(-1)?.content ?? "").matchAll(/<page number="(\d+)">\n([\s\S]*?)\n<\/page>/g)].map((
-    match
-  ) => ({ number: Number(match[1]), text: match[2]! }))
+const quotedPages = surveyedPages
 
-// A stand-in for the Book Map model that reads the fixture book's headings.
-// Answer keys of Problem Solving name no chapter, as some books print them.
+// A stand-in for the Book Map and extraction models that reads the fixture
+// book's headings. Answer keys of Problem Solving name no chapter, as some
+// books print them.
 const surveyByHeading = Effect.gen(function*() {
   const fake = yield* FakeLlm
-  yield* fake.respondWith((request) => {
-    const pages = quotedPages(request).map(({ number, text }) => {
-      const heading = text.split("\n")[0] ?? ""
-      if (heading === "Problem Solving") {
-        return { page: number, role: "questions", group: "ps", chapter: "4.0 Problem Solving" }
-      }
-      if (heading === "Answer Key") return { page: number, role: "answer-key", group: "ps", chapter: null }
-      if (heading === "Answer Explanations") {
-        return { page: number, role: "explanations", group: "ps", chapter: "Problem Solving" }
-      }
-      if (heading === "Data Sufficiency Answer Key") {
-        return { page: number, role: "answer-key", group: "ds", chapter: "Data Sufficiency" }
-      }
-      if (heading === "Data Sufficiency") {
-        return { page: number, role: "questions", group: "ds", chapter: "Data Sufficiency" }
-      }
-      return { page: number, role: "other", group: null, chapter: null }
-    })
-    return { content: JSON.stringify({ pages }), tokensIn: 1000, tokensOut: 100 }
-  })
+  yield* fake.respondWith(fakeBookModel)
 })
 
 const detailOf = (api: Effect.Success<typeof curatorBrowser>["api"], id: BookId) => api.books.get({ params: { id } })
@@ -422,7 +402,9 @@ describe("The Book Map", () => {
           range.role === "questions" && range.group === "ds" ? { ...range, lastPage: 24, set: " Data  Sufficiency " } : range
         )
         const first = yield* curator.api.books.confirmMap({ params: { id }, payload: { ranges: fixed } })
-        expect(first.book).toMatchObject({ status: "mapped", mapVersion: 1 })
+        // Confirming starts extraction, within what is left of the run's cap.
+        expect(first.book).toMatchObject({ status: "extracting", mapVersion: 1, runCap: 1, job: { kind: "book-extract" } })
+        expect(first.book.job!.spendCap).toBeCloseTo(1 - 0.0028, 12)
         expect(first.confirmed?.version).toBe(1)
         expect(first.confirmed?.ranges.find((range) => range.group === "ds" && range.role === "questions")).toMatchObject({
           firstPage: 23,

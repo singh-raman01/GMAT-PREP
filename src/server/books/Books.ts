@@ -7,6 +7,7 @@ import {
   BookMapInvalid,
   BookNotFound,
   BookNotReady,
+  BookReport,
   type BookStatus,
   BookView,
   ConfirmedMap,
@@ -14,11 +15,22 @@ import {
   MapProposal,
   MapRange,
   type MapRangeInput,
-  type PageRoute
+  type PageRoute,
+  RunCapNeeded
 } from "../../api/Books.ts"
 import { JobId, LlmNotConfigured } from "../../api/Jobs.ts"
 import { Db } from "../db/Database.ts"
-import { bookMapProposals, bookMaps, bookPages, books, jobs } from "../db/schema.ts"
+import {
+  bookMapProposals,
+  bookMaps,
+  bookPages,
+  books,
+  bookSkips,
+  jobs,
+  questions,
+  reviewItems,
+  sources
+} from "../db/schema.ts"
 import { JobKinds } from "../jobs/JobKind.ts"
 import { JobStore, toJobView } from "../jobs/JobStore.ts"
 import { ApiKeyStore } from "../settings/ApiKeyStore.ts"
@@ -26,6 +38,7 @@ import { missingSettings, Settings, taskReadsImages } from "../settings/Settings
 import { BookFiles, type Received } from "./BookFiles.ts"
 import { mapProblems, tidyMap } from "../../api/bookMapRules.ts"
 import { BookIntake, SampleCap, scannedRouteFor } from "./intakeJob.ts"
+import { BookExtraction } from "./extractJob.ts"
 import { BookMapping, encodeRanges, PagesPerBatch } from "./mapJob.ts"
 
 // The Curator's Books: adding one, its cost preview and full run, and its
@@ -43,7 +56,17 @@ const decodePreview = Schema.decodeUnknownOption(Schema.fromJsonString(CostPrevi
 const decodeRanges = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(MapRange)))
 
 // Statuses from which a Book Map can be confirmed: the pages have been read.
-const Mappable: ReadonlySet<string> = new Set(["previewed", "mapping", "map-proposed", "mapped"])
+const Mappable: ReadonlySet<string> = new Set([
+  "previewed",
+  "mapping",
+  "map-proposed",
+  "mapped",
+  "extracting",
+  "extracted"
+])
+
+// The jobs of a Book's full run, which share its spend cap.
+const RunKinds = [BookMapping.kind, BookExtraction.kind]
 
 export class Books extends Context.Service<Books, {
   add(details: BookDetails, received: Received): Effect.Effect<AddedBook>
@@ -53,8 +76,9 @@ export class Books extends Context.Service<Books, {
   start(id: BookId, spendCap: number): Effect.Effect<BookView, BookNotFound | BookNotReady | LlmNotConfigured>
   confirmMap(
     id: BookId,
-    ranges: ReadonlyArray<MapRangeInput>
-  ): Effect.Effect<BookDetail, BookNotFound | BookNotReady | BookMapInvalid>
+    ranges: ReadonlyArray<MapRangeInput>,
+    spendCap: number | undefined
+  ): Effect.Effect<BookDetail, BookNotFound | BookNotReady | BookMapInvalid | RunCapNeeded>
   fileOf(id: BookId): Effect.Effect<{ readonly path: string; readonly title: string }, BookNotFound>
 }>()("gmat-prep/server/Books") {
   static readonly layer = Layer.effect(
@@ -81,6 +105,38 @@ export class Books extends Context.Service<Books, {
             .groupBy(bookMaps.bookId)
           const jobIds = rows.flatMap((row) => (row.jobId === null ? [] : [row.jobId]))
           const jobRows = jobIds.length === 0 ? [] : yield* db.select().from(jobs).where(inArray(jobs.id, jobIds))
+          const outcomes = yield* db.select({
+            bookId: sources.bookId,
+            merged: sources.merged,
+            status: questions.status,
+            items: count()
+          }).from(sources)
+            .innerJoin(questions, eq(questions.id, sources.questionId))
+            .where(inArray(sources.bookId, ids))
+            .groupBy(sources.bookId, sources.merged, questions.status)
+          const skips = yield* db.select({ bookId: bookSkips.bookId, reason: bookSkips.reason, items: count() })
+            .from(bookSkips).where(inArray(bookSkips.bookId, ids)).groupBy(bookSkips.bookId, bookSkips.reason)
+          const unread = yield* db.select({ bookId: reviewItems.bookId, page: reviewItems.page }).from(reviewItems)
+            .where(and(inArray(reviewItems.bookId, ids), isNull(reviewItems.questionId), eq(reviewItems.status, "open")))
+            .orderBy(reviewItems.page)
+          const reportOf = (row: BookRow) => {
+            if (row.status !== "extracting" && row.status !== "extracted") return null
+            const mine = outcomes.filter((outcome) => outcome.bookId === row.id)
+            const sum = (keep: (outcome: (typeof mine)[number]) => boolean) =>
+              mine.filter(keep).reduce((total, outcome) => total + outcome.items, 0)
+            const skipped = (reason: string) =>
+              skips.find((skip) => skip.bookId === row.id && skip.reason === reason)?.items ?? 0
+            return new BookReport({
+              extracted: sum(() => true),
+              merged: sum((outcome) => outcome.merged),
+              held: sum((outcome) => !outcome.merged && (outcome.status === "held" || outcome.status === "draft")),
+              published: sum((outcome) => !outcome.merged && outcome.status === "published"),
+              withdrawn: sum((outcome) => !outcome.merged && outcome.status === "withdrawn"),
+              skippedGeometry: skipped("geometry"),
+              skippedSentenceCorrection: skipped("sentence-correction"),
+              unreadPages: unread.flatMap((item) => (item.bookId === row.id && item.page !== null ? [item.page] : []))
+            })
+          }
           return rows.map((row) => {
             const job = jobRows.find((candidate) => candidate.id === row.jobId)
             return new BookView({
@@ -98,6 +154,8 @@ export class Books extends Context.Service<Books, {
               scannedRoute: row.scannedRoute as PageRoute | null,
               preview: row.preview === null ? null : Option.getOrNull(decodePreview(row.preview)),
               mapVersion: versions.find((version) => version.bookId === row.id)?.version ?? null,
+              runCap: row.runCap,
+              report: reportOf(row),
               job: job === undefined ? null : toJobView(job, kinds),
               createdAt: row.createdAt
             })
@@ -238,6 +296,7 @@ export class Books extends Context.Service<Books, {
               return yield* update(row.id, {
                 status: "mapping",
                 jobId: next.id,
+                runCap: spendCap,
                 scannedRoute: row.scannedRoute === null ? null : route
               })
             })
@@ -245,26 +304,46 @@ export class Books extends Context.Service<Books, {
           return yield* viewOf(updated)
         }).pipe(oneAtATime)
 
-      const confirmMap = (id: BookId, ranges: ReadonlyArray<MapRangeInput>) =>
+      // What the full run's jobs have spent so far.
+      const runSpent = (bookId: string) =>
+        db.select({ spent: sql<number>`coalesce(sum(${jobs.spend}), 0)` }).from(jobs)
+          .where(and(inArray(jobs.kind, RunKinds), sql`json_extract(${jobs.params}, '$.bookId') = ${bookId}`))
+          .pipe(Effect.map((rows) => rows[0]?.spent ?? 0), Effect.orDie)
+
+      const confirmMap = (id: BookId, ranges: ReadonlyArray<MapRangeInput>, spendCap: number | undefined) =>
         Effect.gen(function*() {
           const row = yield* rowOf(id)
           if (!Mappable.has(row.status) || row.pageCount === null) {
             return yield* new BookNotReady({ status: row.status as BookStatus })
           }
+          const runCap = row.runCap ?? spendCap
+          if (runCap === undefined) return yield* new RunCapNeeded()
           const problems = mapProblems(ranges, row.pageCount)
           if (problems.length > 0) return yield* new BookMapInvalid({ problems })
           const now = yield* Clock.currentTimeMillis
+          // Extraction for an older version stops; the new run reuses its pages.
+          const current = yield* jobOf(row)
+          if (
+            current !== undefined && current.kind === BookExtraction.kind &&
+            (current.status === "queued" || current.status === "running" || current.status === "paused" ||
+              current.status === "failed")
+          ) {
+            yield* store.cancel(JobId.make(current.id)).pipe(Effect.ignore)
+          }
+          const left = Math.max(0, runCap - (yield* runSpent(row.id)))
           yield* db.transaction(() =>
             Effect.gen(function*() {
               const [latest] = yield* db.select({ version: max(bookMaps.version) }).from(bookMaps)
                 .where(eq(bookMaps.bookId, row.id))
+              const version = (latest?.version ?? 0) + 1
               yield* db.insert(bookMaps).values({
                 bookId: row.id,
-                version: (latest?.version ?? 0) + 1,
+                version,
                 ranges: encodeRanges(tidyMap(ranges).map((range) => new MapRange(range))),
                 confirmedAt: now
               })
-              yield* update(row.id, { status: "mapped" })
+              const job = yield* store.create(BookExtraction, { bookId: row.id, title: row.title, mapVersion: version }, left)
+              yield* update(row.id, { status: "extracting", jobId: job.id, runCap })
             })
           ).pipe(Effect.orDie)
           return yield* get(id)

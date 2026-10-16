@@ -58,5 +58,9 @@ export const bookStatusText = (book: BookView): string => {
       return "Book Map proposed; waiting for you to check it"
     case "mapped":
       return `Book Map version ${book.mapVersion ?? 1} confirmed`
+    case "extracting":
+      return stalled("Extraction") ?? "Extracting the Questions into the Review Queue"
+    case "extracted":
+      return "Questions extracted; they wait in the Review Queue"
   }
 }
