@@ -25,6 +25,9 @@ interface Props {
 
 const tokens = (count: number) => count.toLocaleString("en-US")
 
+const unitName = (unit: "page" | "question", count: number) =>
+  unit === "page" ? (count === 1 ? "page" : "pages") : (count === 1 ? "Question" : "Questions")
+
 export const BookPage = ({ id, notice, onLocked, onStopped }: Props) => {
   const heading = useFocusOnMount<HTMLHeadingElement>()
   const [detail, setDetail] = useState<BookDetail>()
@@ -141,7 +144,8 @@ const Report = ({ report }: { readonly report: BookReport }) => {
   const id = useId()
   const rows: ReadonlyArray<readonly [string, number, string]> = [
     ["Extracted", report.extracted, "items that became Questions or joined one"],
-    ["Waiting in the Review Queue", report.held, ""],
+    ["Being checked", report.checking, "enriched and put through the Publish Gate"],
+    ["Waiting in the Review Queue", report.held, "a check held them"],
     ["Published", report.published, ""],
     ["Withdrawn", report.withdrawn, ""],
     ["Already in the Question Bank", report.merged, "joined that Question as another Source"],
@@ -299,15 +303,17 @@ const Preview = (
             <dt>{step.name}</dt>
             <dd>
               {step.sampledPages === 0
-                ? "No sampled page needed it."
-                : `${step.sampledPages} sampled ${step.sampledPages === 1 ? "page" : "pages"}: ${
+                ? step.unit === "page"
+                  ? "No sampled page needed it."
+                  : "Not sampled: no sampled page held Questions, or Settings has no models for tagging, solving and Approaches."
+                : `${step.sampledPages} sampled ${unitName(step.unit, step.sampledPages)}: ${
                   tokens(step.sampleTokens)
                 } tokens, ${formatDollars(step.sampleCost)}.`}{" "}
               {step.projectedPages === 0
-                ? "Nothing more to read."
-                : `The full run reads about ${step.projectedPages} ${step.projectedPages === 1 ? "page" : "pages"}: ${
-                  tokens(step.projectedTokens)
-                } tokens, ${formatDollars(step.projectedCost)}.`}
+                ? "Nothing more to do."
+                : `The full run ${step.unit === "page" ? "reads" : "enriches"} about ${step.projectedPages} ${
+                  unitName(step.unit, step.projectedPages)
+                }: ${tokens(step.projectedTokens)} tokens, ${formatDollars(step.projectedCost)}.`}
             </dd>
           </div>
         ))}

@@ -1,6 +1,7 @@
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
 import { CuratorSession } from "./Curator.ts"
+import { TaxonomyView } from "./Taxonomy.ts"
 
 // The Question Bank as the Curator watches it.
 
@@ -19,7 +20,9 @@ export class BankApi extends HttpApiGroup.make("bank")
   .add(
     // Skills that fit the Question Types the Bank holds and have fewer than
     // ThinSkillThreshold Questions; empty until a Book has been extracted.
-    HttpApiEndpoint.get("thinSkills", "/bank/thin-skills", { success: Schema.Array(SkillCount) })
+    HttpApiEndpoint.get("thinSkills", "/bank/thin-skills", { success: Schema.Array(SkillCount) }),
+    // The Taxonomy, for the Curator's screens, which have no Profile open.
+    HttpApiEndpoint.get("taxonomy", "/bank/taxonomy", { success: TaxonomyView })
   )
   .middleware(CuratorSession)
   .prefix("/api/curator")

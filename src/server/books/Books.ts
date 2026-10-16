@@ -149,7 +149,8 @@ export class Books extends Context.Service<Books, {
             return new BookReport({
               extracted: sum(() => true),
               merged: sum((outcome) => outcome.merged),
-              held: sum((outcome) => !outcome.merged && (outcome.status === "held" || outcome.status === "draft")),
+              held: sum((outcome) => !outcome.merged && outcome.status === "held"),
+              checking: sum((outcome) => !outcome.merged && outcome.status === "draft"),
               published: sum((outcome) => !outcome.merged && outcome.status === "published"),
               withdrawn: sum((outcome) => !outcome.merged && outcome.status === "withdrawn"),
               skippedGeometry: skipped("geometry"),

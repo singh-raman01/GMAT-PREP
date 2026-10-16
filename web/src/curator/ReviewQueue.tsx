@@ -1,12 +1,16 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react"
+import { type FormEvent, useCallback, useEffect, useId, useRef, useState } from "react"
 import { bookFilePath } from "../../../src/api/Books.ts"
 import {
+  type ApproachView,
+  type OptionNoteView,
   PublishableReasons,
   type QuestionView,
   type ReasonCode,
   type ReviewItemView,
   type ReviewReason
 } from "../../../src/api/Review.ts"
+import type { TaxonomyView } from "../../../src/api/Taxonomy.ts"
+import { bandOf } from "../../../src/api/taxonomyRules.ts"
 import { call } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
 import { RichInline, RichText } from "../RichText.tsx"
@@ -38,6 +42,22 @@ const RepeatCodes: ReadonlySet<ReasonCode> = new Set(["near-match", "same-text-o
 
 type Action = "publish" | "withdraw" | "keepAsVariant" | "merge" | "dismiss"
 
+// Taxonomy names by id, for Skills, Strategies, Mistake Types and Trap
+// Patterns; an id the Taxonomy does not hold shows as itself.
+type Names = (id: string) => string
+
+const namesOf = (taxonomy: TaxonomyView | undefined): Names => {
+  if (taxonomy === undefined) return (id) => id
+  const names = new Map<string, string>()
+  for (const mistakeType of taxonomy.mistakeTypes) names.set(mistakeType.id, mistakeType.name)
+  for (const section of taxonomy.sections) {
+    for (const topic of section.topics) for (const skill of topic.skills) names.set(skill.id, skill.name)
+    for (const strategy of section.strategies) names.set(strategy.id, strategy.name)
+    for (const trap of section.trapPatterns) names.set(trap.id, trap.name)
+  }
+  return (id) => names.get(id) ?? id
+}
+
 // What an item is, in a few words: its first Source, or its page.
 const itemName = (item: ReviewItemView) => {
   if (item.page !== null) return `${item.page.bookTitle}, page ${item.page.number}`
@@ -52,9 +72,13 @@ const Done: Record<string, string> = {
   dismissed: "Dismissed"
 }
 
+// Jobs whose progress adds or changes items.
+const QueueJobs: ReadonlySet<string> = new Set(["book-extract", "question-refresh"])
+
 export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
   const heading = useFocusOnMount<HTMLHeadingElement>()
   const [items, setItems] = useState<ReadonlyArray<ReviewItemView>>()
+  const [taxonomy, setTaxonomy] = useState<TaxonomyView>()
   const [announcement, setAnnouncement] = useState("")
   const [since, setSince] = useState<"now">()
   // The item whose heading takes focus next, after the one acted on goes.
@@ -77,16 +101,18 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
   useEffect(() => {
     mounted.current = true
     void load()
+    void call((client) => client.bank.taxonomy()).then((result) => {
+      if (mounted.current && result._tag === "Success") setTaxonomy(result.success)
+    })
     return () => {
       mounted.current = false
     }
   }, [load])
 
-  // Extraction adds items as it links each question set.
   useJobEvents(
     since,
     (job) => {
-      if (job.kind === "book-extract") void load()
+      if (QueueJobs.has(job.kind)) void load()
     },
     () => void afterStreamClosed(load, onLocked, () => mounted.current)
   )
@@ -98,19 +124,22 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
     setFocusItem(undefined)
   }, [focusItem, heading])
 
+  // Takes an item off the list, moving focus to the next one.
+  const leave = (gone: string) => {
+    if (items !== undefined) {
+      const index = items.findIndex((each) => each.id === gone)
+      setFocusItem((items[index + 1] ?? items[index - 1])?.id ?? "")
+    }
+    setItems((current) => current?.filter((each) => each.id !== gone))
+  }
+
   const act = async (item: ReviewItemView, action: Action): Promise<ReadonlyArray<ReviewReason> | string | undefined> => {
     const params = { params: { id: item.id } }
     const result = await call((client) => client.review[action](params))
     if (result._tag === "Success") {
       const next = result.success
-      if (next.status !== "open" && items !== undefined) {
-        const index = items.findIndex((each) => each.id === next.id)
-        const after = items[index + 1] ?? items[index - 1]
-        setFocusItem(after?.id ?? "")
-      }
-      setItems((current) =>
-        current?.flatMap((each) => (each.id !== next.id ? [each] : next.status === "open" ? [next] : []))
-      )
+      if (next.status === "open") setItems((current) => current?.map((each) => (each.id === next.id ? next : each)))
+      else leave(next.id)
       // Each announcement names its item, so two in a row are both read out.
       setAnnouncement(
         next.status === "open"
@@ -132,6 +161,29 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
     }
   }
 
+  const changeKey = async (item: ReviewItemView, key: string, reason: string): Promise<string | undefined> => {
+    const result = await call((client) =>
+      client.review.overrideKey({ params: { id: item.id }, payload: { key: key as "A", reason } })
+    )
+    if (result._tag === "Success") {
+      leave(item.id)
+      setAnnouncement(`${itemName(item)}: the key is now ${key}. It is being checked again and comes back if it is held.`)
+      return undefined
+    }
+    switch (result.failure._tag) {
+      case "KeyNotAnOption":
+        return `Choose one of its answer choices: ${result.failure.options.join(", ")}.`
+      case "ReviewItemNotOpen":
+      case "ReviewItemNotFound":
+        void load()
+        return "This item changed in the meantime; the queue was read again."
+      default:
+        handle(result.failure)
+        return undefined
+    }
+  }
+
+  const names = namesOf(taxonomy)
   const questions = items?.filter((item) => item.question !== null).length ?? 0
   const pages = items?.filter((item) => item.page !== null).length ?? 0
 
@@ -139,14 +191,14 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
     <>
       <h1 ref={heading} tabIndex={-1}>Review Queue</h1>
       <p className="lede">
-        Questions from your books wait here until you publish them, each with every problem found. Publishing puts a
-        Question in the Question Bank for every Profile.
+        Questions that pass every check are published on their own. The rest wait here, each with every reason, until
+        you publish, change the key of, or withdraw them.
       </p>
       <p className="visually-hidden" role="status">{announcement}</p>
       {items === undefined
         ? <p className="quiet" aria-busy="true">Loading the Review Queue</p>
         : items.length === 0
-        ? <p className="empty">Nothing waits for you. Questions arrive here as books are extracted.</p>
+        ? <p className="empty">Nothing waits for you. Questions a check holds arrive here as books are extracted.</p>
         : (
           <>
             <p className="queue-count">
@@ -156,7 +208,9 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
               ].filter((part) => part !== undefined).join(" and ")} {questions + pages === 1 ? "waits" : "wait"} for you.
             </p>
             <ul className="review-items">
-              {items.map((item) => <ReviewItem key={item.id} item={item} onAct={act} />)}
+              {items.map((item) => (
+                <ReviewItem key={item.id} item={item} names={names} onAct={act} onChangeKey={changeKey} />
+              ))}
             </ul>
           </>
         )}
@@ -168,34 +222,167 @@ const sourceText = (question: QuestionView) =>
   question.sources.map((source) => `${source.bookTitle}, ${source.set}, question ${source.number}, page ${source.page}`)
     .join("; ")
 
-const QuestionBody = ({ question }: { readonly question: QuestionView }) => (
+const OptionNote = ({ note, names }: { readonly note: OptionNoteView; readonly names: Names }) => (
+  <span className="option-note">
+    {note.trapNote}{" "}
+    <span className="note-tags">
+      {names(note.mistakeType)}
+      {note.trapPattern !== null && `, ${names(note.trapPattern)}`}
+    </span>
+  </span>
+)
+
+const QuestionBody = ({ question, names }: { readonly question: QuestionView; readonly names: Names }) => (
   <div className="question-body">
     <RichText source={question.stem} />
     <ol className="choices">
-      {question.options.map((option) => (
-        <li key={option.label} className={option.label === question.key ? "choice is-key" : "choice"}>
-          <span className="choice-letter">
-            {option.label === question.key ? <span className="mark">{option.label}</span> : option.label}
-          </span>
-          <span className="choice-text">
-            <RichInline source={option.text} />
-          </span>
-          {option.label === question.key && <span className="visually-hidden">(the key)</span>}
-        </li>
-      ))}
+      {question.options.map((option) => {
+        const note = question.optionNotes.find((each) => each.label === option.label)
+        return (
+          <li key={option.label} className={option.label === question.key ? "choice is-key" : "choice"}>
+            <span className="choice-letter">
+              {option.label === question.key ? <span className="mark">{option.label}</span> : option.label}
+            </span>
+            <span className="choice-text">
+              <RichInline source={option.text} />
+              {option.label === question.key && <span className="visually-hidden">(the key)</span>}
+              {note !== undefined && <OptionNote note={note} names={names} />}
+            </span>
+          </li>
+        )
+      })}
     </ol>
   </div>
 )
 
+const seconds = (total: number) => (total < 60 ? `${total} seconds` : `${Math.round(total / 6) / 10} minutes`)
+
+const Approach = ({ approach, names }: { readonly approach: ApproachView; readonly names: Names }) => (
+  <li className="approach">
+    <p className="approach-head">
+      {names(approach.strategy)}, {approach.author === "book" ? "the Book's explanation" : "written by the model"}
+      {approach.answer !== null && `, reaching ${approach.answer}`}. About {seconds(approach.expectedSeconds)}.
+    </p>
+    <p className="approach-when">Valid when {approach.validWhen.charAt(0).toLowerCase() + approach.validWhen.slice(1)}</p>
+    <RichText source={approach.steps} className="approach-steps" />
+  </li>
+)
+
+// What enrichment gave the Question, for checking it.
+const Enrichment = ({ question, names }: { readonly question: QuestionView; readonly names: Names }) => {
+  if (question.primarySkill === null && question.solverAnswers.length === 0) return null
+  const skills = [question.primarySkill, ...question.secondarySkills].filter((skill): skill is string => skill !== null)
+  return (
+    <div className="enrichment">
+      <dl className="facts">
+        {skills.length > 0 && (
+          <div>
+            <dt>Skills</dt>
+            <dd>{skills.map(names).join(", ")}</dd>
+          </div>
+        )}
+        {question.difficultyEstimate !== null && (
+          <div>
+            <dt>Difficulty</dt>
+            <dd>
+              Estimated {question.difficultyEstimate.toFixed(1)}, {bandOf(question.difficultyEstimate)}
+              {question.bookLabel !== null && `; the Book says ${question.bookLabel}`}
+            </dd>
+          </div>
+        )}
+        {question.solverAnswers.length > 0 && (
+          <div>
+            <dt>Independent solves</dt>
+            <dd>{question.solverAnswers.join(", ")}</dd>
+          </div>
+        )}
+      </dl>
+      {question.approaches.length > 0 && (
+        <details className="approaches">
+          <summary>
+            {question.approaches.length === 1 ? "One Approach" : `${question.approaches.length} Approaches`}
+          </summary>
+          <ol>
+            {question.approaches.map((approach, index) => <Approach key={index} approach={approach} names={names} />)}
+          </ol>
+        </details>
+      )}
+    </div>
+  )
+}
+
+// Replacing the key, with the reason kept beside it.
+const KeyChange = (
+  { question, about, onChange, onCancel }: {
+    readonly question: QuestionView
+    readonly about: { readonly "aria-describedby": string }
+    readonly onChange: (key: string, reason: string) => Promise<string | undefined>
+    readonly onCancel: () => void
+  }
+) => {
+  const ids = { choices: useId(), reason: useId() }
+  const [key, setKey] = useState<string>()
+  const [reason, setReason] = useState("")
+  const [problem, setProblem] = useState<string>()
+  const busy = useRef(false)
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (key === undefined) return setProblem("Choose the right answer.")
+    if (reason.trim().length < 3) return setProblem("Say why the key changes, such as the Book's errata.")
+    if (busy.current) return
+    busy.current = true
+    const outcome = await onChange(key, reason.trim())
+    busy.current = false
+    setProblem(outcome)
+  }
+  return (
+    <form className="key-change" noValidate onSubmit={(event) => void submit(event)}>
+      <fieldset>
+        <legend>The right answer</legend>
+        <div className="key-choices">
+          {question.options.map((option) => (
+            <label key={option.label} className="key-choice">
+              <input
+                type="radio"
+                name={ids.choices}
+                value={option.label}
+                checked={key === option.label}
+                onChange={() => setKey(option.label)}
+              />
+              {option.label}
+              {option.label === question.key && <span className="quiet"> (now)</span>}
+            </label>
+          ))}
+        </div>
+      </fieldset>
+      <div className="field">
+        <label htmlFor={ids.reason}>Why</label>
+        <textarea id={ids.reason} rows={2} maxLength={500} value={reason} onChange={(event) => setReason(event.target.value)} />
+      </div>
+      <p className="hint">
+        Its Approaches and wrong-choice notes are written again for the new key, and it goes through every check again.
+      </p>
+      <div className="actions">
+        <button type="submit" className="button" {...about}>Change the key</button>
+        <button type="button" className="button button-quiet" onClick={onCancel}>Cancel</button>
+      </div>
+      {problem !== undefined && <p className="problem" role="alert">{problem}</p>}
+    </form>
+  )
+}
+
 const ReviewItem = (
-  { item, onAct }: {
+  { item, names, onAct, onChangeKey }: {
     readonly item: ReviewItemView
+    readonly names: Names
     readonly onAct: (item: ReviewItemView, action: Action) => Promise<ReadonlyArray<ReviewReason> | string | undefined>
+    readonly onChangeKey: (item: ReviewItemView, key: string, reason: string) => Promise<string | undefined>
   }
 ) => {
   const headingId = useId()
   const [problem, setProblem] = useState<string>()
   const [checkingMerge, setCheckingMerge] = useState(false)
+  const [changingKey, setChangingKey] = useState(false)
   const busy = useRef(false)
   const run = async (action: Action) => {
     if (busy.current) return
@@ -241,6 +428,7 @@ const ReviewItem = (
   const first = question.sources[0]
   const canPublish = item.reasons.every((reason) => PublishableReasons.has(reason.code))
   const repeats = item.related !== null && item.reasons.some((reason) => RepeatCodes.has(reason.code))
+  const override = question.keyOverrides.at(-1)
   return (
     <li className="review-item">
       {title}
@@ -258,8 +446,14 @@ const ReviewItem = (
       {item.reasons.length === 0
         ? <p className="review-clear">No problems found. Check it against the book, then publish it.</p>
         : <Reasons reasons={item.reasons} />}
-      <QuestionBody question={question} />
+      <QuestionBody question={question} names={names} />
       {question.key === null && <p className="quiet">The Book gives no key for it.</p>}
+      {override !== undefined && (
+        <p className="quiet">
+          You changed the key from {override.previousKey ?? "none"} to {override.newKey}: {override.reason}
+        </p>
+      )}
+      <Enrichment question={question} names={names} />
       {question.explanation !== null && (
         <details className="explanation">
           <summary>The Book's explanation</summary>
@@ -269,7 +463,7 @@ const ReviewItem = (
       {item.related !== null && (
         <div className="related">
           <p className="related-label">The other Question, from {sourceText(item.related)}</p>
-          <QuestionBody question={item.related} />
+          <QuestionBody question={item.related} names={names} />
         </div>
       )}
       <div className="actions">
@@ -292,6 +486,17 @@ const ReviewItem = (
             </button>
           </>
         )}
+        {question.options.length > 0 && (
+          <button
+            type="button"
+            className="button button-quiet"
+            {...about}
+            aria-expanded={changingKey}
+            onClick={() => setChangingKey(true)}
+          >
+            Change the key
+          </button>
+        )}
         <button type="button" className="button button-quiet" {...about} onClick={() => void run("withdraw")}>
           Withdraw
         </button>
@@ -308,6 +513,14 @@ const ReviewItem = (
             </button>
           </div>
         </div>
+      )}
+      {changingKey && (
+        <KeyChange
+          question={question}
+          about={about}
+          onChange={(key, reason) => onChangeKey(item, key, reason)}
+          onCancel={() => setChangingKey(false)}
+        />
       )}
       {problem !== undefined && <p className="problem" role="alert">{problem}</p>}
     </li>

@@ -1223,6 +1223,84 @@ input[type="file"]::file-selector-button {
   line-height: 1.35;
 }
 
+.option-note {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--pencil);
+  font-size: var(--step--1);
+}
+
+.note-tags {
+  font-weight: 700;
+}
+
+.enrichment {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.enrichment .facts {
+  margin: 0;
+}
+
+.approaches summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.approaches ol {
+  display: grid;
+  gap: 0.9rem;
+  margin: 0.6rem 0 0;
+  padding-left: 1.2rem;
+  max-width: 68ch;
+}
+
+.approach-head {
+  font-weight: 700;
+}
+
+.approach-when {
+  color: var(--pencil);
+}
+
+.key-change {
+  display: grid;
+  gap: 0.75rem;
+  max-width: 62ch;
+  padding: 0.75rem 1rem;
+  border-left: 4px solid var(--highlight);
+}
+
+.key-change fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.key-change legend {
+  font-weight: 700;
+}
+
+.key-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  margin-top: 0.4rem;
+}
+
+.key-choice {
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: center;
+  font-weight: 700;
+}
+
+.key-change textarea {
+  width: 100%;
+  font: inherit;
+}
+
 .merge-check {
   display: grid;
   gap: 0.6rem;
@@ -1423,4 +1501,67 @@ input[type="file"]::file-selector-button {
 
 .add-book .add-form {
   margin-top: 1rem;
+}
+
+/* The golden set: Questions to approve, each with its Skills. */
+
+.golden-items {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rule);
+  max-width: 52rem;
+}
+
+.golden-item {
+  display: grid;
+  gap: 0.8rem;
+  padding: 1.5rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.golden-item > * {
+  min-width: 0;
+}
+
+.golden-tag {
+  margin-left: 0.6rem;
+  vertical-align: middle;
+}
+
+.golden-tags {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.75rem;
+}
+
+.golden-tags select {
+  width: 100%;
+}
+
+.golden-misses {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+  max-width: 68ch;
+}
+
+.thin-skills {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-width: 40rem;
+}
+
+.thin-skills li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--rule);
 }

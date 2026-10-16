@@ -130,7 +130,9 @@ export class BookReport extends Schema.Class<BookReport>("gmat-prep/api/BookRepo
   extracted: Schema.Int,
   // Joined a Question already in the Question Bank as another Source.
   merged: Schema.Int,
+  // Waiting in the Review Queue, and still being enriched and checked.
   held: Schema.Int,
+  checking: Schema.Int,
   published: Schema.Int,
   withdrawn: Schema.Int,
   // Retired items, which never become Questions.

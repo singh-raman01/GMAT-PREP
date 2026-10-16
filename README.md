@@ -38,7 +38,24 @@ Under Books, choose the book's PDF (up to 500 MB), give its title and edition, a
 
 ## Review the questions
 
-Extracted questions wait in the Review Queue, each with every problem found: answer choices that are not A to E, no key, a key that disagrees with the explanation, another book giving another key, math that does not render, a figure the text does not hold, or a near match or the same text with another key to a question already in the bank. A question whose only reason is a changed key can be published; one with any other reason can be withdrawn, or, for a near match, kept as a Variant or merged into the other question. Fixing the Book Map checks each question again, and questions it no longer covers leave the bank. The book's page shows what became of every question it held.
+Each extracted question is enriched: tagged with its Skills from the Taxonomy, given a Difficulty estimate, solved three times on its own, and given Approaches and a note for each wrong choice. Questions that pass every check are published on their own.
+
+The rest wait in the Review Queue, each with every reason:
+
+- answer choices that are not A to E, or text whose math does not render;
+- no key, a key that disagrees with the explanation, or another book giving another key;
+- a figure the text does not hold;
+- a near match, or the same text with another key, to a question already in the bank;
+- tags that do not fit the Taxonomy;
+- a solve that disagrees with the key, or an Approach that misses it;
+- a missing note on a wrong choice;
+- a book's difficulty label two bands from the estimate.
+
+You can publish past a solver's doubt or a difficulty mismatch, change the key with a reason (the question's Approaches and notes are written again and it is checked again), keep a near match as a Variant or merge it into the other question, or withdraw it. Fixing the Book Map checks each question again, and questions it no longer covers leave the bank. The book's page shows what became of every question it held.
+
+A quarter of each book's questions is held back for Mocks, spread over question types and difficulty bands. On the Books screen, Skills with fewer than 15 questions are listed for merging.
+
+Under Golden set, approve the first book's questions with their Skills, up to a hundred. Checking the golden set reads their pages again and tags them again with the current models. It passes when text, answer choices and keys are all exact and the Skills match yours on 90% or more. Run it after changing a model or prompt.
 
 A forgotten passphrase is cleared on the computer the app runs on, with the app running or not:
 

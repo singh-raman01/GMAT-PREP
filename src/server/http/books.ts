@@ -17,6 +17,7 @@ import { BookFiles } from "../books/BookFiles.ts"
 import { Books } from "../books/Books.ts"
 import { Curator } from "../curator/Curator.ts"
 import { Bank } from "../review/Bank.ts"
+import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { Golden } from "../review/Golden.ts"
 import { ReviewQueue } from "../review/ReviewQueue.ts"
 
@@ -40,7 +41,11 @@ export const BankHandlers = HttpApiBuilder.group(
   "bank",
   Effect.fn(function*(handlers) {
     const bank = yield* Bank
-    return handlers.handleAll({ thinSkills: () => bank.thinSkills })
+    const taxonomy = yield* Taxonomy
+    return handlers.handleAll({
+      thinSkills: () => bank.thinSkills,
+      taxonomy: () => Effect.succeed(taxonomy.view)
+    })
   })
 )
 

@@ -1,4 +1,5 @@
 import { type ChangeEvent, type FormEvent, useCallback, useEffect, useId, useRef, useState } from "react"
+import { type SkillCount, ThinSkillThreshold } from "../../../src/api/Bank.ts"
 import type { BookView } from "../../../src/api/Books.ts"
 import { call } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
@@ -18,6 +19,7 @@ interface Props {
 export const CuratorBooks = ({ onLocked, onStopped, onNotice }: Props) => {
   const heading = useFocusOnMount<HTMLHeadingElement>()
   const [books, setBooks] = useState<ReadonlyArray<BookView>>()
+  const [thinSkills, setThinSkills] = useState<ReadonlyArray<SkillCount>>([])
   const mounted = useRef(true)
 
   const handle = useCallback(
@@ -34,6 +36,8 @@ export const CuratorBooks = ({ onLocked, onStopped, onNotice }: Props) => {
     if (!mounted.current) return
     if (result._tag === "Failure") return handle(result.failure)
     setBooks(result.success)
+    const thin = await call((client) => client.bank.thinSkills())
+    if (mounted.current && thin._tag === "Success") setThinSkills(thin.success)
     if (first) {
       const revisions = result.success.flatMap((book) => (book.job === null ? [] : [book.job.revision]))
       setSince(revisions.length === 0 ? "now" : Math.max(...revisions))
@@ -95,6 +99,23 @@ export const CuratorBooks = ({ onLocked, onStopped, onNotice }: Props) => {
             </ul>
           )}
       </section>
+      {thinSkills.length > 0 && (
+        <section className="group" aria-labelledby="thin-skills-title">
+          <h2 id="thin-skills-title">Skills with few Questions</h2>
+          <p className="group-about">
+            These Skills have fewer than {ThinSkillThreshold} published Questions. Merge each into a related Skill, or
+            add books that cover it.
+          </p>
+          <ul className="thin-skills">
+            {thinSkills.map((skill) => (
+              <li key={skill.id}>
+                <span>{skill.name}</span>
+                <span>{skill.questions} {skill.questions === 1 ? "Question" : "Questions"}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
     </>
   )
 }
