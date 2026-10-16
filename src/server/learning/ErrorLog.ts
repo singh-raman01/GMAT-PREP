@@ -11,13 +11,15 @@ import {
   type ErrorReason,
   type ErrorStatus,
   HistoryItem,
+  LadderStepView,
+  LadderView,
   MistakeTypeInvalid
 } from "../../api/ErrorLog.ts"
 import { MistakesView, Named, ResponseView, ServedView, SessionId } from "../../api/Practice.ts"
 import { QuestionId } from "../../api/Review.ts"
 import { studyDayOf } from "../../api/studyDay.ts"
 import { Db } from "../db/Database.ts"
-import { mistakeLabels, profiles, questions, responses, servedQuestions, sessions } from "../db/schema.ts"
+import { mistakeLabels, profiles, questions, responses, retrySkips, servedQuestions, sessions } from "../db/schema.ts"
 import { debriefOf, namesOf, practiceQuestion, type StoredQuestion, storedQuestions } from "../practice/content.ts"
 import { bookmarkedBy, isCorrect, mergeTargets } from "../practice/history.ts"
 import { ratedAmong } from "../ratings/rated.ts"
@@ -25,7 +27,10 @@ import { decodeConfig } from "../sections/config.ts"
 import { Settings } from "../settings/Settings.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { labelsOf, missedPartView, questionFacts, responseFact } from "./facts.ts"
+import type { Step } from "./ladder.ts"
+import { type EntryLadder, laddersOf } from "./ladders.ts"
 import { type Miss, missesOf, type SessionFact } from "./misses.ts"
+import { retryItemsOf } from "./retryConfig.ts"
 
 // The Error Log service (docs/design.md, "Learning loop"): entries worked
 // out from the facts on every read, with the Learner's Mistake Types kept
@@ -37,7 +42,19 @@ const dayNumber = (day: string) => Date.parse(`${day}T00:00:00Z`) / DayMs
 // Slow and guessed entries carry these in place of a Mistake Type, so the
 // Mistake Type filter can pick them out too.
 const ReasonNames: Readonly<Record<"slow" | "guessed", string>> = { slow: "Slow", guessed: "Guessed" }
-const StatusNames: Readonly<Record<ErrorStatus, string>> = { open: "Open", withdrawn: "Withdrawn" }
+const StatusNames: Readonly<Record<ErrorStatus, string>> = { open: "Open", resolved: "Resolved", withdrawn: "Withdrawn" }
+
+// A Study Day as a date.
+const dayText = (day: number) => new Date(day * DayMs).toISOString().slice(0, 10)
+
+const ladderView = (found: EntryLadder | undefined) =>
+  found === undefined ? null : new LadderView({
+    step: found.ladder.step,
+    dueOn: found.ladder.dueDay === null ? null : dayText(found.ladder.dueDay),
+    steps: found.ladder.history.map((step) =>
+      new LadderStepView({ step: step.step, on: dayText(step.day), outcome: step.outcome, note: step.note ?? null })
+    )
+  })
 
 interface Entry {
   readonly view: ErrorLogEntry
@@ -45,6 +62,20 @@ interface Entry {
   readonly misses: ReadonlyArray<Miss>
   // The Questions whose Responses count for it: itself and those merged into it.
   readonly members: ReadonlyArray<string>
+  readonly ladder: EntryLadder | undefined
+}
+
+// What the Retries service reads: each entry's ladder with its Question,
+// today's Study Day, and a retry set not finished yet.
+export interface RetryState {
+  readonly today: number
+  readonly entries: ReadonlyArray<{
+    readonly view: ErrorLogEntry
+    readonly ladder: EntryLadder
+    readonly question: StoredQuestion
+    readonly secondarySkills: ReadonlyArray<string>
+  }>
+  readonly running: string | undefined
 }
 
 export class ErrorLog extends Context.Service<ErrorLog, {
@@ -55,6 +86,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
     questionId: string,
     change: { readonly responseId: string; readonly part: number; readonly mistakeType: string }
   ): Effect.Effect<ErrorLogEntry, ErrorLogEntryNotFound | MistakeTypeInvalid>
+  retryState(profileId: string): Effect.Effect<RetryState>
 }>()("gmat-prep/server/ErrorLog") {
   static readonly layer = Layer.effect(
     ErrorLog,
@@ -117,7 +149,32 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             questions: questionFacts(stored, stimulusOf, overrides)
           })
           const labels = yield* run(labelsOf(eq(mistakeLabels.profileId, profileId)))
-          const [profile] = yield* run(db.select({ timeZone: profiles.timeZone }).from(profiles).where(eq(profiles.id, profileId)))
+          const [profile] = yield* run(
+            db.select({ timeZone: profiles.timeZone, rolloverHour: profiles.rolloverHour }).from(profiles)
+              .where(eq(profiles.id, profileId))
+          )
+          const timeZone = profile?.timeZone ?? "UTC"
+          const rolloverHour = profile?.rolloverHour ?? 4
+          const dayOf = (at: number) => studyDayOf(at, timeZone, rolloverHour)
+          const retrySessions = sessionFacts.map((session) => ({
+            id: session.id,
+            shown: session.shown,
+            retry: session.kind === "practice" ? retryItemsOf(session.row.config) : []
+          }))
+          const skipRows = yield* run(db.select().from(retrySkips).where(eq(retrySkips.profileId, profileId)))
+          const ladders = laddersOf({
+            misses,
+            sessions: retrySessions,
+            responses: responseFacts,
+            questions: new Map(questionFacts(stored, stimulusOf, overrides).map((question) => [question.id, question] as const)),
+            skips: skipRows.map((row) => ({ questionId: row.questionId, step: row.step as Step, at: row.createdAt, note: row.note })),
+            resolve,
+            dayOf
+          })
+          // A retry set not finished: started, or paused.
+          const running = sessionFacts.find((session) =>
+            session.row.status !== "finished" && retrySessions.some((retry) => retry.id === session.id && retry.retry.length > 0)
+          )?.id
           return {
             sessions: sessionFacts,
             responses: responseFacts,
@@ -126,7 +183,10 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             details,
             resolve,
             labels,
-            timeZone: profile?.timeZone ?? "UTC"
+            ladders,
+            running,
+            today: dayOf(yield* Clock.currentTimeMillis),
+            timeZone
           }
         })
 
@@ -152,7 +212,11 @@ export class ErrorLog extends Context.Service<ErrorLog, {
               band: bandOf(question.difficulty),
               books: books.map(([id, title]) => new Named({ id, name: title })),
               stem: question.stem,
-              status: detail?.status === "withdrawn" ? "withdrawn" : "open",
+              status: detail?.status === "withdrawn"
+                ? "withdrawn"
+                : facts.ladders.get(questionId)?.ladder.status === "resolved"
+                ? "resolved"
+                : "open",
               reasons: latest.reasons,
               parts: latest.parts.map((part) =>
                 missedPartView(part, facts.labels.get(`${latest.responseId}:${part.part}`), served, names)
@@ -160,11 +224,13 @@ export class ErrorLog extends Context.Service<ErrorLog, {
               responseId: latest.responseId,
               misses: ordered.length,
               firstMissedAt: ordered[0]!.at,
-              lastMissedAt: latest.at
+              lastMissedAt: latest.at,
+              ladder: ladderView(facts.ladders.get(questionId))
             }),
             secondarySkills: JSON.parse(detail?.secondarySkills ?? "[]") as ReadonlyArray<string>,
             misses: ordered,
-            members: [...new Set([questionId, ...misses.map((miss) => miss.questionId)])]
+            members: [...new Set([questionId, ...misses.map((miss) => miss.questionId)])],
+            ladder: facts.ladders.get(questionId)
           }]
         }).toSorted((a, b) => b.view.lastMissedAt - a.view.lastMissedAt)
       }
@@ -324,7 +390,24 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           return (yield* find(yield* factsOf(profileId), questionId).pipe(Effect.orDie)).view
         })
 
-      return ErrorLog.of({ list, get, setMistakeType })
+      const retryState = (profileId: string) =>
+        Effect.gen(function*() {
+          const facts = yield* factsOf(profileId)
+          return {
+            today: facts.today,
+            entries: entriesOf(facts).flatMap((entry) =>
+              entry.ladder === undefined ? [] : [{
+                view: entry.view,
+                ladder: entry.ladder,
+                question: facts.stored.get(entry.view.questionId)!,
+                secondarySkills: entry.secondarySkills
+              }]
+            ),
+            running: facts.running
+          } satisfies RetryState
+        })
+
+      return ErrorLog.of({ list, get, setMistakeType, retryState })
     })
   )
 }

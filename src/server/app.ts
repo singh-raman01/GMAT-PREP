@@ -7,6 +7,7 @@ import { DatabaseLive } from "./db/Database.ts"
 import { Generation } from "./generation/Generation.ts"
 import { JobFeed } from "./events/JobFeed.ts"
 import { ErrorLog } from "./learning/ErrorLog.ts"
+import { Retries } from "./learning/Retries.ts"
 import { SiblingsReport } from "./learning/SiblingsReport.ts"
 import { BookFileRoutes } from "./http/books.ts"
 import { EventsRoutes } from "./http/events.ts"
@@ -51,16 +52,16 @@ export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Layer.mergeAll(
   Golden.layer,
   Bank.layer,
   Generation.layer,
-  Practice.layer,
   Mocks.layer,
+  Retries.layer,
   Scores.layer,
   PaperMarks.layer,
-  ErrorLog.layer,
   SiblingsReport.layer,
   RemoveUploadLeftovers
 ).pipe(
-  // One Sectional engine, which Mocks run their Sections on.
-  Layer.provideMerge(Sectionals.layer),
+  // One of each, shared: the Sectional engine Mocks run their Sections on,
+  // and the Practice and Error Log services Retries build on.
+  Layer.provideMerge(Layer.mergeAll(Sectionals.layer, Practice.layer, ErrorLog.layer)),
   Layer.provideMerge(Layer.mergeAll(Settings.layer, ApiKeyStore.layer, BookFiles.layer, FigureFiles.layer, Taxonomy.layer)),
   Layer.provideMerge(JobStore.layer),
   Layer.provideMerge(kinds),
