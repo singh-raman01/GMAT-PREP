@@ -774,7 +774,13 @@ const ResultRow = (
             <RichText source={served.question.stem} />
             <AnsweredOptions served={served} />
             {served.debrief !== null && (
-              <DebriefPanel debrief={served.debrief} response={served.response} timed parts={served.question.parts} />
+              <DebriefPanel
+                debrief={served.debrief}
+                response={served.response}
+                timed
+                parts={served.question.parts}
+                mistakes={served.mistakes}
+              />
             )}
           </>
         )}

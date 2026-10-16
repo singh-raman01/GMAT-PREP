@@ -5,6 +5,7 @@ import { CuratorArea } from "./curator/CuratorArea.tsx"
 import { useFocusOnMount } from "./focus.ts"
 import { PracticeHome } from "./practice/PracticeHome.tsx"
 import { PracticeSet } from "./practice/PracticeSet.tsx"
+import { ErrorLogPage } from "./errors/ErrorLogPage.tsx"
 import { MockScreen } from "./mocks/MockScreen.tsx"
 import { MocksHome } from "./mocks/MocksHome.tsx"
 import { ScoresPage } from "./scores/ScoresPage.tsx"
@@ -123,7 +124,7 @@ export const App = () => {
 }
 
 // A Learner's pages: Practice and a set, Sectionals and one Sectional, Mocks
-// and one Mock, Scores, and the Taxonomy.
+// and one Mock, the Error Log, Scores, and the Taxonomy.
 const LearnerArea = ({ path, onSessionLost, onStopped }: {
   readonly path: string
   readonly onSessionLost: () => void
@@ -149,6 +150,8 @@ const LearnerArea = ({ path, onSessionLost, onStopped }: {
     ? "mocks"
     : path === "/scores"
     ? "scores"
+    : path === "/error-log"
+    ? "errors"
     : "practice"
   const link = (to: string, name: typeof page, label: string) => (
     <a {...linkProps(to)} aria-current={page === name ? "page" : undefined}>
@@ -161,6 +164,7 @@ const LearnerArea = ({ path, onSessionLost, onStopped }: {
         {link("/", "practice", "Practice")}
         {link("/sectionals", "sectionals", "Sectionals")}
         {link("/mocks", "mocks", "Mocks")}
+        {link("/error-log", "errors", "Error Log")}
         {link("/scores", "scores", "Scores")}
         {link("/taxonomy", "taxonomy", "What the GMAT tests")}
       </nav>
@@ -172,6 +176,8 @@ const LearnerArea = ({ path, onSessionLost, onStopped }: {
         ? <MocksHome onSessionLost={onSessionLost} onStopped={onStopped} />
         : page === "scores"
         ? <ScoresPage onSessionLost={onSessionLost} onStopped={onStopped} />
+        : page === "errors"
+        ? <ErrorLogPage onSessionLost={onSessionLost} onStopped={onStopped} />
         : <PracticeHome onSessionLost={onSessionLost} onStopped={onStopped} />}
     </>
   )

@@ -141,6 +141,42 @@ describe("The Error Log", () => {
       expect(notHis._tag).toBe("ErrorLogEntryNotFound")
     })))
 
+  test("shows a wrong answer's Mistake Types with its Debrief, where the Learner can change them", () =>
+    runWithWorkers(Effect.gen(function*() {
+      yield* seedBook("Quant Review", numbered(2))
+      const asha = yield* learner("Asha")
+      const view = yield* asha.practice.start({ payload: { choice: untimed(2) } })
+      yield* TestClock.adjust("60 seconds")
+      const answered = yield* asha.practice.answer({
+        params: { id: view.id },
+        payload: { seq: view.nextSeq, questionId: view.current!.question.id, selection: [{ part: 0, choice: "A" }], guessed: false }
+      })
+      const mistakes = answered.current!.mistakes!
+      expect(mistakes.parts.map((part) => [part.picked, part.mistakeType?.id, part.byLearner])).toEqual([["A", "trap", false]])
+      expect(mistakes.choices.map((choice) => choice.id)).toEqual([
+        "concept-gap",
+        "wrong-approach",
+        "trap",
+        "calculation-slip",
+        "misread",
+        "time-pressure"
+      ])
+      yield* asha.errorLog.setMistakeType({
+        params: { questionId: mistakes.questionId },
+        payload: { responseId: mistakes.responseId, part: 0, mistakeType: "concept-gap" }
+      })
+      const again = yield* asha.practice.get({ params: { id: view.id } })
+      expect(again.current!.mistakes!.parts[0]).toMatchObject({ mistakeType: { id: "concept-gap" }, byLearner: true })
+      // A right answer has none.
+      const next = yield* asha.practice.next({ params: { id: view.id }, payload: { position: 1 } })
+      yield* TestClock.adjust("60 seconds")
+      const right = yield* asha.practice.answer({
+        params: { id: view.id },
+        payload: { seq: next.nextSeq, questionId: next.current!.question.id, selection: [{ part: 0, choice: "C" }], guessed: false }
+      })
+      expect(right.current!.mistakes).toBeNull()
+    })))
+
   test("holds every Response to the Question, with the Debrief of the latest miss", () =>
     runWithWorkers(Effect.gen(function*() {
       yield* seedBook("Quant Review", numbered(1))
@@ -157,8 +193,10 @@ describe("The Error Log", () => {
         ["practice", false, ["wrong"]],
         ["practice", true, []]
       ])
-      expect(detail.debrief.trapNotes.map((note) => note.label)).toEqual(["E"])
-      expect(detail.question.id).toBe(questionId)
+      expect(detail.served.debrief!.trapNotes.map((note) => note.label)).toEqual(["E"])
+      expect(detail.served.question.id).toBe(questionId)
+      expect(detail.served.response).toMatchObject({ selection: [{ part: 0, choice: "E" }], correct: false, rated: false })
+      expect(detail.served.mistakes!.parts.map((part) => part.picked)).toEqual(["E"])
       expect(yield* asha.errorLog.get({ params: { questionId: QuestionId.make(crypto.randomUUID()) } })
         .pipe(Effect.flip, Effect.map((error) => error._tag))).toBe("ErrorLogEntryNotFound")
     })))

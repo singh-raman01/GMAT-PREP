@@ -2,7 +2,7 @@ import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
 import { Day } from "./day.ts"
 import { DifficultyBand } from "./difficulty.ts"
-import { Debrief, Named, PartChoice, PracticeQuestion, SessionId } from "./Practice.ts"
+import { MissedPartView, Named, PartChoice, ServedView, SessionId } from "./Practice.ts"
 import { ProfileSession } from "./Profiles.ts"
 import { QuestionId } from "./Review.ts"
 
@@ -15,18 +15,6 @@ export type ErrorReason = typeof ErrorReason.Type
 // Resolved comes with the Retry Ladder.
 export const ErrorStatus = Schema.Literals(["open", "withdrawn"])
 export type ErrorStatus = typeof ErrorStatus.Type
-
-export class MissedPartView extends Schema.Class<MissedPartView>("gmat-prep/api/MissedPartView")({
-  part: Schema.Int,
-  // The Part's statement or heading, for a Question of several Parts.
-  prompt: Schema.NullOr(Schema.String),
-  // The option picked; null when none was, as when time ran out.
-  picked: Schema.NullOr(Schema.String),
-  mistakeType: Schema.NullOr(Named),
-  // Set by the Learner, in place of the one the app filled in.
-  byLearner: Schema.Boolean,
-  trapPattern: Schema.NullOr(Named)
-}) {}
 
 export class ErrorLogEntry extends Schema.Class<ErrorLogEntry>("gmat-prep/api/ErrorLogEntry")({
   questionId: QuestionId,
@@ -105,9 +93,11 @@ export class HistoryItem extends Schema.Class<HistoryItem>("gmat-prep/api/Histor
 
 export class ErrorLogDetail extends Schema.Class<ErrorLogDetail>("gmat-prep/api/ErrorLogDetail")({
   entry: ErrorLogEntry,
-  question: PracticeQuestion,
-  // For the latest miss's answer.
-  debrief: Debrief,
+  // The Question as the latest miss answered it, with its Debrief and the
+  // Mistake Types to change.
+  served: ServedView,
+  // Whether the latest miss's Session was timed.
+  timed: Schema.Boolean,
   history: Schema.Array(HistoryItem)
 }) {}
 

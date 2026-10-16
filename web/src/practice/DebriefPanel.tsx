@@ -1,6 +1,7 @@
-import { type Ref, useId } from "react"
+import { type Ref, useId, useState } from "react"
 import { bandNames } from "../../../src/api/difficulty.ts"
-import type { Debrief, PracticePart, ResponseView, TrapNoteView } from "../../../src/api/Practice.ts"
+import type { Debrief, MistakesView, PracticePart, ResponseView, TrapNoteView } from "../../../src/api/Practice.ts"
+import { call } from "../api.ts"
 import { spokenDuration } from "../format.ts"
 import { RichText } from "../RichText.tsx"
 
@@ -54,7 +55,7 @@ const unratedText = (response: ResponseView, timed: boolean) =>
     : " You had seen this Question before, so this answer does not change your scores."
 
 export const DebriefPanel = (
-  { debrief, response, timed, headingRef, parts }: {
+  { debrief, response, timed, headingRef, parts, mistakes }: {
     readonly debrief: Debrief
     readonly response: ResponseView | null
     // Whether the set was timed.
@@ -62,6 +63,8 @@ export const DebriefPanel = (
     readonly headingRef?: Ref<HTMLHeadingElement>
     // The Question's Parts, to name the options of several.
     readonly parts?: ReadonlyArray<PracticePart>
+    // A wrong answer's Mistake Types, which the Learner can change.
+    readonly mistakes?: MistakesView | null
   }
 ) => {
   const titleId = useId()
@@ -102,6 +105,8 @@ export const DebriefPanel = (
         </aside>
       ))}
 
+      {mistakes != null && mistakes.parts.length > 0 && <MistakeControls mistakes={mistakes} parts={parts} />}
+
       {debrief.approaches.length === 0
         ? <p className="quiet">No worked solution reaches this answer yet.</p>
         : (
@@ -124,4 +129,79 @@ export const DebriefPanel = (
         )}
     </section>
   )
+}
+
+// What went wrong in each wrong Part, as the Error Log keeps it: the app's
+// choice until the Learner picks another, with one tap.
+const MistakeControls = (
+  { mistakes, parts }: { readonly mistakes: MistakesView; readonly parts: ReadonlyArray<PracticePart> | undefined }
+) => {
+  const [chosen, setChosen] = useState<ReadonlyMap<number, { readonly id: string | null; readonly byLearner: boolean }>>(
+    () => new Map(mistakes.parts.map((part) => [part.part, { id: part.mistakeType?.id ?? null, byLearner: part.byLearner }]))
+  )
+  const [problem, setProblem] = useState<string>()
+  const name = useId()
+  const several = (parts?.length ?? 1) > 1
+  const choose = async (part: number, mistakeType: string) => {
+    const before = chosen.get(part)
+    setChosen((current) => new Map(current).set(part, { id: mistakeType, byLearner: true }))
+    setProblem(undefined)
+    const result = await call((client) =>
+      client.errorLog.setMistakeType({
+        params: { questionId: mistakes.questionId },
+        payload: { responseId: mistakes.responseId, part, mistakeType }
+      })
+    )
+    if (result._tag === "Success") return
+    if (before !== undefined) setChosen((current) => new Map(current).set(part, before))
+    setProblem("That change was not saved. Try again.")
+  }
+  return (
+    <div className="mistakes">
+      {mistakes.parts.map((part) => {
+        const current = chosen.get(part.part)
+        const label = several ? partName(part.part, parts) : undefined
+        return (
+          <fieldset key={part.part} className="mistake-choice">
+            <legend>What went wrong{label === undefined ? "" : ` in ${label}`}</legend>
+            <div className="mistake-options">
+              {mistakes.choices.map((choice) => (
+                <label key={choice.id} className="mistake-option">
+                  <input
+                    type="radio"
+                    name={`${name}-${part.part}`}
+                    checked={current?.id === choice.id}
+                    onChange={() => void choose(part.part, choice.id)}
+                  />
+                  {choice.name}
+                </label>
+              ))}
+            </div>
+            <p className="hint">
+              {current?.byLearner === true
+                ? "You chose this. Your Error Log keeps it."
+                : current?.id == null
+                ? "Pick what went wrong, for your Error Log."
+                : "The app chose this from your answer. Pick another if it fits better."}
+            </p>
+          </fieldset>
+        )
+      })}
+      {problem !== undefined && <p className="problem" role="alert">{problem}</p>}
+    </div>
+  )
+}
+
+const partName = (position: number, parts: ReadonlyArray<PracticePart> | undefined) => {
+  const part = parts?.find((each) => each.position === position)
+  switch (part?.kind) {
+    case "two-choice":
+      return `statement ${position + 1}`
+    case "dropdown":
+      return `blank ${position + 1}`
+    case "column-choice":
+      return part.prompt ?? `column ${position + 1}`
+    default:
+      return `part ${position + 1}`
+  }
 }

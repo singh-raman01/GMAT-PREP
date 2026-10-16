@@ -1,6 +1,5 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm"
+import { and, eq, inArray } from "drizzle-orm"
 import { Clock, Context, Effect, Layer } from "effect"
-import { groupOf } from "../../api/blueprint.ts"
 import { bandNames, bandOf } from "../../api/difficulty.ts"
 import {
   ErrorLogDetail,
@@ -12,21 +11,21 @@ import {
   type ErrorReason,
   type ErrorStatus,
   HistoryItem,
-  MissedPartView,
   MistakeTypeInvalid
 } from "../../api/ErrorLog.ts"
-import { Named, SessionId } from "../../api/Practice.ts"
+import { MistakesView, Named, ResponseView, ServedView, SessionId } from "../../api/Practice.ts"
 import { QuestionId } from "../../api/Review.ts"
 import { studyDayOf } from "../../api/studyDay.ts"
-import { targetSecondsFor } from "../../api/targetTimes.ts"
 import { Db } from "../db/Database.ts"
 import { mistakeLabels, profiles, questions, responses, servedQuestions, sessions } from "../db/schema.ts"
 import { debriefOf, namesOf, practiceQuestion, type StoredQuestion, storedQuestions } from "../practice/content.ts"
-import { isCorrect, mergeTargets, readSelection } from "../practice/history.ts"
+import { bookmarkedBy, isCorrect, mergeTargets } from "../practice/history.ts"
+import { ratedAmong } from "../ratings/rated.ts"
 import { decodeConfig } from "../sections/config.ts"
 import { Settings } from "../settings/Settings.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
-import { type Miss, missesOf, type QuestionFact, type ResponseFact, type SessionFact } from "./misses.ts"
+import { labelsOf, missedPartView, questionFacts, responseFact } from "./facts.ts"
+import { type Miss, missesOf, type SessionFact } from "./misses.ts"
 
 // The Error Log service (docs/design.md, "Learning loop"): entries worked
 // out from the facts on every read, with the Learner's Mistake Types kept
@@ -87,17 +86,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             .filter((row) => row.kind !== "mock")
             .map((row) => ({ id: row.id, kind: row.kind, limitMs: row.timed ? row.timeLimitMs : null, shown: shown(row), row }))
           const answers = yield* run(db.select().from(responses).where(eq(responses.profileId, profileId)))
-          const responseFacts: Array<ResponseFact> = answers.map((answer) => ({
-            id: answer.id,
-            sessionId: answer.sessionId,
-            questionId: answer.questionId,
-            kind: answer.kind,
-            seq: answer.seq,
-            selection: readSelection(answer.selection),
-            timeSpentMs: answer.timeSpentMs,
-            guessed: answer.guessed,
-            at: answer.createdAt
-          }))
+          const responseFacts = answers.map(responseFact)
           const sessionIds = sessionFacts.map((session) => session.id)
           const served = sessionIds.length === 0 ? [] : yield* run(
             db.select({
@@ -120,23 +109,14 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           )
           const details = new Map(rowsOf.map((row) => [row.id, row] as const))
           const overrides = yield* settings.targetTimes
-          const questionFacts: Array<QuestionFact> = [...stored.values()].map((question) => ({
-            id: question.id,
-            unit: groupOf(question.questionType)?.units === true ? details.get(question.id)?.stimulusId ?? null : null,
-            targetMs: targetSecondsFor(question.questionType, overrides) * 1000,
-            parts: question.parts.map((part) => ({
-              position: part.position,
-              key: part.key,
-              labels: part.options.map((option) => option.label),
-              notes: part.notes
-            }))
-          }))
-          const misses = missesOf({ sessions: sessionFacts, responses: responseFacts, served, questions: questionFacts })
-          const labelRows = yield* run(
-            db.select().from(mistakeLabels).where(eq(mistakeLabels.profileId, profileId))
-              .orderBy(asc(mistakeLabels.createdAt), asc(sql`${mistakeLabels}.rowid`))
-          )
-          const labels = new Map(labelRows.map((label) => [`${label.responseId}:${label.part}`, label.mistakeType] as const))
+          const stimulusOf = new Map(rowsOf.map((row) => [row.id, row.stimulusId] as const))
+          const misses = missesOf({
+            sessions: sessionFacts,
+            responses: responseFacts,
+            served,
+            questions: questionFacts(stored, stimulusOf, overrides)
+          })
+          const labels = yield* run(labelsOf(eq(mistakeLabels.profileId, profileId)))
           const [profile] = yield* run(db.select({ timeZone: profiles.timeZone }).from(profiles).where(eq(profiles.id, profileId)))
           return {
             sessions: sessionFacts,
@@ -174,18 +154,9 @@ export class ErrorLog extends Context.Service<ErrorLog, {
               stem: question.stem,
               status: detail?.status === "withdrawn" ? "withdrawn" : "open",
               reasons: latest.reasons,
-              parts: latest.parts.map((part) => {
-                const label = facts.labels.get(`${latest.responseId}:${part.part}`)
-                const mistakeType = label ?? part.mistakeType
-                return new MissedPartView({
-                  part: part.part,
-                  prompt: served.parts.length > 1 ? served.parts.find((each) => each.position === part.part)?.prompt ?? null : null,
-                  picked: part.picked,
-                  mistakeType: mistakeType === null ? null : names.named(mistakeType),
-                  byLearner: label !== undefined,
-                  trapPattern: part.trapPattern === null ? null : names.named(part.trapPattern)
-                })
-              }),
+              parts: latest.parts.map((part) =>
+                missedPartView(part, facts.labels.get(`${latest.responseId}:${part.part}`), served, names)
+              ),
               responseId: latest.responseId,
               misses: ordered.length,
               firstMissedAt: ordered[0]!.at,
@@ -295,10 +266,34 @@ export class ErrorLog extends Context.Service<ErrorLog, {
                 reasons: [...(finals.get(response.id) ?? [])] as Array<ErrorReason>
               })
             })
+          const keys = served.parts.map((part) => ({ position: part.position, key: part.key }))
+          const rated = yield* run(ratedAmong(profileId, [latest.questionId]))
           return new ErrorLogDetail({
             entry: entry.view,
-            question: practiceQuestion(served, names, null),
-            debrief: debriefOf(served, final.selection, names),
+            served: new ServedView({
+              position: 0,
+              question: practiceQuestion(served, names, null),
+              bookmarked: (yield* run(bookmarkedBy(profileId))).has(entry.view.questionId),
+              response: new ResponseView({
+                selection: final.selection,
+                guessed: final.guessed,
+                // The time the first answer took; a change in Review & Edit takes none.
+                timeSpentMs: facts.responses
+                  .filter((response) => response.sessionId === latest.sessionId && response.questionId === latest.questionId)
+                  .toSorted((a, b) => a.seq - b.seq)[0]?.timeSpentMs ?? final.timeSpentMs,
+                correct: final.kind !== "time-out" && isCorrect(final.selection, keys),
+                rated: rated.has(final.id),
+                timedOut: final.kind === "time-out"
+              }),
+              debrief: debriefOf(served, final.selection, names),
+              mistakes: latest.parts.length === 0 ? null : new MistakesView({
+                questionId: entry.view.questionId,
+                responseId: latest.responseId,
+                parts: entry.view.parts,
+                choices: taxonomy.mistakeTypes.map((each) => names.named(each.id))
+              })
+            }),
+            timed: facts.sessions.find((session) => session.id === latest.sessionId)?.limitMs != null,
             history
           })
         })

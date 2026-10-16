@@ -41,6 +41,7 @@ import {
   sessions,
   sources
 } from "../db/schema.ts"
+import { sessionMistakes } from "../learning/facts.ts"
 import { scoreEstimatesOf, scoreEstimateView } from "../ratings/estimates.ts"
 import { rateSession } from "../ratings/rateSession.ts"
 import { ratedAmong } from "../ratings/rated.ts"
@@ -199,6 +200,7 @@ export class Practice extends Context.Service<Practice, {
       const settings = yield* Settings
       const taxonomy = (yield* Taxonomy).view
       const names = namesOf(taxonomy)
+      const mistakeChoices = taxonomy.mistakeTypes.map((each) => names.named(each.id))
       // Requests and the clock's ticks take turns.
       const oneAtATime = (yield* Semaphore.make(1)).withPermits(1)
       // Reads shared with other modules; a failed query is a defect.
@@ -464,6 +466,15 @@ export class Practice extends Context.Service<Practice, {
           const over = session.status === "finished"
           const shown = over || (!session.timed && response !== undefined)
           const place = config.places?.find((each) => each.questionId === row.questionId)
+          const wrong = response !== undefined && (response.kind === "time-out" || !isCorrect(selection, keys))
+          const mistakes = shown && wrong
+            ? yield* run(sessionMistakes(session, row.questionId, {
+              overrides: yield* settings.targetTimes,
+              names,
+              choices: mistakeChoices,
+              resolve: context.resolve
+            }))
+            : null
           return new ServedView({
             position: row.position,
             question: practiceQuestion(stored, names, config.bookId, place),
@@ -476,7 +487,8 @@ export class Practice extends Context.Service<Practice, {
               rated: context.rated.has(response.id),
               timedOut: response.kind === "time-out"
             }),
-            debrief: shown ? debriefOf(stored, selection, names) : null
+            debrief: shown ? debriefOf(stored, selection, names) : null,
+            mistakes
           })
         })
 

@@ -464,6 +464,7 @@ const QuestionScreen = (
             timed={view.timed}
             headingRef={debriefHeading}
             parts={parts}
+            mistakes={current.mistakes}
           />
           {!locked && (
             <div className="actions debrief-actions">
@@ -697,6 +698,7 @@ const ResultRow = (
                 response={review.served.response}
                 timed={view.timed}
                 parts={review.served.question.parts}
+                mistakes={review.served.mistakes}
               />
             )}
           </>

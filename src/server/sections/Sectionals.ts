@@ -50,6 +50,7 @@ import {
   readSelection
 } from "../practice/history.ts"
 import { scoreLinesOf } from "../ratings/OfficialScores.ts"
+import { sessionMistakes } from "../learning/facts.ts"
 import { ratedAmong } from "../ratings/rated.ts"
 import { rateSession } from "../ratings/rateSession.ts"
 import { type ScoreLine, UncalibratedLine } from "../ratings/scale.ts"
@@ -127,6 +128,7 @@ export class Sectionals extends Context.Service<Sectionals, {
       const settings = yield* Settings
       const taxonomy = (yield* Taxonomy).view
       const names = namesOf(taxonomy)
+      const mistakeChoices = taxonomy.mistakeTypes.map((each) => names.named(each.id))
       // Requests and the clock's ticks take turns.
       const oneAtATime = (yield* Semaphore.make(1)).withPermits(1)
       const run = <A, E>(effect: Effect.Effect<A, E, Db>) => effect.pipe(Effect.provideService(Db, db), Effect.orDie)
@@ -508,6 +510,15 @@ export class Sectionals extends Context.Service<Sectionals, {
           const rated = over && final !== undefined
             ? (yield* run(ratedAmong(session.profileId, [row.questionId]))).has(final.id)
             : false
+          const wrong = final !== undefined && (final.kind === "time-out" || !isCorrect(selection, keys))
+          const mistakes = over && wrong
+            ? yield* run(sessionMistakes(session, row.questionId, {
+              overrides: yield* settings.targetTimes,
+              names,
+              choices: mistakeChoices,
+              resolve: context.resolve
+            }))
+            : null
           return new ServedView({
             position: row.position,
             question: over ? question : new PracticeQuestion({ ...question, source: null }),
@@ -520,7 +531,8 @@ export class Sectionals extends Context.Service<Sectionals, {
               rated,
               timedOut: final.kind === "time-out"
             }),
-            debrief: over ? debriefOf(stored, selection, names) : null
+            debrief: over ? debriefOf(stored, selection, names) : null,
+            mistakes
           })
         })
 
