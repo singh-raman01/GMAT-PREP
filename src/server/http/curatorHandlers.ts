@@ -108,7 +108,7 @@ export const SettingsHandlers = HttpApiBuilder.group(
     )
 
     const questionTypes = (yield* Taxonomy).view.sections.flatMap((section) =>
-      section.questionTypes.map((type) => ({ id: type.id, name: type.name, section: section.id }))
+      section.questionTypes.map((type) => ({ id: type.id, name: type.name, section: section.id, sectionName: section.name }))
     )
     const targetTimesView = settings.targetTimes.pipe(
       Effect.map((overrides) =>
@@ -117,6 +117,7 @@ export const SettingsHandlers = HttpApiBuilder.group(
             questionType: type.id,
             name: type.name,
             section: type.section,
+            sectionName: type.sectionName,
             seconds: targetSecondsFor(type.id, overrides),
             sectionDefault: DefaultTargetSeconds[type.section] ?? targetSecondsFor(type.id, {})
           })

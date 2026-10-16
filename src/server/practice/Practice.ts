@@ -618,14 +618,16 @@ export class Practice extends Context.Service<Practice, {
         })
 
       const preview = (profileId: string, choice: PracticeChoice) =>
-        plan(profileId, choice, "").pipe(Effect.map(({ plan: planned }) =>
-          new PracticePreview({
+        Effect.gen(function*() {
+          const planned = (yield* plan(profileId, choice, "")).plan
+          return new PracticePreview({
             questions: planned.questionIds.length,
             matching: planned.matching,
             heldForMocks: planned.heldForMocks.length,
-            unavailable: planned.unavailable.length
+            unavailable: planned.unavailable.length,
+            limitMs: choice.timed === true ? yield* limitFor(planned.questionIds) : null
           })
-        ))
+        })
 
       const start = (caller: Caller, choice: PracticeChoice) =>
         Effect.gen(function*() {

@@ -1,6 +1,7 @@
 import type { Effect } from "effect"
 import { useCallback, useEffect, useId, useRef, useState } from "react"
 import {
+  type HeldElsewhere,
   type ItemRef,
   type PracticeOutOfStep,
   type PracticeResult,
@@ -11,10 +12,11 @@ import {
 } from "../../../src/api/Practice.ts"
 import { call, type Client } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
-import { spokenDuration } from "../format.ts"
+import { minutesAndSeconds, spokenDuration } from "../format.ts"
 import { RichInline, RichText } from "../RichText.tsx"
 import { linkProps, navigate } from "../router.ts"
 import { DebriefPanel } from "./DebriefPanel.tsx"
+import { type ClockReading, Timer, useRemaining, warningFor } from "./Timer.tsx"
 
 interface Props {
   readonly id: string
@@ -22,10 +24,23 @@ interface Props {
   readonly onStopped: (error: { readonly _tag: string }) => void
 }
 
-// One Practice Set: the Question on screen and, once answered, its Debrief;
-// when the set is over, how it went.
+// The browser reads a timed set again this often, besides after every
+// change, so its clock stays the server's.
+const ResyncMs = 15_000
+
+const readingOf = (view: PracticeView): ClockReading | undefined =>
+  view.clock === null ? undefined : {
+    remainingMs: view.clock.remainingMs,
+    paused: view.status !== "active",
+    at: performance.now()
+  }
+
+// One Practice Set: the Question on screen and, once answered, its Debrief
+// in an untimed set; in a timed set, the next Question at once and the
+// Debriefs at the end; when the set is over, how it went.
 export const PracticeSet = ({ id, onSessionLost, onStopped }: Props) => {
   const [view, setView] = useState<PracticeView>()
+  const [reading, setReading] = useState<ClockReading>()
   const [missing, setMissing] = useState(false)
 
   const handle = useCallback(
@@ -33,19 +48,30 @@ export const PracticeSet = ({ id, onSessionLost, onStopped }: Props) => {
     [onSessionLost, onStopped]
   )
 
+  const show = useCallback((next: PracticeView) => {
+    setView(next)
+    setReading(readingOf(next))
+  }, [])
+
+  const refresh = useCallback(async () => {
+    const result = await call((client) => client.practice.get({ params: { id: SessionId.make(id) } }))
+    if (result._tag === "Success") show(result.success)
+    else if (result.failure._tag === "PracticeNotFound") setMissing(true)
+    else handle(result.failure)
+  }, [id, show, handle])
+
   useEffect(() => {
-    let live = true
     setView(undefined)
-    void call((client) => client.practice.get({ params: { id: SessionId.make(id) } })).then((result) => {
-      if (!live) return
-      if (result._tag === "Success") setView(result.success)
-      else if (result.failure._tag === "PracticeNotFound") setMissing(true)
-      else handle(result.failure)
-    })
-    return () => {
-      live = false
-    }
-  }, [id, handle])
+    void refresh()
+  }, [refresh])
+
+  // A timed set's clock is the server's: read it again now and then.
+  const ticking = view !== undefined && view.timed && view.status !== "finished"
+  useEffect(() => {
+    if (!ticking) return
+    const timer = setInterval(() => void refresh(), ResyncMs)
+    return () => clearInterval(timer)
+  }, [ticking, refresh])
 
   if (missing) {
     return (
@@ -57,13 +83,17 @@ export const PracticeSet = ({ id, onSessionLost, onStopped }: Props) => {
     )
   }
   if (view === undefined) return <p className="quiet" aria-busy="true">Opening the set</p>
-  return view.status === "finished"
-    ? <SetSummary view={view} onFailure={handle} />
-    : <QuestionScreen key={view.id} view={view} onView={setView} onFailure={handle} />
+  if (view.status === "finished") return <SetSummary view={view} onFailure={handle} />
+  return (
+    <SetScreen key={view.id} view={view} reading={reading} onView={show} onRefresh={refresh} onFailure={handle} />
+  )
 }
 
 const isOutOfStep = (failure: { readonly _tag: string }): failure is PracticeOutOfStep =>
   failure._tag === "PracticeOutOfStep"
+
+const isHeldElsewhere = (failure: { readonly _tag: string }): failure is HeldElsewhere =>
+  failure._tag === "HeldElsewhere"
 
 const isSelectionInvalid = (failure: { readonly _tag: string }): failure is SelectionInvalid =>
   failure._tag === "SelectionInvalid"
@@ -75,21 +105,174 @@ const isTyping = (target: EventTarget | null) =>
   (target.isContentEditable || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement ||
     (target instanceof HTMLInputElement && !["radio", "checkbox", "button", "submit"].includes(target.type)))
 
-const QuestionScreen = (
-  { view, onView, onFailure }: {
+const outOfStepText: Record<PracticeOutOfStep["reason"], string> = {
+  "answered": "The set had moved on in another tab, so this shows where it stands now.",
+  "not-current": "The set had moved on in another tab, so this shows where it stands now.",
+  "not-answered": "The set had moved on in another tab, so this shows where it stands now.",
+  "no-more": "That was the last Question in the set.",
+  "finished": "The set had ended.",
+  "paused": "The set is paused. Resume it to go on.",
+  "untimed": "Only a timed set has a clock to pause."
+}
+
+// Sends one change to the set and shows the set as the server returns it.
+const useActions = (
+  onView: (view: PracticeView) => void,
+  onFailure: (failure: { readonly _tag: string }) => void
+) => {
+  const [busy, setBusy] = useState(false)
+  const [problem, setProblem] = useState<string>()
+  const act = async <E extends { readonly _tag: string }>(request: (client: Client) => Effect.Effect<PracticeView, E>) => {
+    if (busy) return
+    setBusy(true)
+    setProblem(undefined)
+    const result = await call(request)
+    setBusy(false)
+    if (result._tag === "Success") return onView(result.success)
+    const failure: { readonly _tag: string } = result.failure
+    if (isOutOfStep(failure)) {
+      onView(failure.view)
+      setProblem(outOfStepText[failure.reason])
+    } else if (isHeldElsewhere(failure)) {
+      onView(failure.view)
+      setProblem("Another tab or device has this set now. Take it over here to go on.")
+    } else if (isSelectionInvalid(failure)) {
+      setProblem(failure.problems.join(" "))
+    } else {
+      onFailure(failure)
+    }
+  }
+  return { busy, setBusy, problem, setProblem, act }
+}
+
+const SetScreen = (
+  { view, reading, onView, onRefresh, onFailure }: {
     readonly view: PracticeView
+    readonly reading: ClockReading | undefined
     readonly onView: (view: PracticeView) => void
+    readonly onRefresh: () => Promise<void>
     readonly onFailure: (failure: { readonly _tag: string }) => void
   }
 ) => {
+  const actions = useActions(onView, onFailure)
+  const [timerHidden, setTimerHidden] = useState(false)
+  const remaining = useRemaining(reading)
+
+  // The time left turns to a warning near the end, and is said once then,
+  // even with the timer hidden.
+  const warningMs = warningFor(view.clock?.limitMs ?? 0)
+  const [announcement, setAnnouncement] = useState("")
+  const aboveWarning = useRef(remaining === undefined || remaining > warningMs)
+  useEffect(() => {
+    if (remaining === undefined) return
+    if (aboveWarning.current && remaining <= warningMs && remaining > 0) {
+      setAnnouncement(`${spokenDuration(Math.ceil(remaining / 1000) * 1000)} left.`)
+    }
+    aboveWarning.current = remaining > warningMs
+  }, [remaining, warningMs])
+
+  // When the time shown runs out, the server ends the set within a second
+  // or two; read it then.
+  const expired = remaining === 0 && view.status === "active"
+  useEffect(() => {
+    if (!expired) return
+    const timer = setTimeout(() => void onRefresh(), 1500)
+    return () => clearTimeout(timer)
+  }, [expired, reading, onRefresh])
+
+  const pause = () => void actions.act((client) => client.practice.pause({ params: { id: view.id } }))
+  const resume = () => void actions.act((client) => client.practice.resume({ params: { id: view.id } }))
+  const claim = () => void actions.act((client) => client.practice.claim({ params: { id: view.id } }))
+  const endSet = () => void actions.act((client) => client.practice.finish({ params: { id: view.id } }))
+
+  return (
+    <div className="practice-set" data-section={view.current?.question.section.id}>
+      <p className="back">
+        <a className="quiet-link" {...linkProps("/")}>Practice</a>
+      </p>
+      <div className="set-head">
+        <p className="set-title">{view.title}</p>
+        <div className="set-controls">
+          {remaining !== undefined && view.status === "active" && (
+            <Timer
+              remainingMs={remaining}
+              warningMs={warningMs}
+              hidden={timerHidden}
+              onToggle={() => setTimerHidden((hidden) => !hidden)}
+            />
+          )}
+          {view.timed && view.status === "active" && view.heldHere && (
+            <button type="button" className="link-button" onClick={pause} disabled={actions.busy}>Pause</button>
+          )}
+          {view.heldHere && (
+            <button type="button" className="link-button set-end" onClick={endSet} disabled={actions.busy}>
+              End set
+            </button>
+          )}
+        </div>
+      </div>
+      <p className="visually-hidden" role="status">{announcement}</p>
+      {view.clock?.interrupted === true && (
+        <p className="clock-note">
+          The clock did not count time while the app was stopped or the computer slept.
+        </p>
+      )}
+      {!view.heldHere && (
+        <div className="held-elsewhere" role="status">
+          <p>This set is open in another tab or on another device, so you can only look at it here.</p>
+          <button type="button" className="button" onClick={claim} disabled={actions.busy}>Take it over here</button>
+        </div>
+      )}
+      {view.status === "paused"
+        ? <Paused view={view} busy={actions.busy} problem={actions.problem} onResume={resume} />
+        : <QuestionScreen view={view} actions={actions} onFailure={onFailure} />}
+    </div>
+  )
+}
+
+// A paused timed set hides its Question until it resumes.
+const Paused = (
+  { view, busy, problem, onResume }: {
+    readonly view: PracticeView
+    readonly busy: boolean
+    readonly problem: string | undefined
+    readonly onResume: () => void
+  }
+) => {
+  const heading = useFocusOnMount<HTMLHeadingElement>()
+  return (
+    <section className="paused" aria-labelledby="paused-title">
+      <h1 id="paused-title" ref={heading} tabIndex={-1}>Paused</h1>
+      <p className="lede">
+        The clock stopped with {minutesAndSeconds(view.clock?.remainingMs ?? 0)} left. The Question stays hidden
+        until you resume.
+      </p>
+      {view.heldHere && (
+        <div className="actions">
+          <button type="button" className="button" onClick={onResume} disabled={busy}>Resume</button>
+        </div>
+      )}
+      {problem !== undefined && <p className="problem" role="alert">{problem}</p>}
+    </section>
+  )
+}
+
+const QuestionScreen = (
+  { view, actions, onFailure }: {
+    readonly view: PracticeView
+    readonly actions: ReturnType<typeof useActions>
+    readonly onFailure: (failure: { readonly _tag: string }) => void
+  }
+) => {
+  const { busy, setBusy, problem, act } = actions
   const current = view.current!
   const question = current.question
   const part = question.parts[0]!
   const answered = current.response !== null
+  // Read-only here while another device holds the set.
+  const locked = !view.heldHere
   const [picked, setPicked] = useState<string>()
   const [guessed, setGuessed] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [problem, setProblem] = useState<string>()
   const [similarNote, setSimilarNote] = useState<string>()
   const questionHeading = useRef<HTMLHeadingElement>(null)
   const debriefHeading = useRef<HTMLHeadingElement>(null)
@@ -100,7 +283,6 @@ const QuestionScreen = (
   useEffect(() => {
     setPicked(undefined)
     setGuessed(false)
-    setProblem(undefined)
     setSimilarNote(undefined)
     questionHeading.current?.focus()
   }, [current.position])
@@ -115,50 +297,23 @@ const QuestionScreen = (
 
   const chosen = answered ? current.response!.selection.find((each) => each.part === part.position)?.choice : picked
 
-  // Sends one change to the set and shows the set as the server returns it.
-  const act = async <E extends { readonly _tag: string }>(
-    request: (client: Client) => Effect.Effect<PracticeView, E>,
-    after?: () => void
-  ) => {
-    if (busy) return
-    setBusy(true)
-    setProblem(undefined)
-    const result = await call(request)
-    setBusy(false)
-    if (result._tag === "Success") {
-      onView(result.success)
-      after?.()
-      return
-    }
-    const failure: { readonly _tag: string } = result.failure
-    if (isOutOfStep(failure)) {
-      onView(failure.view)
-      setProblem("The set had moved on in another tab, so this shows where it stands now.")
-    } else if (isSelectionInvalid(failure)) {
-      setProblem(failure.problems.join(" "))
-    } else {
-      onFailure(failure)
-    }
-  }
-
   const submit = () => {
-    if (answered || picked === undefined) return
-    void act(
-      (client) =>
-        client.practice.answer({
-          params: { id: view.id },
-          payload: {
-            seq: view.nextSeq,
-            questionId: question.id,
-            selection: [{ part: part.position, choice: picked }],
-            guessed
-          }
-        })
+    if (answered || locked || picked === undefined) return
+    void act((client) =>
+      client.practice.answer({
+        params: { id: view.id },
+        payload: {
+          seq: view.nextSeq,
+          questionId: question.id,
+          selection: [{ part: part.position, choice: picked }],
+          guessed
+        }
+      })
     )
   }
 
   const moveOn = () => {
-    if (!answered) return
+    if (!answered || locked) return
     void act((client) =>
       last
         ? client.practice.finish({ params: { id: view.id } })
@@ -174,8 +329,6 @@ const QuestionScreen = (
       })
     )
 
-  const endSet = () => void act((client) => client.practice.finish({ params: { id: view.id } }))
-
   const similar = async () => {
     setBusy(true)
     const result = await call((client) => client.practice.similar({ payload: { questionId: question.id } }))
@@ -190,7 +343,7 @@ const QuestionScreen = (
   // A to E pick an option and Enter submits; once answered, Enter moves on.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.altKey || event.ctrlKey || event.metaKey || isTyping(event.target)) return
+      if (locked || event.altKey || event.ctrlKey || event.metaKey || isTyping(event.target)) return
       const label = event.key.toUpperCase()
       if (!answered && label.length === 1 && part.options.some((option) => option.label === label)) {
         event.preventDefault()
@@ -210,16 +363,7 @@ const QuestionScreen = (
   const key = current.debrief?.keys.find((each) => each.part === part.position)?.key
 
   return (
-    <div className="practice-set" data-section={question.section.id}>
-      <p className="back">
-        <a className="quiet-link" {...linkProps("/")}>Practice</a>
-      </p>
-      <div className="set-head">
-        <p className="set-title">{view.title}</p>
-        <button type="button" className="link-button set-end" onClick={endSet} disabled={busy}>
-          End set
-        </button>
-      </div>
+    <>
       {current.position === 0 && <Skipped view={view} />}
       <h1 ref={questionHeading} tabIndex={-1} className="question-count">
         Question {current.position + 1} of {view.total}
@@ -235,7 +379,7 @@ const QuestionScreen = (
       <div className="question-body">
         <RichText source={question.stem} />
         {part.prompt !== null && <RichText source={part.prompt} />}
-        <fieldset className="answer-options" disabled={answered}>
+        <fieldset className="answer-options" disabled={answered || locked}>
           <legend className="visually-hidden">Answer choices</legend>
           {part.options.map((option) => {
             const isPicked = chosen === option.label
@@ -267,7 +411,7 @@ const QuestionScreen = (
         </fieldset>
       </div>
 
-      {!answered && (
+      {!answered && !locked && (
         <div className="answer-actions">
           <div className="check">
             <input id={names.guess} type="checkbox" checked={guessed} onChange={(event) => setGuessed(event.target.checked)} />
@@ -275,31 +419,42 @@ const QuestionScreen = (
           </div>
           <div className="actions">
             <button type="button" className="button" onClick={submit} disabled={picked === undefined || busy}>
-              Submit answer
+              {view.timed ? (last ? "Submit and finish" : "Submit and go on") : "Submit answer"}
             </button>
             <BookmarkButton bookmarked={current.bookmarked} disabled={busy} onToggle={toggleBookmark} />
           </div>
-          <p className="hint">Press A to E to choose, then Enter to submit.</p>
+          <p className="hint">
+            {view.timed
+              ? "Press A to E to choose, then Enter to submit. The next Question follows at once; how each went shows at the end."
+              : "Press A to E to choose, then Enter to submit."}
+          </p>
         </div>
       )}
       {problem !== undefined && <p className="problem" role="alert">{problem}</p>}
 
       {answered && current.debrief !== null && (
         <>
-          <DebriefPanel debrief={current.debrief} response={current.response} headingRef={debriefHeading} />
-          <div className="actions debrief-actions">
-            <button type="button" className="button" onClick={moveOn} disabled={busy}>
-              {last ? "Finish set" : "Next question"}
-            </button>
-            <button type="button" className="button button-quiet" onClick={() => void similar()} disabled={busy}>
-              Practise 3 similar
-            </button>
-            <BookmarkButton bookmarked={current.bookmarked} disabled={busy} onToggle={toggleBookmark} />
-          </div>
+          <DebriefPanel
+            debrief={current.debrief}
+            response={current.response}
+            timed={view.timed}
+            headingRef={debriefHeading}
+          />
+          {!locked && (
+            <div className="actions debrief-actions">
+              <button type="button" className="button" onClick={moveOn} disabled={busy}>
+                {last ? "Finish set" : "Next question"}
+              </button>
+              <button type="button" className="button button-quiet" onClick={() => void similar()} disabled={busy}>
+                Practise 3 similar
+              </button>
+              <BookmarkButton bookmarked={current.bookmarked} disabled={busy} onToggle={toggleBookmark} />
+            </div>
+          )}
           {similarNote !== undefined && <p className="hint" role="status">{similarNote}</p>}
         </>
       )}
-    </div>
+    </>
   )
 }
 
@@ -376,27 +531,42 @@ const Skipped = ({ view }: { readonly view: PracticeView }) => {
 }
 
 const resultText = (result: PracticeResult) =>
-  result.correct === null ? "Not answered" : result.correct ? "Right" : "Wrong"
+  result.timedOut ? "Time ran out" : result.correct === null ? "Not answered" : result.correct ? "Right" : "Wrong"
+
+// How a set went, in one or two sentences.
+const outcomeText = (view: PracticeView) => {
+  const timedOut = view.results.filter((result) => result.timedOut).length
+  const answered = view.results.filter((result) => result.correct !== null && !result.timedOut)
+  const right = answered.filter((result) => result.correct === true).length
+  const unanswered = view.results.length - answered.length - timedOut
+  const parts = [
+    answered.length === 0 ? "Nothing was answered in this set." : `${right} of ${answered.length} right.`,
+    unanswered > 0 ? `${unanswered} left unanswered.` : undefined,
+    view.endedBy === "time" ? "Time ran out." : undefined,
+    view.results.length < view.total ? `The set ended after ${view.results.length} of ${view.total} Questions.` : undefined,
+    view.clock === null
+      ? undefined
+      : `You took ${spokenDuration(Math.min(view.clock.elapsedMs, view.clock.limitMs))} of ${
+        spokenDuration(view.clock.limitMs)
+      }.`
+  ]
+  return parts.filter((part) => part !== undefined).join(" ")
+}
 
 const SetSummary = (
   { view, onFailure }: { readonly view: PracticeView; readonly onFailure: (failure: { readonly _tag: string }) => void }
 ) => {
   const heading = useFocusOnMount<HTMLHeadingElement>()
-  const answered = view.results.filter((result) => result.correct !== null)
-  const right = answered.filter((result) => result.correct === true).length
-  const unanswered = view.results.length - answered.length
   return (
     <>
       <p className="back">
         <a className="quiet-link" {...linkProps("/")}>Practice</a>
       </p>
       <h1 ref={heading} tabIndex={-1}>{view.title}</h1>
-      <p className="lede">
-        {answered.length === 0
-          ? "Nothing was answered in this set."
-          : `${right} of ${answered.length} right${unanswered > 0 ? `, ${unanswered} left unanswered` : ""}.`}
-        {view.results.length < view.total && ` The set ended after ${view.results.length} of ${view.total} Questions.`}
-      </p>
+      <p className="lede">{outcomeText(view)}</p>
+      {view.timed && (
+        <p className="quiet">Answers to Questions you had not seen before count toward your Score Estimates on Practice.</p>
+      )}
       <Skipped view={view} />
       <ol className="set-results">
         {view.results.map((result) => (
@@ -434,7 +604,10 @@ const ResultRow = (
   }
   const panel = useId()
   return (
-    <li className="set-result" data-result={result.correct === null ? "unanswered" : result.correct ? "right" : "wrong"}>
+    <li
+      className="set-result"
+      data-result={result.timedOut ? "wrong" : result.correct === null ? "unanswered" : result.correct ? "right" : "wrong"}
+    >
       <div className="set-result-head">
         <span className="set-result-name">Question {result.position + 1}, {result.questionType.name}</span>
         <span className="set-result-outcome">{resultText(result)}</span>
@@ -461,7 +634,7 @@ const ResultRow = (
             <RichText source={review.served.question.stem} />
             <AnsweredOptions served={review.served} />
             {review.served.debrief !== null && (
-              <DebriefPanel debrief={review.served.debrief} response={review.served.response} />
+              <DebriefPanel debrief={review.served.debrief} response={review.served.response} timed={view.timed} />
             )}
           </>
         )}

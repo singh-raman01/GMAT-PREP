@@ -24,18 +24,21 @@ export const useRemaining = (reading: ClockReading | undefined): number | undefi
   return reading.paused ? reading.remainingMs : Math.max(0, reading.remainingMs - (now - reading.at))
 }
 
-export const WarningMs = 5 * 60 * 1000
+// The time left turns to a warning in the last 5 minutes, or the last fifth
+// of a set shorter than that allows.
+export const warningFor = (limitMs: number) => Math.min(5 * 60 * 1000, limitMs / 5)
 
 export const Timer = (
-  { remainingMs, hidden, onToggle }: {
+  { remainingMs, warningMs, hidden, onToggle }: {
     readonly remainingMs: number
+    readonly warningMs: number
     readonly hidden: boolean
     readonly onToggle: () => void
   }
 ) => (
   <div className="timer">
     {!hidden && (
-      <span className={remainingMs <= WarningMs ? "timer-time timer-low" : "timer-time"}>
+      <span className={remainingMs <= warningMs ? "timer-time timer-low" : "timer-time"}>
         <span className="visually-hidden">Time left:</span> {minutesAndSeconds(remainingMs)}
       </span>
     )}

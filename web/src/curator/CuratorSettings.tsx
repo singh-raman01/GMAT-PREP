@@ -7,8 +7,10 @@ import {
   type LlmSettingsView,
   type LlmTask,
   LlmTaskLabels,
-  LlmTasks
+  LlmTasks,
+  type TargetTimeView
 } from "../../../src/api/Settings.ts"
+import { TargetSecondsRange } from "../../../src/api/targetTimes.ts"
 import { call } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
 
@@ -259,6 +261,8 @@ export const CuratorSettings = ({ onLocked, onStopped, onTestStarted }: Props) =
         onStarted={onTestStarted}
         onFailure={handle}
       />
+
+      <TargetTimes onFailure={handle} />
     </>
   )
 }
@@ -465,6 +469,123 @@ const ConnectionTest = (
           </div>
         )}
       {problem !== undefined && <p className="problem" role="alert">{problem}</p>}
+    </section>
+  )
+}
+
+// A time as m:ss, or seconds alone, as typed.
+const secondsOf = (text: string): number | undefined => {
+  const trimmed = text.trim()
+  const clock = /^(\d+):([0-5]\d)$/.exec(trimmed)
+  if (clock !== null) return Number(clock[1]) * 60 + Number(clock[2])
+  return /^\d+$/.test(trimmed) ? Number(trimmed) : undefined
+}
+
+const clockText = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`
+
+// How long a timed set gives each Question, per Question Type.
+const TargetTimes = ({ onFailure }: { readonly onFailure: (failure: { readonly _tag: string }) => void }) => {
+  const id = useId()
+  const [times, setTimes] = useState<ReadonlyArray<TargetTimeView>>()
+  const [typed, setTyped] = useState<Readonly<Record<string, string>>>({})
+  const [problem, setProblem] = useState<string>()
+  const [saved, setSaved] = useState<string>()
+  const busy = useRef(false)
+
+  const show = (loaded: ReadonlyArray<TargetTimeView>) => {
+    setTimes(loaded)
+    setTyped(Object.fromEntries(loaded.map((time) => [time.questionType, clockText(time.seconds)])))
+  }
+
+  useEffect(() => {
+    let live = true
+    void call((client) => client.settings.targetTimes()).then((result) => {
+      if (!live) return
+      if (result._tag === "Failure") return onFailure(result.failure)
+      show(result.success)
+    })
+    return () => {
+      live = false
+    }
+    // Loads once, when the screen opens.
+  }, [])
+
+  if (times === undefined) return null
+  const sections = [...new Map(times.map((time) => [time.section, time.sectionName])).entries()]
+
+  const save = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setSaved(undefined)
+    const parsed = times.map((time) => ({ time, seconds: secondsOf(typed[time.questionType] ?? "") }))
+    const wrong = parsed.filter(({ seconds }) =>
+      seconds === undefined || seconds < TargetSecondsRange.minimum || seconds > TargetSecondsRange.maximum
+    )
+    if (wrong.length > 0) {
+      return setProblem(
+        `Give ${wrong.map(({ time }) => time.name).join(", ")} a time from ${clockText(TargetSecondsRange.minimum)} to ${
+          clockText(TargetSecondsRange.maximum)
+        }, as minutes and seconds.`
+      )
+    }
+    setProblem(undefined)
+    const changed = parsed.filter(({ time, seconds }) => seconds !== time.seconds)
+    if (changed.length === 0) return setSaved("Nothing changed.")
+    if (busy.current) return
+    busy.current = true
+    const result = await call((client) =>
+      client.settings.saveTargetTimes({
+        payload: { times: changed.map(({ time, seconds }) => ({ questionType: time.questionType, seconds: seconds! })) }
+      })
+    )
+    busy.current = false
+    if (result._tag === "Failure") return onFailure(result.failure)
+    show(result.success)
+    setSaved("Target Times saved.")
+  }
+
+  return (
+    <section className="group" aria-labelledby={`${id}-title`}>
+      <h2 id={`${id}-title`}>Target Times</h2>
+      <p className="group-about">
+        A timed set gives each Question its Target Time and adds them up for its time limit. A Question Type takes
+        its Section's pace unless you give it its own.
+      </p>
+      <form className="target-times" noValidate onSubmit={(event) => void save(event)}>
+        {sections.map(([section, name]) => {
+          const mine = times.filter((time) => time.section === section)
+          return (
+            <fieldset key={section} className="target-section">
+              <legend>
+                {name}, {clockText(mine[0]?.sectionDefault ?? 0)} a Question unless set
+              </legend>
+              <div className="target-fields">
+                {mine.map((time) => (
+                  <div key={time.questionType} className="field target-field">
+                    <label htmlFor={`${id}-${time.questionType}`}>{time.name}</label>
+                    <input
+                      id={`${id}-${time.questionType}`}
+                      className="number-input"
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="off"
+                      value={typed[time.questionType] ?? ""}
+                      onChange={(event) => {
+                        setSaved(undefined)
+                        setTyped({ ...typed, [time.questionType]: event.target.value })
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
+            </fieldset>
+          )
+        })}
+        <div className="actions">
+          <button type="submit" className="button">Save Target Times</button>
+          <p className="saved" role="status">{saved ?? ""}</p>
+        </div>
+        {problem !== undefined && <p className="problem" role="alert">{problem}</p>}
+      </form>
     </section>
   )
 }

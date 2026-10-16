@@ -604,6 +604,10 @@ These came up while building a ticket. Like the starting values above, they can 
 7. A planned Question that leaves the Question Bank while a set is open (withdrawn, held or sent back for checks) leaves the set; a set with nothing left to serve ends.
 8. Untimed time spent is wall-clock time from serving to answering, with no pauses recorded, so it says little about pace. Rules about slow answers, such as the Error Log's, read timed Responses only.
 9. Until the set screen shows Stimuli and several Parts, Practice Sets take single-Part Questions only.
+10. Timed sets (ticket 07): each browser tab is a device of its own, named in the `X-GP-Device` header and kept for the tab's life, so a reload keeps holding the set. A request without the header acts as any device.
+11. The clock stops ticking while no timed set runs, and an answer that arrives after the time limit but before the next tick is refused: the set ends by time instead.
+12. The timer turns to a warning in the last 5 minutes, or in the last fifth of a set shorter than 25 minutes, and says so once to a screen reader.
+13. A Score Estimate is kept after every Rated Response, for the trend; the Practice page shows each Section's estimate as it stands now.
 
 ### Taxonomy review notes
 

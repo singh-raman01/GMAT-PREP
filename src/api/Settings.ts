@@ -122,6 +122,7 @@ export class TargetTimeView extends Schema.Class<TargetTimeView>("gmat-prep/api/
   questionType: Schema.String,
   name: Schema.String,
   section: Schema.String,
+  sectionName: Schema.String,
   seconds: Schema.Int,
   // The Section's default, which the Question Type takes unless set.
   sectionDefault: Schema.Int

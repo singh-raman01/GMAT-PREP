@@ -8,11 +8,12 @@ import {
   type PracticeOptions,
   type PracticePreview,
   type PracticeSummary,
+  type ScoreEstimateView,
   type StatusFilter
 } from "../../../src/api/Practice.ts"
 import { call } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
-import { dayAndTime } from "../format.ts"
+import { dayAndTime, spokenDuration } from "../format.ts"
 import { linkProps, navigate } from "../router.ts"
 
 interface Props {
@@ -42,6 +43,7 @@ interface Form {
   readonly set: string
   readonly from: string
   readonly to: string
+  readonly timed: boolean
 }
 
 const blank: Form = {
@@ -55,7 +57,8 @@ const blank: Form = {
   bookId: "",
   set: "",
   from: "",
-  to: ""
+  to: "",
+  timed: false
 }
 
 const wholeNumber = (text: string) => (/^\d+$/.test(text.trim()) ? Number(text.trim()) : undefined)
@@ -72,6 +75,7 @@ const choiceOf = (form: Form): { readonly choice: PracticeChoice } | { readonly 
         kind: "filters",
         status: form.status,
         size,
+        ...(form.timed ? { timed: true } : {}),
         ...(form.section === "" ? {} : { section: form.section }),
         ...(form.questionType === "" ? {} : { questionType: form.questionType }),
         ...(form.skill === "" ? {} : { skill: form.skill }),
@@ -90,6 +94,7 @@ const choiceOf = (form: Form): { readonly choice: PracticeChoice } | { readonly 
     choice: {
       kind: "book",
       bookId: form.bookId as BookId,
+      ...(form.timed ? { timed: true } : {}),
       ...(form.set === "" ? {} : { set: form.set }),
       ...(from === undefined ? {} : { from }),
       ...(to === undefined ? {} : { to })
@@ -97,7 +102,10 @@ const choiceOf = (form: Form): { readonly choice: PracticeChoice } | { readonly 
   }
 }
 
-const previewText = (preview: PracticePreview, mode: Mode) => {
+const previewText = (preview: PracticePreview, mode: Mode) =>
+  `${countText(preview, mode)}${preview.limitMs === null || preview.questions === 0 ? "" : ` Time: ${spokenDuration(preview.limitMs)}.`}`
+
+const countText = (preview: PracticePreview, mode: Mode) => {
   const held = preview.heldForMocks > 0
     ? ` ${preview.heldForMocks} ${preview.heldForMocks === 1 ? "is" : "are"} held back for Mocks.`
     : ""
@@ -117,6 +125,7 @@ export const PracticeHome = ({ onSessionLost, onStopped }: Props) => {
   const heading = useFocusOnMount<HTMLHeadingElement>()
   const [options, setOptions] = useState<PracticeOptions>()
   const [sets, setSets] = useState<ReadonlyArray<PracticeSummary>>()
+  const [scores, setScores] = useState<ReadonlyArray<ScoreEstimateView>>()
   const mounted = useRef(true)
 
   const handle = useCallback(
@@ -139,6 +148,9 @@ export const PracticeHome = ({ onSessionLost, onStopped }: Props) => {
       setOptions(result.success)
     })
     void loadSets()
+    void call((client) => client.practice.scores()).then((result) => {
+      if (mounted.current && result._tag === "Success") setScores(result.success)
+    })
     return () => {
       mounted.current = false
     }
@@ -150,7 +162,7 @@ export const PracticeHome = ({ onSessionLost, onStopped }: Props) => {
     void loadSets()
   }
 
-  const active = sets?.filter((set) => set.status === "active") ?? []
+  const active = sets?.filter((set) => set.status !== "finished") ?? []
   const finished = sets?.filter((set) => set.status === "finished") ?? []
   const empty = options !== undefined && options.sections.every((section) => section.questions === 0)
 
@@ -158,9 +170,10 @@ export const PracticeHome = ({ onSessionLost, onStopped }: Props) => {
     <>
       <h1 ref={heading} tabIndex={-1}>Practice</h1>
       <p className="lede">
-        Answer one Question at a time and see how it is solved straight after. Untimed sets never change your
-        scores.
+        Answer one Question at a time. An untimed set shows how each is solved straight after; a timed set runs on
+        the clock, shows it all at the end, and moves your Score Estimates.
       </p>
+      {scores !== undefined && scores.length > 0 && <Scores scores={scores} />}
       {active.length > 0 && (
         <section className="group" aria-labelledby="sets-active">
           <h2 id="sets-active">Sets in progress</h2>
@@ -169,7 +182,8 @@ export const PracticeHome = ({ onSessionLost, onStopped }: Props) => {
               <li key={set.id}>
                 <a className="set-name" {...linkProps(`/practice/${set.id}`)}>{set.title}</a>
                 <span className="set-facts">
-                  {set.answered} of {set.total} answered, started {dayAndTime(set.createdAt)}
+                  {set.answered} of {set.total} answered{set.status === "paused" ? ", paused" : ""}, started{" "}
+                  {dayAndTime(set.createdAt)}
                 </span>
                 <button
                   type="button"
@@ -204,8 +218,8 @@ export const PracticeHome = ({ onSessionLost, onStopped }: Props) => {
               <li key={set.id}>
                 <a className="set-name" {...linkProps(`/practice/${set.id}`)}>{set.title}</a>
                 <span className="set-facts">
-                  {set.answered === 0 ? "Nothing answered" : `${set.correct} of ${set.answered} right`},{" "}
-                  {dayAndTime(set.finishedAt ?? set.createdAt)}
+                  {set.answered === 0 ? "Nothing answered" : `${set.correct} of ${set.answered} right`}
+                  {set.endedBy === "time" ? ", time ran out" : ""}, {dayAndTime(set.finishedAt ?? set.createdAt)}
                 </span>
               </li>
             ))}
@@ -215,6 +229,31 @@ export const PracticeHome = ({ onSessionLost, onStopped }: Props) => {
     </>
   )
 }
+
+// Each Section's Score Estimate from timed answers, with its likely range.
+const Scores = ({ scores }: { readonly scores: ReadonlyArray<ScoreEstimateView> }) => (
+  <section className="group" aria-labelledby="scores-title">
+    <h2 id="scores-title">Score Estimates</h2>
+    <ul className="score-list">
+      {scores.map((each) => (
+        <li key={each.section.id}>
+          <span className="score-section">{each.section.name}</span>
+          <span className="score-value">{each.score}</span>
+          <span className="score-facts">
+            likely {each.low} to {each.high}, from {each.ratedResponses} timed{" "}
+            {each.ratedResponses === 1 ? "answer" : "answers"}
+          </span>
+        </li>
+      ))}
+    </ul>
+    {scores.some((each) => !each.calibrated) && (
+      <p className="hint">
+        Section scores run from 60 to 90. These are estimates from your timed answers, not yet calibrated against an
+        official score.
+      </p>
+    )}
+  </section>
+)
 
 const StartForm = (
   { options, onFailure }: { readonly options: PracticeOptions; readonly onFailure: (failure: { readonly _tag: string }) => void }
@@ -228,6 +267,8 @@ const StartForm = (
     set: useId(),
     from: useId(),
     to: useId(),
+    timed: useId(),
+    timedHint: useId(),
     preview: useId()
   }
   const [form, setForm] = useState<Form>(() => ({ ...blank, bookId: options.books[0]?.id ?? "" }))
@@ -469,6 +510,20 @@ const StartForm = (
           </div>
         )}
 
+      <div className="check timed-choice">
+        <input
+          id={ids.timed}
+          type="checkbox"
+          checked={form.timed}
+          aria-describedby={ids.timedHint}
+          onChange={(event) => change({ timed: event.target.checked })}
+        />
+        <label htmlFor={ids.timed}>Time the set</label>
+      </div>
+      <p id={ids.timedHint} className="hint">
+        A timed set gives each Question its Target Time, shows how each went at the end, and counts toward your Score
+        Estimates. Its clock keeps running if you close the tab; pause it to stop it.
+      </p>
       <p id={ids.preview} className="practice-preview" role="status">
         {"problem" in chosen ? chosen.problem : preview === undefined ? "" : previewText(preview, form.mode)}
       </p>

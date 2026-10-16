@@ -239,7 +239,9 @@ export class PracticePreview extends Schema.Class<PracticePreview>("gmat-prep/ap
   // How many match, before the set size.
   matching: Schema.Int,
   heldForMocks: Schema.Int,
-  unavailable: Schema.Int
+  unavailable: Schema.Int,
+  // A timed set's time limit: its Questions' Target Times added up.
+  limitMs: Schema.NullOr(Schema.Int)
 }) {}
 
 const Counted = Schema.Struct({ id: Schema.String, name: Schema.String, questions: Schema.Int })
