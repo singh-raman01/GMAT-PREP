@@ -10,13 +10,14 @@ import { linkProps, navigate } from "../router.ts"
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`
 
-const stepText = (each: RetryDue) =>
-  each.step === 1
-    ? `Step 1, the same Question, ${each.timed ? "timed, as it was slow" : "untimed"}`
-    : `Step ${each.step}, a Question like it you have not seen, timed`
-
-const whyText = (each: RetryDue) =>
-  each.reasons.includes("wrong") ? "missed" : each.reasons.includes("slow") ? "slow" : "guessed"
+// Why the entry is on a ladder, what this step serves, and when it fell due.
+const dueText = (each: RetryDue, today: string) => {
+  const why = each.reasons.includes("wrong") ? "Missed" : each.reasons.includes("slow") ? "Slow" : "Guessed"
+  const what = each.step === 1 ? "the same Question" : "a Question like it you have not seen"
+  const since = each.dueOn < today ? ` Due since ${calendarDay(each.dueOn)}.` : ""
+  const waits = each.held ? " Waits for your Sectional or Mock to end." : ""
+  return `${why}. Step ${each.step}: ${what}, ${each.timed ? "timed" : "untimed"}.${since}${waits}`
+}
 
 export const RetriesPanel = ({ onFailure }: { readonly onFailure: (failure: { readonly _tag: string }) => void }) => {
   const [view, setView] = useState<RetriesView>()
@@ -95,11 +96,7 @@ export const RetriesPanel = ({ onFailure }: { readonly onFailure: (failure: { re
                     {each.questionType.name}
                     {each.primarySkill === null ? "" : `, ${each.primarySkill.name}`}
                   </span>
-                  <span className="set-facts">
-                    {stepText(each)}; {whyText(each)}
-                    {each.dueOn < view.today ? `, due since ${calendarDay(each.dueOn)}` : ""}
-                    {each.held ? ". Waits for your Sectional or Mock to end" : ""}.
-                  </span>
+                  <span className="set-facts">{dueText(each, view.today)}</span>
                 </li>
               ))}
             </ul>
