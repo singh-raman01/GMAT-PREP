@@ -42,6 +42,7 @@ import {
   sources
 } from "../db/schema.ts"
 import { sessionMistakes } from "../learning/facts.ts"
+import { RetryItem } from "../learning/retryConfig.ts"
 import { scoreEstimatesOf, scoreEstimateView } from "../ratings/estimates.ts"
 import { rateSession } from "../ratings/rateSession.ts"
 import { ratedAmong } from "../ratings/rated.ts"
@@ -103,7 +104,10 @@ const PracticeConfig = Schema.Struct({
     Schema.Array(Schema.Struct({ questionId: Schema.String, set: Schema.String, number: Schema.Int }))
   ),
   heldForMocks: Schema.Array(Ref),
-  unavailable: Schema.Array(Ref)
+  unavailable: Schema.Array(Ref),
+  // For a retry set: the Error Log entry and Retry Ladder step each planned
+  // Question is for.
+  retry: Schema.optional(Schema.Array(RetryItem))
 })
 type PracticeConfig = typeof PracticeConfig.Type
 const encodeConfig = Schema.encodeSync(Schema.fromJsonString(PracticeConfig))
@@ -192,6 +196,9 @@ export class Practice extends Context.Service<Practice, {
   review(caller: Caller, id: SessionId, position: number): Effect.Effect<ServedView, PracticeNotFound | PracticeOutOfStep>
   similar(caller: Caller, questionId: QuestionId): Effect.Effect<PracticeView, QuestionNotFound | NoQuestionsMatch>
   scores(profileId: string): Effect.Effect<ReadonlyArray<ScoreEstimateView>>
+  // A retry set of the given Questions, each for its entry and step; the
+  // caller has chosen them.
+  startRetries(caller: Caller, items: ReadonlyArray<RetryItem>, timed: boolean): Effect.Effect<PracticeView>
 }>()("gmat-prep/server/Practice") {
   static readonly layer = Layer.effect(
     Practice,
@@ -1043,7 +1050,21 @@ export class Practice extends Context.Service<Practice, {
         Effect.forever(wake.await.pipe(Effect.andThen(Effect.sleep(TickMs)), Effect.andThen(tickAll)))
       )
 
+      const startRetries = (caller: Caller, items: ReadonlyArray<RetryItem>, timed: boolean) =>
+        begin(caller, {
+          title: timed ? "Retries, timed" : "Retries",
+          choice: null,
+          similarTo: null,
+          requested: null,
+          bookId: null,
+          planned: items.map((item) => item.questionId),
+          heldForMocks: [],
+          unavailable: [],
+          retry: [...items]
+        }, crypto.randomUUID(), timed).pipe(oneAtATime)
+
       return Practice.of({
+        startRetries,
         options,
         preview,
         start,
