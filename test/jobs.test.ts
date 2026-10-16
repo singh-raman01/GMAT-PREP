@@ -232,7 +232,8 @@ describe("Jobs", () => {
         yield* store.resume(job.id, 0.05)
         const done = yield* advanceUntil(whenJob(job.id, (current) => current.status === "done"))
         expect(done.spend).toBeCloseTo(4 * CallCost, 12)
-        expect(counting.started).toEqual([1, 2, 3, 4])
+        // Step 3 found the cap spent before its call, and ran again after.
+        expect(counting.started).toEqual([1, 2, 3, 3, 4])
       }),
       [counting.kind]
     )

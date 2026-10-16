@@ -26,6 +26,7 @@ const ReasonLabels: Record<ReasonCode, string> = {
   "same-text-other-key": "Same text, other key",
   "near-match": "Near match",
   "key-changed": "Key changed",
+  "source-key": "Another Source's key",
   "unread-page": "Page not read",
   "tags": "Tags",
   "solver-disagreement": "Solver disagreement",

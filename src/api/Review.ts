@@ -22,6 +22,8 @@ export const ReasonCode = Schema.Literals([
   "same-text-other-key",
   "near-match",
   "key-changed",
+  // Another Source of the Question gives another key.
+  "source-key",
   // Found by the Publish Gate after enrichment.
   "tags",
   "solver-disagreement",

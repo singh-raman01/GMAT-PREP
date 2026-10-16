@@ -35,42 +35,114 @@ const emphasis = (text: string): ReadonlyArray<Inline> => {
   return result
 }
 
-// One paragraph's inline content: text, line breaks and inline math.
-const inlines = (text: string): ReadonlyArray<Inline> => {
-  const result: Array<Inline> = []
-  const lines = text.split("\n")
-  lines.forEach((line, index) => {
-    if (index > 0) result.push({ _tag: "Break" })
-    let rest = line
-    for (;;) {
-      const open = rest.indexOf("\\(")
-      const close = open === -1 ? -1 : rest.indexOf("\\)", open + 2)
-      if (open === -1 || close === -1) {
-        result.push(...emphasis(rest))
-        return
-      }
-      if (open > 0) result.push(...emphasis(rest.slice(0, open)))
-      result.push({ _tag: "Math", tex: rest.slice(open + 2, close) })
-      rest = rest.slice(close + 2)
+// The source cut at its math delimiters. A backslash takes the character
+// after it with it, so \\( is an escaped backslash and a parenthesis, not
+// the start of math. Delimiters that do not pair up stay as text, and the
+// first such problem is kept for the render check.
+type Piece =
+  | { readonly _tag: "Text"; readonly text: string }
+  | { readonly _tag: "Math"; readonly tex: string; readonly display: boolean }
+
+const Opens: Readonly<Record<string, { readonly close: string; readonly display: boolean }>> = {
+  "(": { close: ")", display: false },
+  "[": { close: "]", display: true }
+}
+
+const holdsDelimiter = (tex: string) => {
+  for (let i = 0; i < tex.length; i++) {
+    if (tex[i] !== "\\") continue
+    if ("()[]".includes(tex[i + 1] ?? "")) return true
+    i++
+  }
+  return false
+}
+
+const scan = (source: string): { readonly pieces: ReadonlyArray<Piece>; readonly problem: string | undefined } => {
+  const pieces: Array<Piece> = []
+  let problem: string | undefined
+  let text = ""
+  const near = (at: number) => `"${source.slice(Math.max(0, at - 30), at + 30).replace(/\s+/g, " ").trim()}"`
+  let i = 0
+  while (i < source.length) {
+    if (source[i] !== "\\" || i + 1 >= source.length) {
+      text += source[i]
+      i++
+      continue
     }
-  })
-  return result.filter((inline) => inline._tag !== "Text" || inline.text !== "")
+    const next = source[i + 1]!
+    const open = Opens[next]
+    if (open === undefined) {
+      if (next === ")" || next === "]") problem ??= `a \\${next} closes math that was never opened, near ${near(i)}`
+      text += source.slice(i, i + 2)
+      i += 2
+      continue
+    }
+    // Inline math ends on its own line.
+    let end = -1
+    for (let j = i + 2; j < source.length; j++) {
+      if (!open.display && source[j] === "\n") break
+      if (source[j] !== "\\") continue
+      if (source[j + 1] === open.close) {
+        end = j
+        break
+      }
+      j++
+    }
+    if (end === -1) {
+      problem ??= `math opened with \\${next} is not closed with \\${open.close}, near ${near(i)}`
+      text += source.slice(i, i + 2)
+      i += 2
+      continue
+    }
+    const tex = source.slice(i + 2, end)
+    if (holdsDelimiter(tex)) problem ??= `math is opened inside math, near ${near(i)}`
+    if (text !== "") pieces.push({ _tag: "Text", text })
+    text = ""
+    pieces.push({ _tag: "Math", tex, display: open.display })
+    i = end + 2
+  }
+  if (text !== "") pieces.push({ _tag: "Text", text })
+  return { pieces, problem }
+}
+
+// A paragraph's inlines without breaks or spaces at either end.
+const tidyParagraph = (inlines: Array<Inline>): ReadonlyArray<Inline> => {
+  while (inlines[0]?._tag === "Break") inlines.shift()
+  while (inlines.at(-1)?._tag === "Break") inlines.pop()
+  const first = inlines[0]
+  if (first?._tag === "Text") inlines[0] = { ...first, text: first.text.trimStart() }
+  const last = inlines.at(-1)
+  if (last?._tag === "Text") inlines[inlines.length - 1] = { ...last, text: last.text.trimEnd() }
+  return inlines.filter((inline) => inline._tag !== "Text" || inline.text !== "")
 }
 
 export const parseRichText = (source: string): ReadonlyArray<Block> => {
   const blocks: Array<Block> = []
-  // Display math first: it may span lines and stands as its own block.
-  const parts = source.replace(/\r\n?/g, "\n").split(/\\\[([\s\S]*?)\\\]/)
-  parts.forEach((part, index) => {
-    if (index % 2 === 1) {
-      blocks.push({ _tag: "DisplayMath", tex: part.trim() })
-      return
+  let paragraph: Array<Inline> = []
+  const endParagraph = () => {
+    const inlines = tidyParagraph(paragraph)
+    if (inlines.length > 0) blocks.push({ _tag: "Paragraph", inlines })
+    paragraph = []
+  }
+  for (const piece of scan(source.replace(/\r\n?/g, "\n")).pieces) {
+    if (piece._tag === "Math") {
+      if (piece.display) {
+        endParagraph()
+        blocks.push({ _tag: "DisplayMath", tex: piece.tex.trim() })
+      } else {
+        paragraph.push({ _tag: "Math", tex: piece.tex })
+      }
+      continue
     }
-    for (const paragraph of part.split(/\n\s*\n/)) {
-      const trimmed = paragraph.trim()
-      if (trimmed !== "") blocks.push({ _tag: "Paragraph", inlines: inlines(trimmed) })
-    }
-  })
+    piece.text.split(/\n[ \t]*\n\s*/).forEach((chunk, index) => {
+      if (index > 0) endParagraph()
+      chunk.split("\n").forEach((line, at) => {
+        if (at > 0) paragraph.push({ _tag: "Break" })
+        paragraph.push(...emphasis(line))
+      })
+    })
+  }
+  endParagraph()
   return blocks
 }
 
@@ -83,12 +155,15 @@ export const mathIn = (source: string): ReadonlyArray<{ readonly tex: string; re
   )
 
 // KaTeX without anything that reaches outside the page, such as links or
-// images. Such commands show as red text; refused names the ones used.
+// images. Such commands show as red text; refused names the ones used. Sizes
+// are capped, so a rule or a space cannot cover the page.
 const katexOptions = (display: boolean, refused: Array<string>) => ({
   throwOnError: true,
   strict: "ignore" as const,
   output: "htmlAndMathml" as const,
   displayMode: display,
+  maxSize: 10,
+  maxExpand: 1000,
   trust: (context: { readonly command: string }) => {
     refused.push(context.command)
     return false
@@ -98,16 +173,36 @@ const katexOptions = (display: boolean, refused: Array<string>) => ({
 export const renderMath = (tex: string, display: boolean, refused: Array<string> = []): string =>
   katex.renderToString(tex, katexOptions(display, refused))
 
-// Renders into an element. KaTeX then sets its positioning through the DOM
-// rather than in style attributes, which the app's content security policy
-// refuses.
-export const renderMathInto = (element: HTMLElement, tex: string, display: boolean) =>
+// Renders into an element. The content security policy refuses style
+// attributes, and KaTeX sets a few, such as the width of an arrow over a
+// vector; set again through the DOM, they apply.
+export const renderMathInto = (element: HTMLElement, tex: string, display: boolean) => {
   katex.render(tex, element, katexOptions(display, []))
+  for (const styled of element.querySelectorAll<HTMLElement | SVGElement>("[style]")) {
+    const declared = styled.getAttribute("style") ?? ""
+    styled.removeAttribute("style")
+    styled.style.cssText = declared
+  }
+}
 
-// Why the text does not render, or undefined when it does. Math left open,
-// such as a \( with no \), is a failure too.
+// LaTeX in plain text: a command, or math between dollar signs, which shows
+// as raw LaTeX because only \( \) and \[ \] mark math.
+const strayLatex = (text: string) =>
+  /\\[a-zA-Z]+/.exec(text)?.[0] ?? /\$[^$\n]*[\\^_][^$\n]*\$/.exec(text)?.[0]
+
+// Why the text does not render, or undefined when it does: delimiters that do
+// not pair up, math KaTeX cannot render or that uses a refused command, and
+// LaTeX outside the delimiters.
 export const renderProblem = (source: string): string | undefined => {
-  for (const { tex, display } of mathIn(source)) {
+  const { pieces, problem } = scan(source.replace(/\r\n?/g, "\n"))
+  if (problem !== undefined) return problem
+  for (const piece of pieces) {
+    if (piece._tag === "Text") {
+      const stray = strayLatex(piece.text)
+      if (stray !== undefined) return `${stray} is LaTeX outside \\( \\) and \\[ \\], so it would show as typed`
+      continue
+    }
+    const { tex, display } = piece
     try {
       const refused: Array<string> = []
       renderMath(tex, display, refused)
@@ -118,23 +213,20 @@ export const renderProblem = (source: string): string | undefined => {
       }`
     }
   }
-  const unclosed = source.replace(/\\\[[\s\S]*?\\\]/g, "").split("\n").find((line) => {
-    const opens = (line.match(/\\\(/g) ?? []).length
-    const closes = (line.match(/\\\)/g) ?? []).length
-    return opens !== closes
-  })
-  if (unclosed !== undefined) return `math opened with \\( is not closed with \\) in "${unclosed.trim().slice(0, 80)}"`
-  if (/\\\[/.test(source.replace(/\\\[[\s\S]*?\\\]/g, ""))) return "math opened with \\[ is not closed with \\]"
   return undefined
 }
 
 // The text as compared when looking for the same Question: case, spacing,
-// math delimiters and emphasis marks ignored.
+// math delimiters, emphasis marks and spacing commands ignored, and a few
+// LaTeX spellings of the same thing made one.
 export const normalizeText = (source: string) =>
   source
     .toLowerCase()
     .replace(/\\[()[\]]/g, " ")
     .replace(/\*+/g, "")
-    .replace(/\\(?:left|right|,|;|!|quad)/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
+    .replace(/\\[dt]frac(?![a-z])/g, "\\frac")
+    .replace(/\\([%$&#])/g, "$1")
+    .replace(/\\(?:left|right|bigl|bigr|big|bigg)(?![a-z])/g, "")
+    .replace(/\\(?:[,;:!]|(?:qquad|quad)(?![a-z]))/g, "")
+    .replace(/~/g, "")
+    .replace(/\s+/g, "")

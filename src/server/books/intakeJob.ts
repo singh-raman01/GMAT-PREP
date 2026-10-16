@@ -3,7 +3,7 @@ import { Clock, Effect, Schema } from "effect"
 import { CostPreview, CostStep, type PageRoute } from "../../api/Books.ts"
 import { formatDollars } from "../../api/money.ts"
 import { Db } from "../db/Database.ts"
-import { bookPages, books, llmCalls } from "../db/schema.ts"
+import { bookPages, books, jobs, llmCalls } from "../db/schema.ts"
 import { type JobKind, JobStepFailed } from "../jobs/JobKind.ts"
 import { Settings, taskReadsImages } from "../settings/Settings.ts"
 import { BookFiles } from "./BookFiles.ts"
@@ -18,8 +18,9 @@ import { readSurvey, surveyPages } from "./survey.ts"
 export const PagesPerStep = 100
 export const SamplePages = 10
 
-// Dollars the sample may spend unless the Curator raises it.
-export const SampleCap = 0.5
+// Dollars the sample may spend unless the Curator raises it: room for about
+// twenty calls with two-page prompts on a costly model.
+export const SampleCap = 2
 
 const Params = Schema.Struct({ bookId: Schema.String, title: Schema.String })
 
@@ -166,12 +167,16 @@ const sampleStep = (jobId: string, bookId: string) =>
       yield* readPage({ jobId, bookId, page: page.page, role: page.role, group: page.group })
     }
 
+    // What the sample took across every reading of the Book, since a reading
+    // that was cancelled or failed leaves surveys and readings this one reuses.
+    const intakeJobs = db.select({ id: jobs.id }).from(jobs)
+      .where(and(eq(jobs.kind, "book-intake"), sql`json_extract(${jobs.params}, '$.bookId') = ${bookId}`))
     const spent = yield* db.select({
       task: llmCalls.task,
       tokens: sql<number>`coalesce(sum(${llmCalls.tokensIn} + ${llmCalls.tokensOut}), 0)`,
       cost: sql<number>`coalesce(sum(${llmCalls.cost}), 0)`,
       model: sql<string>`max(${llmCalls.model})`
-    }).from(llmCalls).where(eq(llmCalls.jobId, jobId)).groupBy(llmCalls.task).pipe(Effect.orDie)
+    }).from(llmCalls).where(inArray(llmCalls.jobId, intakeJobs)).groupBy(llmCalls.task).pipe(Effect.orDie)
     const of = (task: string) => spent.find((row) => row.task === task) ?? { tokens: 0, cost: 0, model: "" }
     // Pages like the sampled extractable ones, in the same share.
     const extractablePages = sample.length === 0 ? 0 : Math.round(extractable.length / sample.length * textPages.length)

@@ -5,7 +5,7 @@ import { HttpClient, HttpClientRequest } from "effect/http"
 import { AddedBook, type BookDetail, type BookId, BookUploadPath, type MapRangeInput } from "../src/api/Books.ts"
 import type { ReviewItemView } from "../src/api/Review.ts"
 import { Db } from "../src/server/db/Database.ts"
-import { llmCalls, pageReadings } from "../src/server/db/schema.ts"
+import { llmCalls, pageReadings, reviewItems } from "../src/server/db/schema.ts"
 import { AllJobKinds } from "../src/server/jobs/kinds/index.ts"
 import { FakeLlm } from "../src/server/llm/LlmTransport.ts"
 import { ApiKeyStore } from "../src/server/settings/ApiKeyStore.ts"
@@ -158,13 +158,19 @@ describe("Extracting Problem Solving Questions", () => {
         yield* confirmAndExtract(curator, first.book.id, rangesOf(first))
         const second = yield* proposedBook(curator, "Second edition")
         const extracted = yield* confirmAndExtract(curator, second.book.id, rangesOf(second))
-        expect(extracted.book.report).toMatchObject({ extracted: 8, merged: 8, held: 0, skippedGeometry: 1 })
+        // The question whose math the model garbles is held beside the first
+        // edition's copy instead of joining it unseen.
+        expect(extracted.book.report).toMatchObject({ extracted: 8, merged: 7, held: 1, skippedGeometry: 1 })
         const items = yield* curator.api.review.list()
-        expect(items).toHaveLength(8)
+        expect(items).toHaveLength(9)
         expect(byNumber(items, 1).question?.sources.map((source) => source.bookTitle)).toEqual([
           "Practice Questions, First edition",
           "Practice Questions, Second edition"
         ])
+        const garbled = items.filter((item) => item.reasons.some((reason) => reason.code === "render"))
+        expect(garbled).toHaveLength(2)
+        expect(garbled[1]?.reasons.map((reason) => reason.code)).toEqual(["render", "near-match"])
+        expect(garbled[1]?.related?.id).toBe(garbled[0]!.question!.id)
       }),
       AllJobKinds
     ))
@@ -180,7 +186,7 @@ describe("Extracting Problem Solving Questions", () => {
         // explanation still says C.
         const second = yield* proposedBook(curator, "Second edition", undefined, { 3: "B" })
         const extracted = yield* confirmAndExtract(curator, second.book.id, rangesOf(second))
-        expect(extracted.book.report).toMatchObject({ extracted: 8, merged: 7, held: 1 })
+        expect(extracted.book.report).toMatchObject({ extracted: 8, merged: 6, held: 2 })
         const items = yield* curator.api.review.list()
         const repeat = items.find((item) => item.question?.sources[0]?.bookTitle === "Practice Questions, Second edition")!
         expect(repeat.question).toMatchObject({ key: "B", sources: [{ number: 3 }] })
@@ -368,4 +374,193 @@ describe("Extracting Problem Solving Questions", () => {
       }),
       AllJobKinds
     ), 20_000)
+})
+
+describe("Fixing a Book Map", () => {
+  const withoutRole = (ranges: ReadonlyArray<MapRangeInput>, role: MapRangeInput["role"]) =>
+    ranges.filter((range) => !(range.role === role && range.group === "ps"))
+
+  test("renaming a set keeps its items, so no Source is counted twice", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const proposed = yield* proposedBook(curator)
+        const full = rangesOf(proposed)
+        yield* confirmAndExtract(curator, proposed.book.id, full)
+        const renamed = full.map((range) => (range.group === "ps" ? { ...range, set: "Problem Solving practice" } : range))
+        const extracted = yield* confirmAndExtract(curator, proposed.book.id, renamed)
+        expect(extracted.book.report).toMatchObject({ extracted: 8, merged: 0, skippedGeometry: 1 })
+        const items = yield* curator.api.review.list()
+        expect(items.every((item) => item.question === null || item.question.sources.length === 1)).toBe(true)
+        expect(byNumber(items, 1).question?.sources[0]?.set).toBe("Problem Solving practice")
+      }),
+      AllJobKinds
+    ))
+
+  test("a fix that brings a key keeps a repeat's reasons and the Question beside it", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const proposed = yield* proposedBook(curator)
+        const full = rangesOf(proposed)
+        yield* confirmAndExtract(curator, proposed.book.id, full.filter((range) => range.role === "questions"))
+        let items = yield* curator.api.review.list()
+        const firstId = byNumber(items, 1).question!.id
+        expect(codes(byNumber(items, 8))).toEqual(["no-key", "near-match"])
+
+        yield* confirmAndExtract(curator, proposed.book.id, withoutRole(full, "explanations"))
+        items = yield* curator.api.review.list()
+        const eighth = byNumber(items, 8)
+        expect(codes(eighth)).toEqual(["near-match", "key-changed"])
+        expect(eighth.related?.id).toBe(firstId)
+        const refused = yield* curator.api.review.publish({ params: { id: eighth.id } }).pipe(Effect.flip)
+        expect(refused).toMatchObject({ _tag: "CannotPublish" })
+      }),
+      AllJobKinds
+    ))
+
+  test("an explanation that comes or goes is checked again, even when the key stays", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const proposed = yield* proposedBook(curator)
+        const full = rangesOf(proposed)
+        yield* confirmAndExtract(curator, proposed.book.id, withoutRole(full, "explanations"))
+        let items = yield* curator.api.review.list()
+        expect(codes(byNumber(items, 6))).toEqual([])
+        yield* curator.api.review.publish({ params: { id: byNumber(items, 6).id } })
+
+        // The sixth explanation says D, against the key's C.
+        yield* confirmAndExtract(curator, proposed.book.id, full)
+        items = yield* curator.api.review.list()
+        expect(byNumber(items, 6).question).toMatchObject({ key: "C", status: "held" })
+        expect(codes(byNumber(items, 6))).toEqual(["key-conflict"])
+
+        yield* confirmAndExtract(curator, proposed.book.id, withoutRole(full, "explanations"))
+        items = yield* curator.api.review.list()
+        expect(codes(byNumber(items, 6))).toEqual([])
+      }),
+      AllJobKinds
+    ))
+
+  test("another Book's Source whose key changes holds the Question it joined", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const first = yield* proposedBook(curator)
+        yield* confirmAndExtract(curator, first.book.id, rangesOf(first))
+        let items = yield* curator.api.review.list()
+        const third = byNumber(items, 3)
+        yield* curator.api.review.publish({ params: { id: third.id } })
+
+        // The second edition's key says B for the third question; without its
+        // answer key, the explanation's C joins it to the first edition's.
+        const second = yield* proposedBook(curator, "Second edition", undefined, { 3: "B" })
+        yield* confirmAndExtract(curator, second.book.id, withoutRole(rangesOf(second), "answer-key"))
+        expect((yield* curator.api.review.list()).some((item) => item.question?.id === third.question!.id)).toBe(false)
+
+        yield* confirmAndExtract(curator, second.book.id, rangesOf(second))
+        items = yield* curator.api.review.list()
+        const held = items.find((item) => item.question?.id === third.question!.id)!
+        expect(held.question).toMatchObject({ key: "C", status: "held" })
+        expect(codes(held)).toEqual(["source-key"])
+        expect(held.reasons[0]?.detail).toBe(
+          "Practice Questions, Second edition, 4.0 Problem Solving, question 3 gives the key B; this Question's key is C."
+        )
+      }),
+      AllJobKinds
+    ))
+
+  test("items that leave the Book Map leave the Question Bank and the report", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const proposed = yield* proposedBook(curator)
+        const full = rangesOf(proposed)
+        yield* confirmAndExtract(curator, proposed.book.id, full)
+        // Page 4 holds questions 7 to 9; the seventh is a Retired geometry item.
+        const shorter = full.map((range) =>
+          range.role === "questions" && range.group === "ps" ? { ...range, lastPage: 3 } : range
+        )
+        const extracted = yield* confirmAndExtract(curator, proposed.book.id, shorter)
+        expect(extracted.book.report).toMatchObject({ extracted: 6, skippedGeometry: 0 })
+        expect(extracted.book.job?.result).toBe("Linked 1 question set; 2 items have left the Book Map.")
+        const numbers = (yield* curator.api.review.list()).flatMap((item) => item.question?.sources.map((s) => s.number) ?? [])
+        expect(numbers.toSorted()).toEqual([1, 2, 3, 4, 5, 6])
+      }),
+      AllJobKinds
+    ))
+
+  test("merging a Question points the items that named it at the one it joined", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const first = yield* proposedBook(curator)
+        yield* confirmAndExtract(curator, first.book.id, rangesOf(first))
+        // The second edition's eighth question has the same text with key B.
+        const second = yield* proposedBook(curator, "Second edition", undefined, { 8: "B" })
+        yield* confirmAndExtract(curator, second.book.id, rangesOf(second))
+        let items = yield* curator.api.review.list()
+        const eighths = items.filter((item) => item.question?.sources.some((source) => source.number === 8))
+        const [firstEighth, secondEighth] = eighths
+        expect(codes(firstEighth!)).toContain("near-match")
+        // Its explanation still says C, so its own key is in conflict too.
+        expect(codes(secondEighth!)).toEqual(["key-conflict", "same-text-other-key"])
+        expect(secondEighth!.related?.id).toBe(firstEighth!.question!.id)
+        const firstOne = firstEighth!.related!.id
+
+        yield* curator.api.review.merge({ params: { id: firstEighth!.id } })
+        items = yield* curator.api.review.list()
+        const repointed = items.find((item) => item.id === secondEighth!.id)!
+        expect(repointed.related?.id).toBe(firstOne)
+        const kept = yield* curator.api.review.keepAsVariant({ params: { id: repointed.id } })
+        expect(kept.related).toBeNull()
+      }),
+      AllJobKinds
+    ))
+
+  test("a Question with no key takes the key of the same Question from another Book", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const first = yield* proposedBook(curator)
+        yield* confirmAndExtract(curator, first.book.id, rangesOf(first).filter((range) => range.role === "questions"))
+        let items = yield* curator.api.review.list()
+        expect(codes(byNumber(items, 3))).toEqual(["no-key"])
+
+        const second = yield* proposedBook(curator, "Second edition")
+        yield* confirmAndExtract(curator, second.book.id, rangesOf(second))
+        items = yield* curator.api.review.list()
+        const third = items.find((item) => item.question?.sources.length === 2 && item.question.sources[0]?.number === 3)!
+        expect(third.question?.key).toBe("C")
+        expect(codes(third)).toEqual(["key-changed"])
+      }),
+      AllJobKinds
+    ))
+
+  test("a reason this version does not know still blocks publishing", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const proposed = yield* proposedBook(curator)
+        yield* confirmAndExtract(curator, proposed.book.id, rangesOf(proposed))
+        const item = byNumber(yield* curator.api.review.list(), 1)
+        const db = yield* Db
+        yield* db.update(reviewItems).set({ reasons: JSON.stringify([{ code: "from-the-future", detail: "?" }]) })
+          .where(eq(reviewItems.id, item.id)).pipe(Effect.orDie)
+        const listed = byNumber(yield* curator.api.review.list(), 1)
+        expect(codes(listed)).toEqual(["structure"])
+        const refused = yield* curator.api.review.publish({ params: { id: item.id } }).pipe(Effect.flip)
+        expect(refused).toMatchObject({ _tag: "CannotPublish" })
+      }),
+      AllJobKinds
+    ))
 })

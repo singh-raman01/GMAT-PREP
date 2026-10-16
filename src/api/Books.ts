@@ -134,6 +134,9 @@ export class BookReport extends Schema.Class<BookReport>("gmat-prep/api/BookRepo
   // Retired items, which never become Questions.
   skippedGeometry: Schema.Int,
   skippedSentenceCorrection: Schema.Int,
+  // A second item with a number its set already has, which keys and
+  // explanations cannot tell apart: usually a set that should be two.
+  skippedRepeatedNumbers: Schema.Int,
   // Pages extraction could not read, waiting in the Review Queue.
   unreadPages: Schema.Array(Schema.Int)
 }) {}
@@ -283,7 +286,8 @@ export class BooksApi extends HttpApiGroup.make("books")
       error: [BookNotFound, BookNotReady, LlmNotConfigured, RunCapTooLow]
     }),
     // Each confirmation makes a new Book Map version and starts extraction
-    // for it. spendCap sets the run's cap when the full run never started.
+    // for it. spendCap sets the run's cap when the full run never started,
+    // or raises it when the run has spent it.
     HttpApiEndpoint.put("confirmMap", "/books/:id/map", {
       ...bookParams,
       payload: Schema.Struct({

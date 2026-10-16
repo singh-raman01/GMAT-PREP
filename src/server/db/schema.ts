@@ -295,7 +295,9 @@ export const options = sqliteTable(
 )
 
 // Where a Question came from. One per extracted item: a Book's item that
-// repeats a Question already in the Bank joins it as another Source.
+// repeats a Question already in the Bank joins it as another Source. An item
+// is known by its Book, the page it starts on and its number, so renaming its
+// set in the Book Map keeps it the same item.
 export const sources = sqliteTable(
   "sources",
   {
@@ -306,15 +308,20 @@ export const sources = sqliteTable(
     set: text("set_name").notNull(),
     number: integer("number").notNull(),
     page: integer("page").notNull(),
-    // What the Book gives for this item.
+    // What the Book gives for this item: the key it takes (the answer key's,
+    // else the explanation's), and the explanation's own answer.
     bookKey: text("book_key"),
     explanation: text("explanation"),
+    explanationAnswer: text("explanation_answer"),
     bookLabel: text("book_label"),
     // True when the item joined a Question that was already in the Bank.
     merged: integer("merged", { mode: "boolean" }).notNull(),
+    // The Book Map version that last produced the item; older ones have left
+    // the map.
+    mapVersion: integer("map_version").notNull().default(0),
     createdAt: integer("created_at").notNull()
   },
-  (t) => [uniqueIndex("sources_book_item").on(t.bookId, t.set, t.number), index("sources_question").on(t.questionId)]
+  (t) => [uniqueIndex("sources_book_page_item").on(t.bookId, t.page, t.number), index("sources_question").on(t.questionId)]
 )
 
 // Items a Book holds that do not become Questions, such as Retired items.
@@ -325,10 +332,12 @@ export const bookSkips = sqliteTable(
     set: text("set_name").notNull(),
     number: integer("number").notNull(),
     page: integer("page").notNull(),
-    // sentence-correction or geometry
-    reason: text("reason").notNull()
+    // sentence-correction, geometry, or repeated-number for a second item
+    // with a number its set already has
+    reason: text("reason").notNull(),
+    mapVersion: integer("map_version").notNull().default(0)
   },
-  (t) => [primaryKey({ columns: [t.bookId, t.set, t.number] })]
+  (t) => [primaryKey({ columns: [t.bookId, t.page, t.number] })]
 )
 
 // The Review Queue: a Question held with every reason, or a page extraction

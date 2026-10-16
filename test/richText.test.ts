@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mathIn, normalizeText, parseRichText, renderProblem } from "../src/api/richText.ts"
+import { mathIn, normalizeText, parseRichText, renderMath, renderProblem } from "../src/api/richText.ts"
 
 describe("Question text", () => {
   test("paragraphs, line breaks, inline math, display math and emphasis are read; a dollar sign is text", () => {
@@ -42,5 +42,25 @@ describe("Question text", () => {
   test("the same Question written slightly differently compares equal", () => {
     expect(normalizeText("If \\(3x + 1 = 13\\),  what is **x**?")).toBe(normalizeText("if \\( 3x + 1 = 13 \\), What is x?"))
     expect(normalizeText("If \\(3x + 1 = 13\\)")).not.toBe(normalizeText("If \\(3x + 2 = 14\\)"))
+    expect(normalizeText("\\(x^2 - 5x + 6 = 0\\)")).toBe(normalizeText("\\(x^2-5x+6=0\\)"))
+    expect(normalizeText("\\(\\dfrac{3}{4}\\) of \\(20\\%\\)")).toBe(normalizeText("\\(\\frac{3}{4}\\) of \\(20%\\)"))
+    expect(normalizeText("\\(\\left( a \\right)\\,b\\)")).toBe(normalizeText("\\((a)b\\)"))
+    expect(normalizeText("\\(a \\leftarrow b\\)")).not.toBe(normalizeText("\\(a \\rightarrow b\\)"))
+  })
+
+  test("delimiters pair up, an escaped backslash is not one, and LaTeX outside them is caught", () => {
+    expect(mathIn("A line break \\(a \\\\ b\\) stays inside")).toEqual([{ tex: "a \\\\ b", display: false }])
+    expect(renderProblem("\\(a \\\\(b) c\\)")).toBeUndefined()
+    expect(renderProblem("\\( a \\[ b \\] c \\)")).toContain("opened inside math")
+    expect(renderProblem("It ends here \\] for no reason")).toContain("never opened")
+    expect(renderProblem("What is $\\frac{3}{4}$ of it?")).toContain("LaTeX outside")
+    expect(renderProblem("What is \\frac{3}{4} of it?")).toContain("LaTeX outside")
+    expect(renderProblem("What is $x^2$ of it?")).toContain("LaTeX outside")
+    expect(renderProblem("It costs $5 and $10.")).toBeUndefined()
+  })
+
+  test("KaTeX sizes are capped", () => {
+    expect(renderProblem("\\(\\rule{30em}{4em}\\)")).toBeUndefined()
+    expect(renderMath("\\rule{30em}{4em}", false)).toContain("border-right-width:10em")
   })
 })

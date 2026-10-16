@@ -175,18 +175,26 @@ describe("Checking a Book Map", () => {
   })
 
   test("every range needs a set name of at most 100 characters, and pages from 1", () => {
-    expect(mapProblems([ps("questions", 2, 4, "   "), ps("questions", 0, 3, "x".repeat(101))], 10)).toEqual([
+    expect(mapProblems([ps("questions", 2, 4, "   "), ps("questions", 0, 0, "x".repeat(101))], 10)).toEqual([
       "Questions, pages 2 to 4: give it a set name.",
-      `Questions, pages 0 to 3: shorten the set name to 100 characters.`,
-      "Questions, pages 0 to 3: pages are numbered from 1."
+      `Questions, page 0: shorten the set name to 100 characters.`,
+      "Questions, page 0: pages are numbered from 1."
     ])
     expect(mapProblems(Array.from({ length: 501 }, (_, i) => ps("questions", i + 1, i + 1)), 600)).toContain(
       "A Book Map holds at most 500 ranges."
     )
   })
 
-  test("ranges of different roles or sets may share pages", () => {
+  test("ranges of different roles may share pages, and so may two sets' keys, but not their questions", () => {
     expect(mapProblems([ps("questions", 2, 4), ps("explanations", 4, 6), ps("difficulty-labels", 4, 6)], 10)).toEqual([])
+    expect(mapProblems([
+      ps("questions", 2, 4),
+      ps("questions", 4, 6, "Review"),
+      ps("answer-key", 7, 7),
+      ps("answer-key", 7, 7, "Review")
+    ], 10)).toEqual([
+      "The sets \"Problem Solving\" and \"Review\" both have questions on page 4. Give each page of questions to one set."
+    ])
   })
 
   test("sets with questions but no answer key are pointed out", () => {
