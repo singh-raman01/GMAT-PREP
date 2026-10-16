@@ -335,7 +335,7 @@ export const holdForReview = (questionId: string, reasons: ReadonlyArray<Reason>
 
 // Sources whose Book gives another key than the Question's, for a Part the
 // Curator has not overridden: an overridden Part's key settles them.
-const sourceKeyReasons = (questionId: string) =>
+export const sourceKeyReasons = (questionId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
     const own = yield* keyOf(questionId)

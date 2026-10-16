@@ -33,6 +33,7 @@ import {
   recheckSources,
   RepeatCodes,
   repeatOf,
+  sourceKeyReasons,
   UnsureCodes
 } from "../books/bankWrites.ts"
 import { Db } from "../db/Database.ts"
@@ -551,7 +552,12 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
             }).pipe(Effect.orDie)
             yield* db.update(parts).set({ key, keyBasis: "override" }).where(eq(parts.id, part.id)).pipe(Effect.orDie)
             const [question] = yield* db.select().from(questions).where(eq(questions.id, questionId)).pipe(Effect.orDie)
-            const kept = readLinkReasons(question?.linkReasons ?? "[]").filter((each) => !KeyCodes.has(each.code))
+            // The override settles questions about this Part's key: another
+            // Book's key for another Part still holds the Question.
+            const kept = [
+              ...readLinkReasons(question?.linkReasons ?? "[]").filter((each) => !KeyCodes.has(each.code)),
+              ...yield* sourceKeyReasons(questionId).pipe(Effect.provideService(Db, db), Effect.orDie)
+            ]
             yield* db.update(questions).set({
               linkReasons: JSON.stringify(kept),
               status: "draft",
