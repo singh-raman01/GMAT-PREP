@@ -9,6 +9,7 @@ import { BookPage } from "./BookPage.tsx"
 import { CuratorBooks } from "./CuratorBooks.tsx"
 import { CuratorJobs } from "./CuratorJobs.tsx"
 import { CuratorSettings } from "./CuratorSettings.tsx"
+import { ReviewQueue } from "./ReviewQueue.tsx"
 
 type Stop = (error: { readonly _tag: string }) => void
 
@@ -69,6 +70,8 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
         ? "settings"
         : path.startsWith("/curator/jobs")
         ? "jobs"
+        : path.startsWith("/curator/review")
+        ? "review"
         : "books"
       const bookId = /^\/curator\/books\/([^/]+)/.exec(path)?.[1]
       return (
@@ -88,6 +91,9 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
               <a {...linkProps("/curator")} aria-current={section === "books" && bookId === undefined ? "page" : undefined}>
                 <span className={section === "books" ? "mark" : undefined}>Books</span>
               </a>
+              <a {...linkProps("/curator/review")} aria-current={section === "review" ? "page" : undefined}>
+                <span className={section === "review" ? "mark" : undefined}>Review Queue</span>
+              </a>
               <a {...linkProps("/curator/jobs")} aria-current={section === "jobs" ? "page" : undefined}>
                 <span className={section === "jobs" ? "mark" : undefined}>Jobs</span>
               </a>
@@ -106,6 +112,8 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
               )
               : section === "jobs"
               ? <CuratorJobs key="jobs" onLocked={locked} onStopped={onStopped} />
+              : section === "review"
+              ? <ReviewQueue key="review" onLocked={locked} onStopped={onStopped} />
               : bookId !== undefined
               ? (
                 <BookPage

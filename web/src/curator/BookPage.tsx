@@ -1,5 +1,12 @@
 import { type FormEvent, useCallback, useEffect, useId, useRef, useState } from "react"
-import { type BookDetail, bookFilePath, BookId, type BookView, type CostPreview } from "../../../src/api/Books.ts"
+import {
+  type BookDetail,
+  bookFilePath,
+  BookId,
+  type BookReport,
+  type BookView,
+  type CostPreview
+} from "../../../src/api/Books.ts"
 import { formatDollars } from "../../../src/api/money.ts"
 import { call } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
@@ -105,6 +112,7 @@ export const BookPage = ({ id, notice, onLocked, onStopped }: Props) => {
       </p>
 
       <BookProgress book={book} onChanged={replace} onFailure={handle} />
+      {book.report !== null && <Report report={book.report} />}
       {book.status === "previewed" && book.preview !== null && (
         <Preview book={book} preview={book.preview} onStarted={replace} onFailure={handle} />
       )}
@@ -124,6 +132,45 @@ export const BookPage = ({ id, notice, onLocked, onStopped }: Props) => {
           <ManualMap detail={detail} onConfirmed={setDetail} onFailure={handle} />
         )}
     </>
+  )
+}
+
+// What became of every item extracted from the Book.
+const Report = ({ report }: { readonly report: BookReport }) => {
+  const id = useId()
+  const rows: ReadonlyArray<readonly [string, number, string]> = [
+    ["Extracted", report.extracted, "items that became Questions or joined one"],
+    ["Waiting in the Review Queue", report.held, ""],
+    ["Published", report.published, ""],
+    ["Withdrawn", report.withdrawn, ""],
+    ["Already in the Question Bank", report.merged, "joined that Question as another Source"],
+    ["Skipped: geometry", report.skippedGeometry, "a Retired item"],
+    ["Skipped: Sentence Correction", report.skippedSentenceCorrection, "a Retired item"]
+  ]
+  return (
+    <section className="group" aria-labelledby={id}>
+      <h2 id={id}>Extraction report</h2>
+      <table className="report">
+        <tbody>
+          {rows.map(([label, count, about]) => (
+            <tr key={label}>
+              <th scope="row">{label}</th>
+              <td className="report-count">{count}</td>
+              <td className="report-about">{about}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {report.unreadPages.length > 0 && (
+        <p className="map-hint">
+          Not read: {report.unreadPages.length === 1 ? "page" : "pages"} {pageRuns(report.unreadPages)}, which wait in the
+          Review Queue.
+        </p>
+      )}
+      <p className="aside">
+        <a {...linkProps("/curator/review")}>Open the Review Queue</a>
+      </p>
+    </section>
   )
 }
 
@@ -227,27 +274,31 @@ const Preview = (
   return (
     <section className="group" aria-labelledby={`${capId}-title`}>
       <h2 id={`${capId}-title`}>Cost preview</h2>
+      <p className="group-about">
+        {preview.sampledPages.length === 0
+          ? "No page has a text layer, so nothing was sampled."
+          : `The full run, tried on ${preview.sampledPages.length} pages spread through the book: about ${
+            tokens(preview.projectedTokens)
+          } tokens and ${formatDollars(preview.projectedCost)} for the rest of it.`}
+      </p>
       <dl className="facts">
-        <div>
-          <dt>Sample</dt>
-          <dd>
-            {preview.sampledPages.length === 0
-              ? "No page has a text layer, so nothing was sampled."
-              : `${preview.sampledPages.length} pages read by ${preview.model}: ${tokens(preview.sampleTokens)} tokens, ${
-                formatDollars(preview.sampleCost)
-              }.`}
-          </dd>
-        </div>
-        <div>
-          <dt>Full run</dt>
-          <dd>
-            {preview.projectedPages === 0
-              ? "The sample covered every page with text."
-              : `The other ${preview.projectedPages} pages with text: about ${tokens(preview.projectedTokens)} tokens, ${
-                formatDollars(preview.projectedCost)
-              }.`} The Book Map model reads them and proposes the Book Map for you to check.
-          </dd>
-        </div>
+        {preview.steps.map((step) => (
+          <div key={step.name}>
+            <dt>{step.name}</dt>
+            <dd>
+              {step.sampledPages === 0
+                ? "No sampled page needed it."
+                : `${step.sampledPages} sampled ${step.sampledPages === 1 ? "page" : "pages"}: ${
+                  tokens(step.sampleTokens)
+                } tokens, ${formatDollars(step.sampleCost)}.`}{" "}
+              {step.projectedPages === 0
+                ? "Nothing more to read."
+                : `About ${step.projectedPages} more ${step.projectedPages === 1 ? "page" : "pages"}: ${
+                  tokens(step.projectedTokens)
+                } tokens, ${formatDollars(step.projectedCost)}.`}
+            </dd>
+          </div>
+        ))}
         {scanned.length > 0 && (
           <div>
             <dt>Scanned pages</dt>
