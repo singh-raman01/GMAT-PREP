@@ -193,6 +193,7 @@ describe("Taking a Sectional", () => {
       // Ability have moved.
       const after = yield* asha.first.sectionals.question({ params: { id: view.id, position: 1 } })
       expect(after.served.debrief).toMatchObject({ correct: false })
+      expect(after.served.response).toMatchObject({ selection: [{ part: 0, choice: "B" }], correct: false, rated: true })
       expect(after.served.question.source).not.toBeNull()
       expect(yield* db.select().from(difficulty).pipe(Effect.orDie)).toHaveLength(4)
       expect((yield* db.select().from(scoreEstimates).pipe(Effect.orDie)).length).toBeGreaterThan(0)

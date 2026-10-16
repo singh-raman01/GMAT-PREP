@@ -6,6 +6,7 @@ import {
   Named,
   PracticeClock,
   PracticeQuestion,
+  ResponseView,
   type Selection,
   SelectionInvalid,
   ServedView,
@@ -46,6 +47,7 @@ import {
   publishedPool,
   readSelection
 } from "../practice/history.ts"
+import { ratedAmong } from "../ratings/rated.ts"
 import { rateSession } from "../ratings/rateSession.ts"
 import { Settings } from "../settings/Settings.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
@@ -454,6 +456,9 @@ export class Sectionals extends Context.Service<Sectionals, {
           yield* end(session, "time", LimitMs)
         })
 
+      // A served Question. While the Section runs it says neither where it
+      // comes from nor how an answer went; once over, it has the final
+      // Response and its Debrief.
       const servedView = (
         session: SessionRow,
         row: typeof servedQuestions.$inferSelect,
@@ -466,12 +471,22 @@ export class Sectionals extends Context.Service<Sectionals, {
           const over = session.status === "finished"
           const question = practiceQuestion(stored, names, null)
           const selection = final === undefined ? [] : readSelection(final.selection)
+          const keys = stored.parts.map((part) => ({ position: part.position, key: part.key }))
+          const rated = over && final !== undefined
+            ? (yield* run(ratedAmong(session.profileId, [row.questionId]))).has(final.id)
+            : false
           return new ServedView({
             position: row.position,
-            // A running Section does not say where a Question comes from.
             question: over ? question : new PracticeQuestion({ ...question, source: null }),
             bookmarked: context.marked.has(context.resolve(row.questionId)),
-            response: null,
+            response: !over || final === undefined ? null : new ResponseView({
+              selection,
+              guessed: false,
+              timeSpentMs: final.timeSpentMs,
+              correct: final.kind !== "time-out" && isCorrect(selection, keys),
+              rated,
+              timedOut: final.kind === "time-out"
+            }),
             debrief: over ? debriefOf(stored, selection, names) : null
           })
         })

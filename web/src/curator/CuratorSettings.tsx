@@ -1,7 +1,17 @@
 import { type FormEvent, useEffect, useId, useRef, useState } from "react"
+import {
+  type Blueprint,
+  BlueprintGroups,
+  type BlueprintSection,
+  GroupCountRange,
+  type GroupId,
+  UnitSizeRange,
+  UnitsRange
+} from "../../../src/api/blueprint.ts"
 import { formatDollars } from "../../../src/api/money.ts"
 import {
   type ApiKeyStatus,
+  type BlueprintView,
   isApiKey,
   type JsonMode,
   type LlmSettingsView,
@@ -263,6 +273,8 @@ export const CuratorSettings = ({ onLocked, onStopped, onTestStarted }: Props) =
       />
 
       <TargetTimes onFailure={handle} />
+
+      <SectionBlueprint onFailure={handle} />
     </>
   )
 }
@@ -585,6 +597,178 @@ const TargetTimes = ({ onFailure }: { readonly onFailure: (failure: { readonly _
           <p className="saved" role="status">{saved ?? ""}</p>
         </div>
         {problem !== undefined && <p className="problem" role="alert">{problem}</p>}
+      </form>
+    </section>
+  )
+}
+
+const SectionNames: Record<BlueprintSection, string> = {
+  quant: "Quantitative Reasoning",
+  verbal: "Verbal Reasoning",
+  di: "Data Insights"
+}
+
+// A group's slots as typed: a count, or unit sizes such as 3, 3, 3, 4.
+const blueprintText = (blueprint: Blueprint, group: GroupId) => {
+  const value = blueprint[group]
+  return typeof value === "number" ? String(value) : value.join(", ")
+}
+
+const sizesOf = (text: string) => {
+  const pieces = text.split(/[\s,]+/).filter((piece) => piece !== "")
+  return pieces.every((piece) => /^\d+$/.test(piece)) ? pieces.map(Number) : undefined
+}
+
+// The Blueprint the fields describe, or what is wrong with them.
+const blueprintOf = (typed: Readonly<Record<GroupId, string>>): { readonly blueprint: Blueprint } | { readonly problems: ReadonlyArray<string> } => {
+  const problems: Array<string> = []
+  const value: Record<string, number | ReadonlyArray<number>> = {}
+  for (const group of BlueprintGroups) {
+    const text = typed[group.id].trim()
+    if (group.units) {
+      const sizes = sizesOf(text)
+      if (
+        sizes === undefined || sizes.length < UnitsRange.minimum || sizes.length > UnitsRange.maximum ||
+        sizes.some((size) => size < UnitSizeRange.minimum || size > UnitSizeRange.maximum)
+      ) {
+        problems.push(
+          `Give ${group.name} ${UnitsRange.minimum} to ${UnitsRange.maximum} ${group.id === "rc" ? "passages" : "sets"} of ${UnitSizeRange.minimum} to ${UnitSizeRange.maximum} Questions, such as 3, 3, 3, 4.`
+        )
+      } else value[group.id] = sizes
+    } else {
+      const count = /^\d+$/.test(text) ? Number(text) : undefined
+      if (count === undefined || count < GroupCountRange.minimum || count > GroupCountRange.maximum) {
+        problems.push(`Give ${group.name} ${GroupCountRange.minimum} to ${GroupCountRange.maximum} Questions.`)
+      } else value[group.id] = count
+    }
+  }
+  return problems.length > 0 ? { problems } : { blueprint: value as unknown as Blueprint }
+}
+
+const typedOf = (blueprint: Blueprint) =>
+  Object.fromEntries(BlueprintGroups.map((group) => [group.id, blueprintText(blueprint, group.id)])) as Record<GroupId, string>
+
+const totalOf = (typed: Readonly<Record<GroupId, string>>, section: BlueprintSection) =>
+  BlueprintGroups.filter((group) => group.section === section).reduce((sum, group) => {
+    const sizes = group.units ? sizesOf(typed[group.id]) : /^\d+$/.test(typed[group.id].trim()) ? [Number(typed[group.id])] : undefined
+    return sum === undefined || sizes === undefined ? undefined : sum + sizes.reduce((total, size) => total + size, 0)
+  }, 0 as number | undefined)
+
+// How many Questions each group gets in a Mock or Sectional Section, and the
+// sizes of RC passages and MSR sets.
+const SectionBlueprint = ({ onFailure }: { readonly onFailure: (failure: { readonly _tag: string }) => void }) => {
+  const id = useId()
+  const [view, setView] = useState<BlueprintView>()
+  const [typed, setTyped] = useState<Record<GroupId, string>>()
+  const [problems, setProblems] = useState<ReadonlyArray<string>>([])
+  const [saved, setSaved] = useState<string>()
+  const busy = useRef(false)
+
+  useEffect(() => {
+    let live = true
+    void call((client) => client.settings.blueprint()).then((result) => {
+      if (!live) return
+      if (result._tag === "Failure") return onFailure(result.failure)
+      setView(result.success)
+      setTyped(typedOf(result.success.blueprint))
+    })
+    return () => {
+      live = false
+    }
+    // Loads once, when the screen opens.
+  }, [])
+
+  if (view === undefined || typed === undefined) return null
+
+  const save = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setSaved(undefined)
+    const read = blueprintOf(typed)
+    if ("problems" in read) return setProblems(read.problems)
+    setProblems([])
+    if (busy.current) return
+    busy.current = true
+    const result = await call((client) => client.settings.saveBlueprint({ payload: { blueprint: read.blueprint } }))
+    busy.current = false
+    if (result._tag === "Failure") return onFailure(result.failure)
+    setView(result.success)
+    setTyped(typedOf(result.success.blueprint))
+    const released = result.success.released ?? 0
+    setSaved(
+      released === 0
+        ? "Blueprint saved."
+        : `Blueprint saved. ${released} ${released === 1 ? "passage or set" : "passages and sets"} held for Mocks fit no slot now and went to Practice Sets.`
+    )
+  }
+
+  return (
+    <section className="group" aria-labelledby={`${id}-title`}>
+      <h2 id={`${id}-title`}>Section Blueprint</h2>
+      <p className="group-about">
+        How many Questions each group gets in a Mock or Sectional Section. RC passages and MSR sets are served whole,
+        so they are given as the size of each one. GMAC does not publish the mix; these start at common estimates.
+      </p>
+      <form className="target-times" noValidate onSubmit={(event) => void save(event)}>
+        {(Object.keys(SectionNames) as Array<BlueprintSection>).map((section) => {
+          const total = totalOf(typed, section)
+          return (
+            <fieldset key={section} className="target-section">
+              <legend>
+                {SectionNames[section]}
+                {total === undefined ? "" : `, ${total} Questions`}
+              </legend>
+              <div className="target-fields">
+                {BlueprintGroups.filter((group) => group.section === section).map((group) => (
+                  <div key={group.id} className="field target-field">
+                    <label htmlFor={`${id}-${group.id}`}>
+                      {group.name}
+                      {group.units ? (group.id === "rc" ? ", passage sizes" : ", set sizes") : ""}
+                    </label>
+                    <input
+                      id={`${id}-${group.id}`}
+                      className={group.units ? undefined : "number-input"}
+                      type="text"
+                      inputMode={group.units ? "text" : "numeric"}
+                      autoComplete="off"
+                      value={typed[group.id]}
+                      aria-describedby={`${id}-${group.id}-default`}
+                      onChange={(event) => {
+                        setSaved(undefined)
+                        setTyped({ ...typed, [group.id]: event.target.value })
+                      }}
+                    />
+                    <span id={`${id}-${group.id}-default`} className="field-note">
+                      Default {blueprintText(view.defaults, group.id)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </fieldset>
+          )
+        })}
+        <p className="hint">
+          Passages and sets held for Mocks that fit no slot after a change go to Practice Sets, and stay there if you
+          change it back.
+        </p>
+        <div className="actions">
+          <button type="submit" className="button">Save the Blueprint</button>
+          <button
+            type="button"
+            className="button button-quiet"
+            onClick={() => {
+              setSaved(undefined)
+              setTyped(typedOf(view.defaults))
+            }}
+          >
+            Fill in the defaults
+          </button>
+          <p className="saved" role="status">{saved ?? ""}</p>
+        </div>
+        {problems.length > 0 && (
+          <div className="problem" role="alert">
+            {problems.map((problem) => <p key={problem}>{problem}</p>)}
+          </div>
+        )}
       </form>
     </section>
   )

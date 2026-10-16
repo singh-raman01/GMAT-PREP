@@ -2515,3 +2515,114 @@ input.number-input {
 .batch .job-note {
   margin: 0.25rem 0;
 }
+
+/* Sectionals: each Section's start, or what it is short of; Review & Edit's
+   list of Questions; and the report, its score first. */
+
+.section-starts {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rule);
+  max-width: 52rem;
+}
+
+.section-start {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.9rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.section-start-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+}
+
+.section-start-name {
+  font-weight: 700;
+}
+
+.section-start-head .set-facts {
+  flex: 1 1 10rem;
+}
+
+.section-short {
+  display: grid;
+  gap: 0.35rem;
+  font-size: var(--step-0);
+}
+
+.section-short p,
+.section-short ul {
+  margin: 0;
+}
+
+.section-short ul {
+  padding-left: 1.25rem;
+}
+
+.sectional .check {
+  margin: 1rem 0 0.5rem;
+}
+
+.review-list {
+  display: grid;
+  margin: 1rem 0 1.5rem;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rule);
+  max-width: 52rem;
+}
+
+.review-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 1rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.review-name {
+  font-weight: 700;
+}
+
+.review-row .set-facts {
+  flex: 1 1 8rem;
+}
+
+.report-score {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 1rem;
+  margin: 0.5rem 0 1rem;
+}
+
+.report-score .score-value {
+  font-size: var(--step-4);
+  line-height: 1.1;
+}
+
+.report-notes {
+  max-width: 68ch;
+  padding-left: 1.25rem;
+  font-size: var(--step-0);
+}
+
+.field-note {
+  color: var(--pencil);
+  font-size: var(--step--1);
+}
+
+.sectional-report > p {
+  max-width: 68ch;
+}
+
+.sectional-report .results-title {
+  margin-top: 2.5rem;
+}
