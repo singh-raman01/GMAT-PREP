@@ -1,5 +1,5 @@
 import { and, desc, eq, gt, sql } from "drizzle-orm"
-import { Clock, Context, Effect, Layer, Option, Schema } from "effect"
+import { Cause, Clock, Context, Effect, Layer, Option, Schema } from "effect"
 import {
   JobId,
   JobNotChangeable,
@@ -70,6 +70,26 @@ export const settleEnd = (end: JobEnd, requested: "pause" | "cancel" | null): Jo
 const encodeJson = <A>(schema: Schema.Codec<A, unknown>, value: A) =>
   JSON.stringify(Schema.encodeSync(Schema.toCodecJson(schema))(value))
 
+// Queues a job, inside the caller's transaction when there is one: a job
+// step can hand work on to another job this way.
+export const queueJob = <P, C>(kind: JobKind<P, C>, params: P, spendCap: number) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const now = yield* Clock.currentTimeMillis
+    const [created] = yield* db.insert(jobs).values({
+      id: crypto.randomUUID(),
+      kind: kind.kind,
+      params: encodeJson(kind.params, params),
+      status: "queued",
+      stepsTotal: kind.stepsTotal(params),
+      spendCap,
+      revision: nextRevision,
+      createdAt: now,
+      updatedAt: now
+    }).returning().pipe(Effect.orDie)
+    return created!
+  })
+
 export const decodeJson = <A>(schema: Schema.Codec<A, unknown>, text: string): Option.Option<A> =>
   Option.flatMap(
     Option.liftThrowable(() => JSON.parse(text) as unknown)(),
@@ -138,21 +158,7 @@ export class JobStore extends Context.Service<JobStore, {
         db.select().from(jobs).where(eq(jobs.id, id)).pipe(Effect.map((rows) => rows[0]), Effect.orDie)
 
       const create = <P, C>(kind: JobKind<P, C>, params: P, spendCap: number) =>
-        Effect.gen(function*() {
-          const now = yield* Clock.currentTimeMillis
-          const [created] = yield* db.insert(jobs).values({
-            id: crypto.randomUUID(),
-            kind: kind.kind,
-            params: encodeJson(kind.params, params),
-            status: "queued",
-            stepsTotal: kind.stepsTotal(params),
-            spendCap,
-            revision: nextRevision,
-            createdAt: now,
-            updatedAt: now
-          }).returning().pipe(Effect.orDie)
-          return view(created!)
-        })
+        queueJob(kind, params, spendCap).pipe(Effect.provideService(Db, db), Effect.map(view))
 
       const list = db.select().from(jobs).orderBy(desc(jobs.createdAt)).limit(100).pipe(
         Effect.map((rows) => rows.map(view)),
@@ -231,6 +237,18 @@ export class JobStore extends Context.Service<JobStore, {
           }
         })
 
+      // What a job's kind does once the job is cancelled or fails. Its own
+      // failure is logged, never the Curator's or the worker's.
+      const afterStop = (id: string) =>
+        Effect.gen(function*() {
+          const current = yield* row(id)
+          const kind = current === undefined ? undefined : kinds.get(current.kind)
+          if (current === undefined || kind?.stopped === undefined) return
+          const params = decodeJson(kind.params, current.params)
+          if (Option.isNone(params)) return
+          yield* kind.stopped(params.value).pipe(Effect.provideService(Db, db))
+        }).pipe(Effect.catchCause((cause) => Effect.logError(`A stopped job's follow-up failed: ${Cause.pretty(cause)}`)))
+
       const cancel = (id: JobId) =>
         change(id, (current, now): Decision<JobNotChangeable> => {
           switch (current.status) {
@@ -249,7 +267,7 @@ export class JobStore extends Context.Service<JobStore, {
             default:
               return notChangeable(current)
           }
-        })
+        }).pipe(Effect.tap((job) => (job.status === "cancelled" ? afterStop(id) : Effect.void)))
 
       const latestRevision = db.select({ revision: sql<number>`coalesce(max(${jobs.revision}), 0)` }).from(jobs).pipe(
         Effect.map((rows) => rows[0]?.revision ?? 0),
@@ -354,7 +372,10 @@ export class JobStore extends Context.Service<JobStore, {
               .where(and(ours(id, workerId), eq(jobs.revision, current.revision)))
               .returning({ id: jobs.id })
               .pipe(Effect.orDie)
-            if (updated.length > 0) return "ended" as const
+            if (updated.length > 0) {
+              if (changes.status === "cancelled" || changes.status === "failed") yield* afterStop(id)
+              return "ended" as const
+            }
           }
         })
 

@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "cfd8e85d-0861-4564-a190-c16e6d10a605",
+  "id": "9052bf8d-29ba-4baa-9c32-e7044ea490c8",
   "prevIds": [
-    "5abe82fb-6973-4877-b025-ae558c2f56a6"
+    "cf79ba33-d902-4b8c-aa95-bbd5fc07e5e4"
   ],
   "ddl": [
     {
@@ -108,6 +108,10 @@
     },
     {
       "name": "review_items",
+      "entityType": "tables"
+    },
+    {
+      "name": "score_estimates",
       "entityType": "tables"
     },
     {
@@ -480,7 +484,7 @@
       "autoincrement": false,
       "default": null,
       "generated": null,
-      "name": "session_id",
+      "name": "profile_id",
       "entityType": "columns",
       "table": "bookmarks"
     },
@@ -491,6 +495,16 @@
       "default": null,
       "generated": null,
       "name": "question_id",
+      "entityType": "columns",
+      "table": "bookmarks"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
       "entityType": "columns",
       "table": "bookmarks"
     },
@@ -2015,6 +2029,16 @@
       "table": "questions"
     },
     {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "merged_into",
+      "entityType": "columns",
+      "table": "questions"
+    },
+    {
       "type": "integer",
       "notNull": true,
       "autoincrement": false,
@@ -2246,6 +2270,116 @@
     },
     {
       "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "score_estimates"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "profile_id",
+      "entityType": "columns",
+      "table": "score_estimates"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "section",
+      "entityType": "columns",
+      "table": "score_estimates"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "at",
+      "entityType": "columns",
+      "table": "score_estimates"
+    },
+    {
+      "type": "real",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "ability",
+      "entityType": "columns",
+      "table": "score_estimates"
+    },
+    {
+      "type": "real",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "standard_error",
+      "entityType": "columns",
+      "table": "score_estimates"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "score",
+      "entityType": "columns",
+      "table": "score_estimates"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "low",
+      "entityType": "columns",
+      "table": "score_estimates"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "high",
+      "entityType": "columns",
+      "table": "score_estimates"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "calibrated",
+      "entityType": "columns",
+      "table": "score_estimates"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "rated_responses",
+      "entityType": "columns",
+      "table": "score_estimates"
+    },
+    {
+      "type": "text",
       "notNull": true,
       "autoincrement": false,
       "default": null,
@@ -2281,6 +2415,16 @@
       "default": null,
       "generated": null,
       "name": "served_at",
+      "entityType": "columns",
+      "table": "served_questions"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "served_elapsed_ms",
       "entityType": "columns",
       "table": "served_questions"
     },
@@ -2341,6 +2485,66 @@
       "default": null,
       "generated": null,
       "name": "status",
+      "entityType": "columns",
+      "table": "sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_limit_ms",
+      "entityType": "columns",
+      "table": "sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "elapsed_ms",
+      "entityType": "columns",
+      "table": "sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "clock_saved_at",
+      "entityType": "columns",
+      "table": "sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "false",
+      "generated": null,
+      "name": "interrupted",
+      "entityType": "columns",
+      "table": "sessions"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "holder",
+      "entityType": "columns",
+      "table": "sessions"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "ended_by",
       "entityType": "columns",
       "table": "sessions"
     },
@@ -2691,16 +2895,16 @@
     },
     {
       "columns": [
-        "session_id"
+        "profile_id"
       ],
-      "tableTo": "sessions",
+      "tableTo": "profiles",
       "columnsTo": [
         "id"
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
       "nameExplicit": false,
-      "name": "fk_bookmarks_session_id_sessions_id_fk",
+      "name": "fk_bookmarks_profile_id_profiles_id_fk",
       "entityType": "fks",
       "table": "bookmarks"
     },
@@ -2716,6 +2920,21 @@
       "onDelete": "CASCADE",
       "nameExplicit": false,
       "name": "fk_bookmarks_question_id_questions_id_fk",
+      "entityType": "fks",
+      "table": "bookmarks"
+    },
+    {
+      "columns": [
+        "session_id"
+      ],
+      "tableTo": "sessions",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "nameExplicit": false,
+      "name": "fk_bookmarks_session_id_sessions_id_fk",
       "entityType": "fks",
       "table": "bookmarks"
     },
@@ -3021,6 +3240,21 @@
     },
     {
       "columns": [
+        "profile_id"
+      ],
+      "tableTo": "profiles",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_score_estimates_profile_id_profiles_id_fk",
+      "entityType": "fks",
+      "table": "score_estimates"
+    },
+    {
+      "columns": [
         "session_id"
       ],
       "tableTo": "sessions",
@@ -3142,7 +3376,7 @@
     },
     {
       "columns": [
-        "session_id",
+        "profile_id",
         "question_id"
       ],
       "nameExplicit": false,
@@ -3385,6 +3619,15 @@
       "nameExplicit": false,
       "name": "review_items_pk",
       "table": "review_items",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "score_estimates_pk",
+      "table": "score_estimates",
       "entityType": "pks"
     },
     {
@@ -3639,6 +3882,28 @@
       "name": "review_items_page",
       "entityType": "indexes",
       "table": "review_items"
+    },
+    {
+      "columns": [
+        {
+          "value": "profile_id",
+          "isExpression": false
+        },
+        {
+          "value": "section",
+          "isExpression": false
+        },
+        {
+          "value": "at",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "score_estimates_profile",
+      "entityType": "indexes",
+      "table": "score_estimates"
     },
     {
       "columns": [

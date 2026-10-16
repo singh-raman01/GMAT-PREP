@@ -394,6 +394,67 @@ describe("The cost preview", () => {
       AllJobKinds
     ))
 
+  test("enrichment is costed by the sample Questions enriched, however many requests were tried", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure()
+        const fake = yield* FakeLlm
+        const isApproaches = (request: Effect.Success<typeof fake.requests>[number]) =>
+          (request.messages[0]?.content ?? "").includes("You write teaching material")
+        // The first Approaches request is rate limited and tried again.
+        let limited = false
+        yield* fake.respondWith((request) => {
+          if (isApproaches(request) && !limited) {
+            limited = true
+            return { status: 429, message: "slow down" }
+          }
+          return fakeBookModel(request)
+        })
+        const curator = yield* curatorBrowser
+        const book = yield* Effect.promise(() => makeBook({ psPages: 10 }))
+        const { book: view } = added(yield* upload(curator.cookie, book.bytes, { title: "Big Practice" }))
+        const previewed = yield* waitForStatus(curator.api, view.id, "previewed")
+        const enrichment = previewed.book.preview!.steps[2]!
+        expect(enrichment).toMatchObject({ costed: true, sampledPages: 2, projectedPages: 31 })
+        // Five calls a Question cost; the refused try cost nothing.
+        expect(enrichment.sampleCost).toBeCloseTo(10 * 0.0028, 12)
+        expect(enrichment.projectedCost).toBeCloseTo(10 * 0.0028 / 2 * 31, 12)
+      }),
+      AllJobKinds
+    ))
+
+  test("a sample that stops while enriching picks up at the Question it was on", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure()
+        const fake = yield* FakeLlm
+        const isApproaches = (request: Effect.Success<typeof fake.requests>[number]) =>
+          (request.messages[0]?.content ?? "").includes("You write teaching material")
+        // The API is down for Approaches until the reading pauses.
+        let down = true
+        yield* fake.respondWith((request) =>
+          isApproaches(request) && down ? { status: 503, message: "down" } : fakeBookModel(request)
+        )
+        const curator = yield* curatorBrowser
+        const book = yield* Effect.promise(() => makeBook({ psPages: 10 }))
+        const { book: view } = added(yield* upload(curator.cookie, book.bytes, { title: "Big Practice" }))
+        yield* advanceUntil(
+          detailOf(curator.api, view.id).pipe(Effect.map((detail) => (detail.book.job?.status === "paused" ? detail : undefined))),
+          { step: "1 second", maxSteps: 3000 }
+        )
+        down = false
+        const approachesBefore = (yield* fake.requests).filter(isApproaches).length
+        const previewed = yield* advanceUntil(
+          detailOf(curator.api, view.id).pipe(Effect.map((detail) => (detail.book.status === "previewed" ? detail : undefined))),
+          { step: "10 seconds", maxSteps: 3000 }
+        )
+        // Both sample Questions got their Approaches after the pause.
+        expect((yield* fake.requests).filter(isApproaches).length - approachesBefore).toBe(2)
+        expect(previewed.book.preview!.steps[2]).toMatchObject({ costed: true, sampledPages: 2 })
+      }),
+      AllJobKinds
+    ))
+
   test("without models for enrichment, it is not costed and no cap is suggested, until it is costed again", () =>
     runWithWorker(
       Effect.gen(function*() {

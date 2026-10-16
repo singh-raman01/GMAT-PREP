@@ -3,7 +3,7 @@ import { Effect } from "effect"
 import { studyDayOf } from "../../api/studyDay.ts"
 import { Db } from "../db/Database.ts"
 import { difficulty, questions, responses, servedQuestions, sessions } from "../db/schema.ts"
-import { currentDifficulty, isCorrect, keysOf, readSelection } from "../practice/history.ts"
+import { currentDifficulty, isCorrect, keysOf, mergeTargets, readSelection } from "../practice/history.ts"
 import { type AbilityFit, fitAbility, recencyWeight } from "./model.ts"
 import { ratedResponses } from "./rated.ts"
 
@@ -20,18 +20,22 @@ export interface RatedAnswer {
   readonly at: number
 }
 
+// A Question the Curator merged into another counts as that one.
 export const ratedHistory = (profileId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
-    const served = yield* db.select({
+    const resolve = yield* mergeTargets
+    const served = (yield* db.select({
       questionId: servedQuestions.questionId,
       sessionId: servedQuestions.sessionId,
       timed: sessions.timed,
       at: servedQuestions.servedAt
     }).from(servedQuestions)
       .innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
-      .where(eq(sessions.profileId, profileId))
-    const facts = yield* db.select().from(responses).where(eq(responses.profileId, profileId))
+      .where(eq(sessions.profileId, profileId)))
+      .map((event) => ({ ...event, questionId: resolve(event.questionId) }))
+    const facts = (yield* db.select().from(responses).where(eq(responses.profileId, profileId)))
+      .map((fact) => ({ ...fact, questionId: resolve(fact.questionId) }))
     const rated = ratedResponses(served, facts)
     const kept = facts.filter((fact) => rated.has(fact.id))
     if (kept.length === 0) return [] as ReadonlyArray<RatedAnswer>

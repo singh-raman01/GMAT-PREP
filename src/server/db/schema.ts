@@ -258,6 +258,9 @@ export const questions = sqliteTable(
     reserveDecidedAt: integer("reserve_decided_at"),
     // When the Curator released a Reserve Question into Practice Sets; one-way.
     releasedAt: integer("released_at"),
+    // The Question the Curator merged this one into. A merged Question stays,
+    // withdrawn, and a Learner's history with it counts for that Question.
+    mergedInto: text("merged_into"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull()
   },
@@ -566,14 +569,18 @@ export const responses = sqliteTable(
   ]
 )
 
+// A Profile's Bookmarks: one per Question, whichever set marked it, so a
+// Bookmark can be cleared from any set that shows the Question.
 export const bookmarks = sqliteTable(
   "bookmarks",
   {
-    sessionId: text("session_id").notNull().references(() => sessions.id, { onDelete: "cascade" }),
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
     questionId: text("question_id").notNull().references(() => questions.id, { onDelete: "cascade" }),
+    // The set it was marked in.
+    sessionId: text("session_id").references(() => sessions.id, { onDelete: "set null" }),
     createdAt: integer("created_at").notNull()
   },
-  (t) => [primaryKey({ columns: [t.sessionId, t.questionId] })]
+  (t) => [primaryKey({ columns: [t.profileId, t.questionId] })]
 )
 
 // Derived and rebuildable: a Question's current Difficulty, moved from its

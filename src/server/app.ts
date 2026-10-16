@@ -16,9 +16,7 @@ import { Practice } from "./practice/Practice.ts"
 import { Profiles } from "./profiles/Profiles.ts"
 import { Bank } from "./review/Bank.ts"
 import { Golden } from "./review/Golden.ts"
-import { QuestionRefresh, RefreshCap } from "./review/refreshJob.ts"
 import { ReviewQueue } from "./review/ReviewQueue.ts"
-import { strandedDrafts } from "./review/stranded.ts"
 import { ApiKeyStore } from "./settings/ApiKeyStore.ts"
 import { Settings } from "./settings/Settings.ts"
 import { Taxonomy } from "./taxonomy/Taxonomy.ts"
@@ -33,20 +31,6 @@ const RemoveUploadLeftovers = Layer.effectDiscard(
   })
 )
 
-// Drafts no job would check, as after the app stopped between a change and
-// queueing its job, get a job when the app starts.
-const CheckStrandedDrafts = Layer.effectDiscard(
-  Effect.gen(function*() {
-    const stranded = yield* strandedDrafts.pipe(Effect.orDie)
-    if (stranded.length === 0) return
-    yield* (yield* JobStore).create(
-      QuestionRefresh,
-      { questionIds: stranded, reason: "Checking Questions left waiting" },
-      RefreshCap
-    )
-  })
-)
-
 // Domain services over the opened, migrated database, for the given job
 // kinds. Requires AppConfig.
 export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Layer.mergeAll(
@@ -58,8 +42,7 @@ export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Layer.mergeAll(
   Golden.layer,
   Bank.layer,
   Practice.layer,
-  RemoveUploadLeftovers,
-  CheckStrandedDrafts
+  RemoveUploadLeftovers
 ).pipe(
   Layer.provideMerge(Layer.mergeAll(Settings.layer, ApiKeyStore.layer, BookFiles.layer, Taxonomy.layer)),
   Layer.provideMerge(JobStore.layer),

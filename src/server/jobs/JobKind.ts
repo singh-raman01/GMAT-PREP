@@ -42,6 +42,9 @@ export interface JobKind<P, C> {
   readonly start: (params: P) => C
   readonly stepsTotal: (params: P) => number | null
   readonly step: (input: StepInput<P, C>) => Effect.Effect<StepOutcome<C>, LlmError | JobStepFailed, StepServices>
+  // Runs once the job is cancelled or fails, after its status is saved: what
+  // a run that ends early still owes, such as a decision its end would make.
+  readonly stopped?: (params: P) => Effect.Effect<void, never, Db>
 }
 
 // Kinds differ in their parameter and checkpoint types; the registry holds any.

@@ -14,7 +14,8 @@ export interface PoolQuestion {
   readonly secondarySkills: ReadonlyArray<string>
   // The current Difficulty.
   readonly difficulty: number
-  readonly reserve: boolean
+  // Whether it joined the Mock Reserve; null until that is decided.
+  readonly reserve: boolean | null
   readonly released: boolean
 }
 
@@ -26,11 +27,12 @@ export interface History {
 }
 
 // A Mock Reserve Question stays out of Practice Sets until the Curator
-// releases it or the Profile has Seen it (ADR 0008).
+// releases it or the Profile has Seen it (ADR 0008). So does one whose
+// Reserve decision is still to come, as while its Book's run goes on.
 export const openToPractice = (
-  question: { readonly id: string; readonly reserve: boolean; readonly released: boolean },
+  question: { readonly id: string; readonly reserve: boolean | null; readonly released: boolean },
   seen: ReadonlySet<string>
-) => !question.reserve || question.released || seen.has(question.id)
+) => question.reserve === false || question.released || seen.has(question.id)
 
 // An order that looks shuffled but is the same for the same salt, such as a
 // Session's id.
@@ -119,8 +121,26 @@ export interface BookItem {
   readonly number: number
   readonly page: number
   readonly status: string
-  readonly reserve: boolean
+  readonly reserve: boolean | null
   readonly released: boolean
+}
+
+// Why a Book's item is not in a set: its Question is in the Mock Reserve, or
+// waits for that decision; or it is not in the Question Bank, being checked
+// or withdrawn.
+export type SkipReason = "reserve" | "undecided" | "checking" | "withdrawn"
+
+export interface SkippedItem {
+  readonly set: string
+  readonly number: number
+  readonly reason: SkipReason
+}
+
+// Where a set serves a Question the Book prints: its first place in range.
+export interface Place {
+  readonly questionId: string
+  readonly set: string
+  readonly number: number
 }
 
 export interface ItemRange {
@@ -131,35 +151,46 @@ export interface ItemRange {
 
 export interface BookOrder {
   readonly questionIds: ReadonlyArray<string>
-  readonly heldForMocks: ReadonlyArray<{ readonly set: string; readonly number: number }>
-  readonly unavailable: ReadonlyArray<{ readonly set: string; readonly number: number }>
+  readonly places: ReadonlyArray<Place>
+  readonly heldForMocks: ReadonlyArray<SkippedItem>
+  readonly unavailable: ReadonlyArray<SkippedItem>
 }
 
-// A Book's items in the range, in the order it prints them. Unseen Mock
-// Reserve Questions are held for Mocks, and items not published are not in
-// the Question Bank; both are skipped. A Question the Book prints twice is
-// served at its first place.
+// A Book's items in the range, in the order it prints them: by page, and on
+// a page two sets share, the set that started first, then by number. Unseen
+// Mock Reserve Questions, and those whose Reserve decision is to come, are
+// held for Mocks, and items not published are not in the Question Bank;
+// both are skipped. A Question the Book prints twice is served at its first
+// place.
 export const bookOrder = (items: ReadonlyArray<BookItem>, seen: ReadonlySet<string>, range: ItemRange): BookOrder => {
-  const inRange = items
-    .filter((item) =>
-      (range.set === undefined || setKey(item.set) === setKey(range.set)) &&
-      (range.from === undefined || item.number >= range.from) &&
-      (range.to === undefined || item.number <= range.to)
-    )
-    .toSorted((a, b) => a.page - b.page || a.number - b.number)
+  const inRange = items.filter((item) =>
+    (range.set === undefined || setKey(item.set) === setKey(range.set)) &&
+    (range.from === undefined || item.number >= range.from) &&
+    (range.to === undefined || item.number <= range.to)
+  )
+  const setStarts = new Map<string, number>()
+  for (const item of items) {
+    const key = setKey(item.set)
+    setStarts.set(key, Math.min(setStarts.get(key) ?? item.page, item.page))
+  }
+  const startOf = (item: BookItem) => setStarts.get(setKey(item.set)) ?? item.page
+  const ordered = inRange.toSorted((a, b) => a.page - b.page || startOf(a) - startOf(b) || a.number - b.number)
   const questionIds: Array<string> = []
-  const heldForMocks: Array<{ set: string; number: number }> = []
-  const unavailable: Array<{ set: string; number: number }> = []
+  const places: Array<Place> = []
+  const heldForMocks: Array<SkippedItem> = []
+  const unavailable: Array<SkippedItem> = []
   const taken = new Set<string>()
-  for (const item of inRange) {
+  for (const item of ordered) {
     const ref = { set: item.set, number: item.number }
-    if (item.status !== "published") unavailable.push(ref)
-    else if (!openToPractice({ id: item.questionId, reserve: item.reserve, released: item.released }, seen)) {
-      heldForMocks.push(ref)
+    if (item.status !== "published") {
+      unavailable.push({ ...ref, reason: item.status === "withdrawn" ? "withdrawn" : "checking" })
+    } else if (!openToPractice({ id: item.questionId, reserve: item.reserve, released: item.released }, seen)) {
+      heldForMocks.push({ ...ref, reason: item.reserve === null ? "undecided" : "reserve" })
     } else if (!taken.has(item.questionId)) {
       taken.add(item.questionId)
       questionIds.push(item.questionId)
+      places.push({ questionId: item.questionId, ...ref })
     }
   }
-  return { questionIds, heldForMocks, unavailable }
+  return { questionIds, places, heldForMocks, unavailable }
 }

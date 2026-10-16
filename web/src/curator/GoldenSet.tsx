@@ -121,6 +121,9 @@ export const GoldenSet = ({ onLocked, onStopped }: Props) => {
   )
 }
 
+// A note as a sentence, ending in one full stop.
+const sentence = (note: string) => (/[.!?]$/.test(note.trim()) ? note.trim() : `${note.trim()}.`)
+
 const Check = (
   { view, onChanged, onFailure }: {
     readonly view: GoldenView
@@ -133,7 +136,12 @@ const Check = (
   const [problem, setProblem] = useState<{ readonly text: string; readonly aboutCap: boolean }>()
   const busy = useRef(false)
   const job = view.job
+  // A paused check holds its place until it is resumed or cancelled in Jobs.
   const running = job !== null && (job.status === "queued" || job.status === "running" || job.status === "paused")
+  const paused = job?.status === "paused"
+  const busyText = paused
+    ? "The last check is paused. Resume it in Jobs, or cancel it there to start another."
+    : "A check is running already. Its report shows here when it is done."
 
   const start = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -141,7 +149,7 @@ const Check = (
     if (!Number.isFinite(spendCap) || spendCap <= 0 || spendCap > 10_000) {
       return setProblem({ text: "Enter a cap in dollars, above 0.", aboutCap: true })
     }
-    if (running) return setProblem({ text: "A check is running already. Its report shows here when it is done.", aboutCap: false })
+    if (running) return setProblem({ text: busyText, aboutCap: false })
     if (busy.current) return
     busy.current = true
     const result = await call((client) => client.golden.check({ payload: { spendCap } }))
@@ -156,7 +164,7 @@ const Check = (
       case "LlmNotConfigured":
         return setProblem({ text: `Set ${result.failure.missing.join(", ")} in Settings first.`, aboutCap: false })
       case "GoldenCheckRunning":
-        return setProblem({ text: "A check is running already. Its report shows here when it is done.", aboutCap: false })
+        return setProblem({ text: busyText, aboutCap: false })
       default:
         return onFailure(result.failure)
     }
@@ -171,11 +179,13 @@ const Check = (
       </p>
       {job !== null && (
         <p className="job-note" aria-live="polite">
-          {running
-            ? `Checking: ${job.note ?? "starting"}.`
+          {paused
+            ? `The check is paused: ${sentence(job.note ?? "paused")}`
+            : running
+            ? `Checking: ${sentence(job.note ?? "starting")}`
             : job.status === "done"
             ? `Last checked ${dayAndTime(job.updatedAt)}.`
-            : `The last check ${job.status === "failed" ? "failed" : "stopped"}: ${job.note ?? ""}`}{" "}
+            : `The last check ${job.status === "failed" ? "failed" : "stopped"}: ${sentence(job.note ?? "no reason given")}`}{" "}
           <a {...linkProps("/curator/jobs")}>Jobs</a>
         </p>
       )}

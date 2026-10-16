@@ -1,10 +1,12 @@
 CREATE TABLE `bookmarks` (
-	`session_id` text NOT NULL,
+	`profile_id` text NOT NULL,
 	`question_id` text NOT NULL,
+	`session_id` text,
 	`created_at` integer NOT NULL,
-	CONSTRAINT `bookmarks_pk` PRIMARY KEY(`session_id`, `question_id`),
-	CONSTRAINT `fk_bookmarks_session_id_sessions_id_fk` FOREIGN KEY (`session_id`) REFERENCES `sessions`(`id`) ON DELETE CASCADE,
-	CONSTRAINT `fk_bookmarks_question_id_questions_id_fk` FOREIGN KEY (`question_id`) REFERENCES `questions`(`id`) ON DELETE CASCADE
+	CONSTRAINT `bookmarks_pk` PRIMARY KEY(`profile_id`, `question_id`),
+	CONSTRAINT `fk_bookmarks_profile_id_profiles_id_fk` FOREIGN KEY (`profile_id`) REFERENCES `profiles`(`id`) ON DELETE CASCADE,
+	CONSTRAINT `fk_bookmarks_question_id_questions_id_fk` FOREIGN KEY (`question_id`) REFERENCES `questions`(`id`) ON DELETE CASCADE,
+	CONSTRAINT `fk_bookmarks_session_id_sessions_id_fk` FOREIGN KEY (`session_id`) REFERENCES `sessions`(`id`) ON DELETE SET NULL
 );
 --> statement-breakpoint
 CREATE TABLE `difficulty` (
@@ -54,6 +56,7 @@ CREATE TABLE `sessions` (
 );
 --> statement-breakpoint
 ALTER TABLE `questions` ADD `released_at` integer;--> statement-breakpoint
+ALTER TABLE `questions` ADD `merged_into` text;--> statement-breakpoint
 CREATE UNIQUE INDEX `responses_session_seq` ON `responses` (`session_id`,`seq`);--> statement-breakpoint
 CREATE INDEX `responses_profile_question` ON `responses` (`profile_id`,`question_id`);--> statement-breakpoint
 CREATE INDEX `served_questions_question` ON `served_questions` (`question_id`);--> statement-breakpoint

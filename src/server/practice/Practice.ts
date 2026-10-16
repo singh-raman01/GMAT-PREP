@@ -27,7 +27,8 @@ import {
   SelectionInvalid,
   ServedView,
   SessionId,
-  SimilarCount
+  SimilarCount,
+  SkipReason
 } from "../../api/Practice.ts"
 import { QuestionId } from "../../api/Review.ts"
 import { targetSecondsFor } from "../../api/targetTimes.ts"
@@ -52,16 +53,18 @@ import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { type ClockState, fromSave, tick, TickMs } from "./clock.ts"
 import { debriefOf, namesOf, practiceQuestion, type StoredQuestion, storedQuestions } from "./content.ts"
 import {
+  bookmarkedBy,
   difficultyOf,
   encodeSelection,
   historyOf,
   isCorrect,
   keysOf,
+  mergeTargets,
   publishedPool,
   readSelection,
   seenBy
 } from "./history.ts"
-import { bookOrder, type BookItem, openToPractice, pickByFilters, pickSimilar } from "./selection.ts"
+import { bookOrder, type BookItem, openToPractice, pickByFilters, pickSimilar, type SkippedItem } from "./selection.ts"
 
 // Practice Sets. A set's Questions are chosen when it starts and served one
 // at a time; serving a Question makes it Seen. Responses are facts:
@@ -74,7 +77,7 @@ import { bookOrder, type BookItem, openToPractice, pickByFilters, pickSimilar } 
 // time-out Response. Its Rated Responses move Difficulty and the Section's
 // Score Estimate; untimed Responses are never Rated.
 
-const Ref = Schema.Struct({ set: Schema.String, number: Schema.Int })
+const Ref = Schema.Struct({ set: Schema.String, number: Schema.Int, reason: SkipReason })
 
 // What a Session of kind practice stores in its config.
 const PracticeConfig = Schema.Struct({
@@ -87,6 +90,10 @@ const PracticeConfig = Schema.Struct({
   bookId: Schema.NullOr(Schema.String),
   // The Questions, in the order they are served.
   planned: Schema.Array(Schema.String),
+  // For a book-order set, the item each Question is served at.
+  places: Schema.optional(
+    Schema.Array(Schema.Struct({ questionId: Schema.String, set: Schema.String, number: Schema.Int }))
+  ),
   heldForMocks: Schema.Array(Ref),
   unavailable: Schema.Array(Ref)
 })
@@ -114,8 +121,9 @@ export interface Submit {
 interface Plan {
   readonly questionIds: ReadonlyArray<string>
   readonly matching: number
-  readonly heldForMocks: ReadonlyArray<typeof Ref.Type>
-  readonly unavailable: ReadonlyArray<typeof Ref.Type>
+  readonly places: NonNullable<PracticeConfig["places"]>
+  readonly heldForMocks: ReadonlyArray<SkippedItem>
+  readonly unavailable: ReadonlyArray<SkippedItem>
 }
 
 // What a selection gets wrong: each of the Question's Parts takes one of its
@@ -248,7 +256,7 @@ export class Practice extends Context.Service<Practice, {
                 number: row.number,
                 page: row.page,
                 status: row.status,
-                reserve: row.reserve === true,
+                reserve: row.reserve,
                 released: row.releasedAt !== null
               }))
             )
@@ -279,7 +287,7 @@ export class Practice extends Context.Service<Practice, {
               ...(statusWords[choice.status] === undefined ? [] : [statusWords[choice.status]])
             ]
             return {
-              plan: { ...picked, heldForMocks: [], unavailable: [] } satisfies Plan,
+              plan: { ...picked, places: [], heldForMocks: [], unavailable: [] } satisfies Plan,
               title: words.join(", "),
               bookId: null
             }
@@ -346,6 +354,37 @@ export class Practice extends Context.Service<Practice, {
       const holdsIt = (session: SessionRow, device: string | undefined) =>
         session.holder === null || device === undefined || session.holder === device
 
+      // The Question to serve at a position. A planned Question that left the
+      // Question Bank since the set began gives way to the one it was merged
+      // into, unless the set has that one already; otherwise it leaves the
+      // set. Undefined when no planned Question is left.
+      const servable = (session: SessionRow, position: number) =>
+        Effect.gen(function*() {
+          const config = decodeConfig(session.config)
+          const planned = [...config.planned]
+          const resolve = yield* run(mergeTargets)
+          const statusOf = (questionId: string) =>
+            db.select({ status: questions.status }).from(questions).where(eq(questions.id, questionId)).pipe(
+              Effect.orDie,
+              Effect.map((rows) => rows[0]?.status)
+            )
+          let changed = false
+          while (position < planned.length) {
+            const planId = planned[position]!
+            if ((yield* statusOf(planId)) === "published") break
+            const target = resolve(planId)
+            const replaced = target !== planId && !planned.includes(target) && (yield* statusOf(target)) === "published"
+            if (replaced) planned[position] = target
+            else planned.splice(position, 1)
+            changed = true
+          }
+          if (changed) {
+            yield* db.update(sessions).set({ config: encodeConfig({ ...config, planned }) })
+              .where(eq(sessions.id, session.id)).pipe(Effect.orDie)
+          }
+          return planned[position]
+        })
+
       const servedView = (
         session: SessionRow,
         config: PracticeConfig,
@@ -354,6 +393,7 @@ export class Practice extends Context.Service<Practice, {
           readonly answers: ReadonlyArray<ResponseRow>
           readonly marked: ReadonlySet<string>
           readonly rated: ReadonlySet<string>
+          readonly resolve: (id: string) => string
         }
       ) =>
         Effect.gen(function*() {
@@ -366,10 +406,11 @@ export class Practice extends Context.Service<Practice, {
           // for the end.
           const over = session.status === "finished"
           const shown = over || (!session.timed && response !== undefined)
+          const place = config.places?.find((each) => each.questionId === row.questionId)
           return new ServedView({
             position: row.position,
-            question: practiceQuestion(stored, names, config.bookId),
-            bookmarked: context.marked.has(row.questionId),
+            question: practiceQuestion(stored, names, config.bookId, place),
+            bookmarked: context.marked.has(context.resolve(row.questionId)),
             response: response === undefined || (session.timed && !over) ? null : new ResponseView({
               selection,
               guessed: response.guessed,
@@ -382,15 +423,16 @@ export class Practice extends Context.Service<Practice, {
           })
         })
 
+      // A Bookmark is the Profile's, on the Question a merged one became.
       const contextOf = (session: SessionRow) =>
         Effect.gen(function*() {
           const served = yield* servedOf(session.id)
           const answers = yield* responsesOf(session.id)
-          const marks = yield* db.select({ questionId: bookmarks.questionId }).from(bookmarks)
-            .where(eq(bookmarks.sessionId, session.id)).pipe(Effect.orDie)
+          const marked = yield* run(bookmarkedBy(session.profileId))
+          const resolve = yield* run(mergeTargets)
           const ids = served.map((row) => row.questionId)
           const rated = yield* run(ratedAmong(session.profileId, ids))
-          return { served, answers, marked: new Set(marks.map((mark) => mark.questionId)), rated }
+          return { served, answers, marked, rated, resolve }
         })
 
       const viewOf = (session: SessionRow, device: string | undefined) =>
@@ -418,7 +460,7 @@ export class Practice extends Context.Service<Practice, {
               guessed: response?.guessed ?? false,
               timedOut: response?.kind === "time-out",
               timeSpentMs: first?.timeSpentMs ?? null,
-              bookmarked: context.marked.has(row.questionId)
+              bookmarked: context.marked.has(context.resolve(row.questionId))
             })
           })
           const last = context.served.at(-1)
@@ -531,24 +573,32 @@ export class Practice extends Context.Service<Practice, {
               }))
             }
           })
+          // Each Book with Questions in the Question Bank, with every set's
+          // full run of items and how many of them are published.
           const rows = yield* db.select({
             bookId: books.id,
             title: books.title,
             createdAt: books.createdAt,
             set: sources.set,
             number: sources.number,
-            page: sources.page
+            page: sources.page,
+            status: questions.status
           }).from(sources)
             .innerJoin(books, eq(books.id, sources.bookId))
             .innerJoin(questions, eq(questions.id, sources.questionId))
-            .where(eq(questions.status, "published"))
             .orderBy(asc(books.createdAt), asc(sources.page), asc(sources.number))
             .pipe(Effect.orDie)
-          const byBook = new Map<string, { id: string; title: string; sets: Map<string, { name: string; numbers: Array<number> }> }>()
+          const withPublished = new Set(rows.filter((row) => row.status === "published").map((row) => row.bookId))
+          const byBook = new Map<
+            string,
+            { id: string; title: string; sets: Map<string, { name: string; numbers: Array<number>; published: number }> }
+          >()
           for (const row of rows) {
+            if (!withPublished.has(row.bookId)) continue
             const book = byBook.get(row.bookId) ?? { id: row.bookId, title: row.title, sets: new Map() }
-            const set = book.sets.get(setKey(row.set)) ?? { name: row.set, numbers: [] }
+            const set = book.sets.get(setKey(row.set)) ?? { name: row.set, numbers: [], published: 0 }
             set.numbers.push(row.number)
+            if (row.status === "published") set.published += 1
             book.sets.set(setKey(row.set), set)
             byBook.set(row.bookId, book)
           }
@@ -557,11 +607,11 @@ export class Practice extends Context.Service<Practice, {
             books: [...byBook.values()].map((book) => ({
               id: BookId.make(book.id),
               title: book.title,
-              sets: [...book.sets.values()].map((set) => ({
+              sets: [...book.sets.values()].filter((set) => set.published > 0).map((set) => ({
                 name: set.name,
                 first: Math.min(...set.numbers),
                 last: Math.max(...set.numbers),
-                questions: set.numbers.length
+                questions: set.published
               }))
             }))
           })
@@ -594,6 +644,7 @@ export class Practice extends Context.Service<Practice, {
             requested: null,
             bookId: chosen.bookId,
             planned: chosen.plan.questionIds,
+            places: chosen.plan.places,
             heldForMocks: chosen.plan.heldForMocks,
             unavailable: chosen.plan.unavailable
           }, id, choice.timed === true)
@@ -604,7 +655,6 @@ export class Practice extends Context.Service<Practice, {
           const rows = yield* db.select().from(sessions)
             .where(and(eq(sessions.profileId, profileId), eq(sessions.kind, "practice")))
             .orderBy(sql`${sessions.status} = 'finished'`, desc(sessions.createdAt), desc(sql`${sessions}.rowid`))
-            .limit(20)
             .pipe(Effect.orDie)
           const ids = rows.map((row) => row.id)
           const answers = ids.length === 0
@@ -723,10 +773,17 @@ export class Practice extends Context.Service<Practice, {
       const answer = (caller: Caller, id: SessionId, submit: Submit) =>
         inTransaction(Effect.gen(function*() {
           const session = yield* held(caller, id)
-          // The same submit sent again: recorded the first time.
-          const [repeat] = yield* db.select({ id: responses.id }).from(responses)
+          // The same submit sent again: recorded the first time. Another
+          // submit with that number comes from a screen out of date.
+          const [repeat] = yield* db.select().from(responses)
             .where(and(eq(responses.sessionId, id), eq(responses.seq, submit.seq))).pipe(Effect.orDie)
-          if (repeat !== undefined) return
+          if (repeat !== undefined) {
+            const same = repeat.questionId === submit.questionId &&
+              repeat.selection === encodeSelection(submit.selection.toSorted((a, b) => a.part - b.part)) &&
+              repeat.guessed === submit.guessed
+            if (same) return
+            return yield* outOfStep(session, caller.device, session.status === "finished" ? "finished" : "not-current")
+          }
           if (session.status === "paused") return yield* outOfStep(session, caller.device, "paused")
           if (session.status !== "active") return yield* outOfStep(session, caller.device, "finished")
           const served = yield* servedOf(id)
@@ -768,9 +825,8 @@ export class Practice extends Context.Service<Practice, {
             yield* rate(caller.profileId, responseId)
           }
           // The next Question at once, or the end of the set.
-          const planned = decodeConfig(session.config).planned
-          const position = current.position + 1
-          if (position < planned.length) yield* serve(id, position, planned[position]!, elapsedMs)
+          const nextId = yield* servable(session, current.position + 1)
+          if (nextId !== undefined) yield* serve(id, current.position + 1, nextId, elapsedMs)
           else yield* end(session, "finished", elapsedMs)
         })).pipe(Effect.flatMap(() => after(caller, id)), oneAtATime)
 
@@ -788,9 +844,14 @@ export class Practice extends Context.Service<Practice, {
           if (!answered) return yield* outOfStep(session, caller.device, "not-answered")
           const planned = decodeConfig(session.config).planned
           if (position >= planned.length) return yield* outOfStep(session, caller.device, "no-more")
-          yield* serve(id, position, planned[position]!, session.timed ? elapsedNow(session, yield* Clock.currentTimeMillis) : null)
+          const now = yield* Clock.currentTimeMillis
+          const questionId = yield* servable(session, position)
+          // What was left of the plan has left the Question Bank: the set is over.
+          if (questionId === undefined) yield* end(session, "finished", elapsedNow(session, now))
+          else yield* serve(id, position, questionId, session.timed ? elapsedNow(session, now) : null)
         })).pipe(Effect.flatMap(() => after(caller, id)), oneAtATime)
 
+      // A Bookmark is the Profile's: clearing it in any set clears it.
       const bookmark = (caller: Caller, id: SessionId, questionId: QuestionId, bookmarked: boolean) =>
         inTransaction(Effect.gen(function*() {
           const session = yield* held(caller, id)
@@ -799,11 +860,13 @@ export class Practice extends Context.Service<Practice, {
             return yield* outOfStep(session, caller.device, "not-current")
           }
           const now = yield* Clock.currentTimeMillis
+          const target = (yield* run(mergeTargets))(questionId)
           if (bookmarked) {
-            yield* db.insert(bookmarks).values({ sessionId: id, questionId, createdAt: now }).onConflictDoNothing()
-              .pipe(Effect.orDie)
+            yield* db.insert(bookmarks).values({ profileId: caller.profileId, questionId: target, sessionId: id, createdAt: now })
+              .onConflictDoNothing().pipe(Effect.orDie)
           } else {
-            yield* db.delete(bookmarks).where(and(eq(bookmarks.sessionId, id), eq(bookmarks.questionId, questionId)))
+            yield* db.delete(bookmarks)
+              .where(and(eq(bookmarks.profileId, caller.profileId), eq(bookmarks.questionId, target)))
               .pipe(Effect.orDie)
           }
         })).pipe(Effect.flatMap(() => after(caller, id)), oneAtATime)

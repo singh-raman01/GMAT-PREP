@@ -8,6 +8,7 @@ import {
   KeyNotAnOption,
   KeysDiffer,
   KeyOverrideView,
+  MergeTargetChecking,
   OptionNoteView,
   PublishableReasons,
   QuestionId,
@@ -24,6 +25,7 @@ import { KeyCodes, readLinkReasons, recheckSources, RepeatCodes, UnsureCodes } f
 import { Db } from "../db/Database.ts"
 import {
   approaches,
+  bookmarks,
   books,
   goldenQuestions,
   keyOverrides,
@@ -32,7 +34,6 @@ import {
   parts,
   questions,
   reviewItems,
-  servedQuestions,
   solverRuns,
   sources
 } from "../db/schema.ts"
@@ -41,7 +42,7 @@ import { JobStore } from "../jobs/JobStore.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { runGate } from "./gate.ts"
 import { QuestionRefresh, RefreshCap } from "./refreshJob.ts"
-import { assignReserve } from "./reserve.ts"
+import { assignUndecided } from "./reserve.ts"
 import { drafts } from "./stranded.ts"
 
 // The Curator's decisions on held Questions and unread pages. A Question the
@@ -87,7 +88,9 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
   publish(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | CannotPublish>
   withdraw(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen>
   keepAsVariant(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen>
-  merge(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | KeysDiffer>
+  merge(
+    id: ReviewItemId
+  ): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | KeysDiffer | MergeTargetChecking>
   dismiss(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen>
   overrideKey(
     id: ReviewItemId,
@@ -135,13 +138,19 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
             number: sources.number,
             page: sources.page,
             explanation: sources.explanation,
+            merged: sources.merged,
             createdAt: sources.createdAt
           }).from(sources).innerJoin(books, eq(books.id, sources.bookId))
             .where(inArray(sources.questionId, [...ids]))
-            .orderBy(asc(sources.createdAt))
+            .orderBy(asc(sources.createdAt), asc(sql`${sources}.rowid`))
+          const goldenRows = yield* db.select({ questionId: goldenQuestions.questionId }).from(goldenQuestions)
+            .where(inArray(goldenQuestions.questionId, [...ids]))
           return new Map(rows.map((row) => {
             const part = partRows.find((each) => each.questionId === row.id)
             const mine = sourceRows.filter((source) => source.questionId === row.id)
+            // The Question's own Source first, as enrichment reads them.
+            const explained = [...mine.filter((source) => !source.merged), ...mine.filter((source) => source.merged)]
+              .find((source) => source.explanation !== null)
             const choices = optionRows.filter((option) => option.partId === part?.id)
             return [row.id, new QuestionView({
               id: QuestionId.make(row.id),
@@ -153,7 +162,7 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
               keyBasis: (part?.keyBasis ?? null) as "book" | "computed" | "override" | null,
               status: row.status as QuestionStatus,
               bookLabel: row.bookLabel,
-              explanation: mine.find((source) => source.explanation !== null)?.explanation ?? null,
+              explanation: explained?.explanation ?? null,
               sources: mine.map((source) =>
                 new SourceView({
                   bookId: BookId.make(source.bookId),
@@ -192,7 +201,8 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
                   reason: override.reason,
                   createdAt: override.createdAt
                 })
-              )
+              ),
+              golden: goldenRows.some((golden) => golden.questionId === row.id)
             })] as const
           }))
         }).pipe(Effect.orDie)
@@ -296,18 +306,10 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
           )
         })
 
-      // A Question published after its Book's run joins the Reserve now; one
-      // published during the run waits for the run's end.
-      const reserveFor = (questionId: string) =>
-        Effect.gen(function*() {
-          const [own] = yield* db.select({ bookId: sources.bookId, status: books.status }).from(sources)
-            .innerJoin(books, eq(books.id, sources.bookId))
-            .where(and(eq(sources.questionId, questionId), eq(sources.merged, false)))
-            .pipe(Effect.orDie)
-          if (own?.status === "extracted") {
-            yield* assignReserve(own.bookId).pipe(Effect.provideService(Db, db), Effect.orDie)
-          }
-        })
+      // A Question published after its Book's run, finished or not, gets its
+      // Reserve decision now; one published while the run goes on waits for
+      // the run's end.
+      const decideReserve = assignUndecided.pipe(Effect.provideService(Db, db), Effect.orDie)
 
       // Questions that went back to draft are checked again by a job, which
       // can write new Approaches and notes.
@@ -326,7 +328,7 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
           const blocking = readReasons(row.reasons).filter((reason) => !PublishableReasons.has(reason.code))
           if (blocking.length > 0) return yield* new CannotPublish({ reasons: blocking })
           yield* setQuestionStatus(row.questionId!, "published")
-          yield* reserveFor(row.questionId!)
+          yield* decideReserve
           return yield* decide(row, "published")
         })).pipe(Effect.flatMap(viewOf), oneAtATime)
 
@@ -354,17 +356,20 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
             .where(eq(questions.id, row.questionId!)).pipe(Effect.orDie)
           yield* db.update(reviewItems).set({ relatedQuestionId: null }).where(eq(reviewItems.id, row.id)).pipe(Effect.orDie)
           const outcome = yield* runGate(row.questionId!, taxonomy).pipe(Effect.provideService(Db, db), Effect.orDie)
-          if (outcome === "published") yield* reserveFor(row.questionId!)
+          if (outcome === "published") yield* decideReserve
           const [updated] = yield* db.select().from(reviewItems).where(eq(reviewItems.id, row.id)).pipe(Effect.orDie)
           return updated!
         })).pipe(Effect.flatMap(viewOf), oneAtATime)
 
-      // The same Question: its Sources join the related one, and it goes, or
-      // stays withdrawn when a Session served it. Items and Questions that
-      // pointed at it point at the related one now,
-      // and the related one is checked again if its Sources now disagree.
+      // The same Question: its Sources join the related one, and it is
+      // withdrawn, marked as merged into it, so a Learner's history with it
+      // counts for the related one and its facts stay (ADR 0005). Items and
+      // Questions that pointed at it point at the related one now, and so do
+      // Bookmarks; the related one is checked again if its Sources now
+      // disagree. A Key Override goes with the Sources it settled; a
+      // golden-set approval, which is of the Question's own item, goes.
       const keyOf = (questionId: string) =>
-        db.select({ key: parts.key, keyBasis: parts.keyBasis }).from(parts)
+        db.select({ id: parts.id, key: parts.key, keyBasis: parts.keyBasis }).from(parts)
           .where(and(eq(parts.questionId, questionId), eq(parts.position, 0)))
           .pipe(Effect.orDie, Effect.map((rows) => rows[0]))
 
@@ -376,20 +381,21 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
             // The related Question must be there and settled: one being
             // checked could be overwritten by its check.
             const targetStatus = yield* statusOf(target)
-            if (targetStatus === undefined || targetStatus === "withdrawn" || targetStatus === "draft") {
+            if (targetStatus === undefined || targetStatus === "withdrawn") {
               return yield* new ReviewItemNotOpen({ item: yield* viewOf(row) })
             }
+            if (targetStatus === "draft") return yield* new MergeTargetChecking()
             const mine = yield* keyOf(row.questionId!)
             const theirs = yield* keyOf(target)
             if (mine?.keyBasis === "override" && mine.key !== null && mine.key !== theirs?.key) {
               return yield* new KeysDiffer({ key: mine.key, relatedKey: theirs?.key ?? null })
             }
-            // A golden-set approval follows the Book's item to its Question.
-            const [targetGolden] = yield* db.select({ id: goldenQuestions.questionId }).from(goldenQuestions)
-              .where(eq(goldenQuestions.questionId, target)).pipe(Effect.orDie)
-            if (targetGolden === undefined) {
-              yield* db.update(goldenQuestions).set({ questionId: target })
-                .where(eq(goldenQuestions.questionId, row.questionId!)).pipe(Effect.orDie)
+            // The Curator's key, the same as the related Question's, now
+            // settles the Sources it joins.
+            if (mine?.keyBasis === "override" && theirs !== undefined) {
+              yield* db.update(keyOverrides).set({ partId: theirs.id }).where(eq(keyOverrides.partId, mine.id))
+                .pipe(Effect.orDie)
+              yield* db.update(parts).set({ keyBasis: "override" }).where(eq(parts.id, theirs.id)).pipe(Effect.orDie)
             }
             yield* db.update(sources).set({ questionId: target, merged: true })
               .where(eq(sources.questionId, row.questionId!)).pipe(Effect.orDie)
@@ -398,16 +404,21 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
               .pipe(Effect.orDie)
             yield* db.update(questions).set({ relatedQuestionId: target })
               .where(eq(questions.relatedQuestionId, row.questionId!)).pipe(Effect.orDie)
-            const updated = yield* decide(row, "merged", { questionId: null })
-            // A Question a Session served keeps its row, withdrawn, so its
-            // Responses stay on record (ADR 0005).
-            const [served] = yield* db.select({ sessionId: servedQuestions.sessionId }).from(servedQuestions)
-              .where(eq(servedQuestions.questionId, row.questionId!)).limit(1).pipe(Effect.orDie)
-            if (served === undefined) {
-              yield* db.delete(questions).where(eq(questions.id, row.questionId!)).pipe(Effect.orDie)
-            } else {
-              yield* setQuestionStatus(row.questionId!, "withdrawn")
-            }
+            const updated = yield* decide(row, "merged")
+            yield* db.delete(goldenQuestions).where(eq(goldenQuestions.questionId, row.questionId!)).pipe(Effect.orDie)
+            // A Profile that marked both keeps one Bookmark.
+            yield* db.delete(bookmarks).where(and(
+              eq(bookmarks.questionId, row.questionId!),
+              inArray(
+                bookmarks.profileId,
+                db.select({ profileId: bookmarks.profileId }).from(bookmarks).where(eq(bookmarks.questionId, target))
+              )
+            )).pipe(Effect.orDie)
+            yield* db.update(bookmarks).set({ questionId: target }).where(eq(bookmarks.questionId, row.questionId!))
+              .pipe(Effect.orDie)
+            const now = yield* Clock.currentTimeMillis
+            yield* db.update(questions).set({ status: "withdrawn", mergedInto: target, updatedAt: now })
+              .where(eq(questions.id, row.questionId!)).pipe(Effect.orDie)
             yield* recheckSources(target).pipe(Effect.provideService(Db, db), Effect.orDie)
             yield* refresh([target], "Checking a merged Question again")
             return updated
@@ -492,7 +503,9 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
       const draftsView = drafts.pipe(
         Effect.provideService(Db, db),
         Effect.orDie,
-        Effect.map((found) => new DraftsView({ checking: found.checking.length, stranded: found.stranded.length }))
+        Effect.map((found) =>
+          new DraftsView({ checking: found.checking.length, paused: found.paused.length, stranded: found.stranded.length })
+        )
       )
 
       const checkDrafts = inTransaction(Effect.gen(function*() {

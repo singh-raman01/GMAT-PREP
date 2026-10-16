@@ -138,9 +138,12 @@ const MockReserve = (
 ) => {
   const ids = { section: useId(), count: useId(), hint: useId() }
   const withReserve = sections.filter((section) => section.held > 0)
-  const [section, setSection] = useState(withReserve[0]?.id ?? "")
+  const [picked, setPicked] = useState(withReserve[0]?.id ?? "")
+  // The Section chosen, while it still holds Questions to release.
+  const section = withReserve.some((each) => each.id === picked) ? picked : withReserve[0]?.id ?? ""
   const [count, setCount] = useState("10")
   const [message, setMessage] = useState<{ readonly text: string; readonly problem: boolean }>()
+  const messageRef = useRef<HTMLParagraphElement>(null)
   const busy = useRef(false)
 
   const release = async (event: FormEvent<HTMLFormElement>) => {
@@ -156,11 +159,16 @@ const MockReserve = (
     if (result._tag === "Success") {
       const before = sections.find((each) => each.id === section)?.released ?? 0
       const after = result.success.find((each) => each.id === section)
+      const released = (after?.released ?? before) - before
       onChanged(result.success)
-      return setMessage({
-        text: `Released ${(after?.released ?? before) - before} ${after?.name ?? ""} Questions into Practice Sets.`,
+      setMessage({
+        text: `Released ${released} ${after?.name ?? ""} ${released === 1 ? "Question" : "Questions"} into Practice Sets.`,
         problem: false
       })
+      // With nothing left to release, the form goes, and focus moves to what
+      // was done.
+      if (!result.success.some((each) => each.held > 0)) requestAnimationFrame(() => messageRef.current?.focus())
+      return
     }
     if (result.failure._tag === "CuratorNotUnlocked") return onLocked()
     if (result.failure._tag === "UnknownSection") return setMessage({ text: "Choose a Section.", problem: true })
@@ -198,7 +206,7 @@ const MockReserve = (
         <form className="release-form" noValidate onSubmit={(event) => void release(event)}>
           <div className="field">
             <label htmlFor={ids.section}>Section</label>
-            <select id={ids.section} value={section} onChange={(event) => setSection(event.target.value)}>
+            <select id={ids.section} value={section} onChange={(event) => setPicked(event.target.value)}>
               {withReserve.map((each) => <option key={each.id} value={each.id}>{each.name}</option>)}
             </select>
           </div>
@@ -225,7 +233,14 @@ const MockReserve = (
         </form>
       )}
       {message !== undefined && (
-        <p className={message.problem ? "problem" : "saved"} role={message.problem ? "alert" : "status"}>{message.text}</p>
+        <p
+          ref={messageRef}
+          tabIndex={-1}
+          className={message.problem ? "problem" : "saved"}
+          role={message.problem ? "alert" : "status"}
+        >
+          {message.text}
+        </p>
       )}
     </section>
   )
