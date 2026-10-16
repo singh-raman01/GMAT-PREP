@@ -199,7 +199,7 @@ Profiles and activity, written by the server:
 | served questions | Session or section run, position, Question, time served; what Sessions made Seen |
 | responses | Profile, Session, Question, client sequence number, selection per Part, time spent, guessed flag, kind (first, edit, retry, time-out with no selection), the Response it supersedes, time |
 | bookmarks | Session, Question |
-| mistake labels | Profile, Question, Part, Mistake Type, set by the app or the Learner, time |
+| mistake labels | Profile, Response, Part, Mistake Type the Learner set, time (the app's own are worked out, not stored) |
 | official scores | Profile, date, kind, Total and Section scores |
 | tutor messages | Profile, Question, message, reply, model, prompt version, tokens, time |
 | plan completions | Plan Item, the Session or Lesson that completed it, time |
@@ -212,7 +212,7 @@ Derived and rebuildable:
 | difficulty | Question, current Difficulty, count of Rated Responses |
 | abilities | Profile, scope (Section, Skill or Question Type), value, uncertainty, evidence count |
 | score estimates | Profile, Section or Total, time, value, range, calibrated flag |
-| error log entries | Profile, Question, reasons (wrong, slow, guessed), status (open, Resolved, withdrawn) |
+| error log entries | worked out on read, not stored: Profile, Question, reasons (wrong, slow, guessed), status (open, Resolved, withdrawn) |
 | retry steps | entry, step, due Study Day, Sibling, outcome |
 | weak areas | Profile, Skill or Question Type, gap, Priority, slow flag, evidence count |
 | daily logs | Profile, Study Day, minutes, Questions, accuracy by Section, Mocks, planned and completed items |
