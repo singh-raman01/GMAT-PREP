@@ -1,6 +1,6 @@
 import { Cause, Clock, Context, Deferred, Effect, Layer, Option, Schema } from "effect"
 import { formatDollars } from "../../api/money.ts"
-import { type LlmError, SpendCapReached } from "../llm/LlmAdapter.ts"
+import type { LlmError } from "../llm/LlmAdapter.ts"
 import { type AnyJobKind, JobKinds, type JobStepFailed, type StepServices } from "./JobKind.ts"
 import { CancelledByCurator, decodeJson, type JobEnd, type JobRow, JobStore } from "./JobStore.ts"
 
@@ -147,12 +147,10 @@ export class JobRunner extends Context.Service<JobRunner, {
 
           // Runs steps until the job ends its turn. "lost" means another
           // worker owns the job now.
+          // The adapter checks the cap before each call, so a step that makes no
+          // call, such as linking, runs even when the cap is spent.
           const runSteps = Effect.gen(function*() {
             for (;;) {
-              const spend = yield* store.spendOf(row.id)
-              if (Option.isSome(spend) && spend.value.spend >= spend.value.cap) {
-                return endForError(new SpendCapReached(spend.value), 0)
-              }
               const outcome = yield* Effect.result(
                 kind.step({ jobId: row.id, params: params.value, checkpoint, stepsDone })
               )

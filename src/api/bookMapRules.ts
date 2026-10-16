@@ -42,13 +42,21 @@ export const mapProblems = (ranges: ReadonlyArray<MapRangeInput>, pageCount: num
     for (let j = i + 1; j < ranges.length; j++) {
       const a = ranges[i]!
       const b = ranges[j]!
-      if (
-        a.role === b.role && setKey(a.set) === setKey(b.set) && a.firstPage <= b.lastPage && b.firstPage <= a.lastPage
-      ) {
+      if (a.role !== b.role || a.firstPage > b.lastPage || b.firstPage > a.lastPage) continue
+      if (setKey(a.set) === setKey(b.set)) {
         problems.push(
           `Two ranges of ${MapRoleLabels[a.role].toLowerCase()} in the set "${a.set.trim()}" share pages: ${pagesOf(a)} and ${
             pagesOf(b)
           }.`
+        )
+      } else if (a.role === "questions") {
+        // A page is read once, so both sets would get all its questions.
+        const first = Math.max(a.firstPage, b.firstPage)
+        const last = Math.min(a.lastPage, b.lastPage)
+        problems.push(
+          `The sets "${a.set.trim()}" and "${b.set.trim()}" both have questions on ${
+            first === last ? `page ${first}` : `pages ${first} to ${last}`
+          }. Give each page of questions to one set.`
         )
       }
     }

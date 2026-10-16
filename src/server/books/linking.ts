@@ -17,6 +17,7 @@ export type ReasonCode =
   | "same-text-other-key"
   | "near-match"
   | "key-changed"
+  | "source-key"
   | "unread-page"
 
 export interface Reason {
@@ -36,6 +37,10 @@ export interface Candidate {
   readonly answerKey: Letter | null
   readonly explanationAnswer: Letter | null
   readonly key: Letter | null
+  // Different answers the answer key, or the explanations, give for the
+  // number; empty when they agree.
+  readonly keyAnswers: ReadonlyArray<Letter>
+  readonly explanationAnswers: ReadonlyArray<Letter>
   readonly explanation: string | null
   readonly label: BookLabel | null
 }
@@ -44,7 +49,9 @@ export interface Skip {
   readonly _tag: "Skip"
   readonly number: number
   readonly page: number
-  readonly reason: "geometry" | "sentence-correction"
+  // repeated-number: the set already has an item with this number, so the
+  // keys and explanations cannot tell them apart.
+  readonly reason: "geometry" | "sentence-correction" | "repeated-number"
 }
 
 export type LinkedItem = Candidate | Skip
@@ -57,15 +64,20 @@ export interface SetReadings {
   readonly labels: ReadonlyArray<PageReading>
 }
 
-// A number given two different values is no value at all.
+// Every value given for each number, without repeats.
 const byNumber = <A>(entries: ReadonlyArray<{ readonly number: number; readonly value: A }>) => {
-  const values = new Map<number, A | undefined>()
+  const values = new Map<number, Array<A>>()
   for (const { number, value } of entries) {
-    if (!values.has(number)) values.set(number, value)
-    else if (values.get(number) !== value) values.set(number, undefined)
+    const seen = values.get(number) ?? []
+    if (!seen.includes(value)) seen.push(value)
+    values.set(number, seen)
   }
   return values
 }
+
+// The one value given for a number; a number given two values has none.
+const onlyValue = <A>(values: ReadonlyArray<A> | undefined): A | null =>
+  values !== undefined && values.length === 1 ? values[0]! : null
 
 export const linkSet = (readings: SetReadings): ReadonlyArray<LinkedItem> => {
   const answers = byNumber(readings.answers.flatMap((reading) =>
@@ -75,6 +87,11 @@ export const linkSet = (readings: SetReadings): ReadonlyArray<LinkedItem> => {
     reading.role === "difficulty-labels" ? reading.value.labels.map((l) => ({ number: l.number, value: l.difficulty })) : []
   ))
   const explanations = new Map<number, { readonly text: string; readonly answer: Letter | null; readonly label: BookLabel | null }>()
+  const explanationAnswers = byNumber(readings.explanations.flatMap((reading) =>
+    reading.role === "explanations"
+      ? reading.value.explanations.flatMap((item) => (item.answer === null ? [] : [{ number: item.number, value: item.answer }]))
+      : []
+  ))
   for (const reading of readings.explanations) {
     if (reading.role !== "explanations") continue
     for (const item of reading.value.explanations) {
@@ -84,26 +101,42 @@ export const linkSet = (readings: SetReadings): ReadonlyArray<LinkedItem> => {
     }
   }
 
-  const seen = new Set<number>()
+  // A number seen before in the set is a second item with that number, which
+  // is skipped and counted rather than linked to the first item's key; the
+  // same item read again, as when a question runs onto the next page, is not.
+  const seen = new Map<number, string | null>()
   const linked: Array<LinkedItem> = []
+  const repeated = (number: number, page: number, stem: string | null) => {
+    if (!seen.has(number)) {
+      seen.set(number, stem)
+      return false
+    }
+    const first = seen.get(number) ?? null
+    const sameItem = first === null || stem === null ||
+      similarity(trigrams(normalizeText(first)), trigrams(normalizeText(stem))) >= SameItem
+    if (!sameItem) linked.push({ _tag: "Skip", number, page, reason: "repeated-number" })
+    return true
+  }
   for (const { page, reading } of readings.questions) {
     if (reading.role !== "questions") continue
     if (reading.group === "sc") {
       for (const number of reading.value.numbers) {
-        if (seen.has(number)) continue
-        seen.add(number)
-        linked.push({ _tag: "Skip", number, page, reason: "sentence-correction" })
+        if (!repeated(number, page, null)) linked.push({ _tag: "Skip", number, page, reason: "sentence-correction" })
       }
       continue
     }
     for (const item of reading.value.questions) {
-      if (seen.has(item.number)) continue
-      seen.add(item.number)
+      if (repeated(item.number, page, item.stem)) continue
       if (item.retired !== null) {
         linked.push({ _tag: "Skip", number: item.number, page, reason: item.retired })
         continue
       }
-      linked.push(candidateOf(item, page, answers.get(item.number) ?? null, explanations.get(item.number), labels))
+      linked.push(candidateOf(item, page, {
+        keyAnswers: answers.get(item.number) ?? [],
+        explanation: explanations.get(item.number),
+        explanationAnswers: explanationAnswers.get(item.number) ?? [],
+        label: onlyValue(labels.get(item.number))
+      }))
     }
   }
   return linked
@@ -112,22 +145,32 @@ export const linkSet = (readings: SetReadings): ReadonlyArray<LinkedItem> => {
 const candidateOf = (
   item: QuestionItem,
   page: number,
-  answerKey: Letter | null,
-  explanation: { readonly text: string; readonly answer: Letter | null; readonly label: BookLabel | null } | undefined,
-  labels: ReadonlyMap<number, BookLabel | undefined>
-): Candidate => ({
-  _tag: "Candidate",
-  number: item.number,
-  page,
-  stem: item.stem.trim(),
-  options: item.options.map((option) => ({ label: option.label, text: option.text.trim() })),
-  figure: item.figure,
-  answerKey,
-  explanationAnswer: explanation?.answer ?? null,
-  key: answerKey ?? explanation?.answer ?? null,
-  explanation: explanation?.text.trim() || null,
-  label: labels.get(item.number) ?? explanation?.label ?? item.difficulty ?? null
-})
+  found: {
+    readonly keyAnswers: ReadonlyArray<Letter>
+    readonly explanation: { readonly text: string; readonly answer: Letter | null; readonly label: BookLabel | null } | undefined
+    readonly explanationAnswers: ReadonlyArray<Letter>
+    readonly label: BookLabel | null
+  }
+): Candidate => {
+  const answerKey = onlyValue(found.keyAnswers)
+  const explanationAnswer = onlyValue(found.explanationAnswers)
+  return {
+    _tag: "Candidate",
+    number: item.number,
+    page,
+    stem: item.stem.trim(),
+    options: item.options.map((option) => ({ label: option.label, text: option.text.trim() })),
+    figure: item.figure,
+    answerKey,
+    explanationAnswer,
+    // Two answers in the key give no key, rather than the explanation's.
+    key: found.keyAnswers.length > 1 ? null : answerKey ?? explanationAnswer,
+    keyAnswers: found.keyAnswers.length > 1 ? found.keyAnswers : [],
+    explanationAnswers: found.explanationAnswers.length > 1 ? found.explanationAnswers : [],
+    explanation: found.explanation?.text.trim() || null,
+    label: found.label ?? found.explanation?.label ?? item.difficulty ?? null
+  }
+}
 
 const Letters: ReadonlyArray<Letter> = ["A", "B", "C", "D", "E"]
 
@@ -143,12 +186,21 @@ export const candidateProblems = (candidate: Candidate): ReadonlyArray<Reason> =
     })
   }
   if (candidate.stem === "") reasons.push({ code: "structure", detail: "Its question text is empty." })
-  if (candidate.key === null) {
+  if (candidate.keyAnswers.length > 1) {
+    reasons.push({ code: "key-conflict", detail: `The answer key gives more than one answer for it: ${candidate.keyAnswers.join(", ")}.` })
+  } else if (candidate.key === null) {
     reasons.push({ code: "no-key", detail: "The Book's answer key and explanations give no answer for it." })
   } else if (!labels.includes(candidate.key)) {
     reasons.push({ code: "structure", detail: `Its key, ${candidate.key}, is not one of its answer choices.` })
   }
-  if (candidate.answerKey !== null && candidate.explanationAnswer !== null && candidate.answerKey !== candidate.explanationAnswer) {
+  if (candidate.explanationAnswers.length > 1) {
+    reasons.push({
+      code: "key-conflict",
+      detail: `Its explanations give different answers: ${candidate.explanationAnswers.join(", ")}.`
+    })
+  } else if (
+    candidate.answerKey !== null && candidate.explanationAnswer !== null && candidate.answerKey !== candidate.explanationAnswer
+  ) {
     reasons.push({
       code: "key-conflict",
       detail: `The answer key says ${candidate.answerKey}, but the explanation says ${candidate.explanationAnswer}.`
@@ -196,3 +248,6 @@ export const similarity = (a: ReadonlySet<string>, b: ReadonlySet<string>) => {
 
 // Texts at least this alike are near matches: a possible Variant.
 export const NearMatch = 0.85
+
+// Two readings of one number at least this alike are the same item.
+const SameItem = 0.6

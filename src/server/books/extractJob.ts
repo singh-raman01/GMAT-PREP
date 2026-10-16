@@ -5,7 +5,7 @@ import { setKey } from "../../api/bookMapRules.ts"
 import { Db } from "../db/Database.ts"
 import { bookMaps, bookPages, books, pageReadings } from "../db/schema.ts"
 import type { JobKind } from "../jobs/JobKind.ts"
-import { heldPages, holdUnreadPage, type Linked, linkCandidate, loadBank, recordSkip } from "./bankWrites.ts"
+import { heldPages, holdUnreadPage, type Linked, linkCandidate, loadBank, recordSkip, retireStale } from "./bankWrites.ts"
 import { linkSet } from "./linking.ts"
 import { type PageReading, readPage, readsGroup, storedReading } from "./readings.ts"
 
@@ -13,7 +13,8 @@ import { type PageReading, readPage, readsGroup, storedReading } from "./reading
 // is read once in its role, one page a step, then each question set is
 // linked into the Question Bank, one set a step. Pages read for an earlier
 // version are not read again, and linking changes only the items whose key,
-// explanation or label changed.
+// explanation or label changed. Once the latest version is linked, items it
+// no longer produces leave the Question Bank.
 
 const Params = Schema.Struct({ bookId: Schema.String, title: Schema.String, mapVersion: Schema.Int })
 
@@ -150,12 +151,18 @@ const linkStep = (params: typeof Params.Type, setsLinked: number, stepsDone: num
       // A run for an older Book Map leaves the Book to the newer run.
       const [latest] = yield* db.select({ version: max(bookMaps.version) }).from(bookMaps)
         .where(eq(bookMaps.bookId, params.bookId)).pipe(Effect.orDie)
-      if (latest?.version === params.mapVersion) {
-        yield* db.update(books).set({ status: "extracted", updatedAt: now })
-          .where(and(eq(books.id, params.bookId), eq(books.status, "extracting")))
-          .pipe(Effect.orDie)
-      }
-      return { _tag: "Finished", result: `Linked ${loaded.sets.length} question ${loaded.sets.length === 1 ? "set" : "sets"}.` } as const
+      const linked = `Linked ${loaded.sets.length} question ${loaded.sets.length === 1 ? "set" : "sets"}`
+      if (latest?.version !== params.mapVersion) return { _tag: "Finished", result: `${linked}.` } as const
+      const retired = yield* retireStale(params.bookId, params.mapVersion, new Set(loaded.unread.keys()))
+      yield* db.update(books).set({ status: "extracted", updatedAt: now })
+        .where(and(eq(books.id, params.bookId), eq(books.status, "extracting")))
+        .pipe(Effect.orDie)
+      return {
+        _tag: "Finished",
+        result: retired === 0
+          ? `${linked}.`
+          : `${linked}; ${retired} ${retired === 1 ? "item has" : "items have"} left the Book Map.`
+      } as const
     }
     const questionReadings = yield* readingsOf(params.bookId, set, "questions", loaded.pageCount)
     const answerReadings = yield* readingsOf(params.bookId, set, "answer-key", loaded.pageCount)
@@ -167,25 +174,29 @@ const linkStep = (params: typeof Params.Type, setsLinked: number, stepsDone: num
       explanations: explanationReadings.map((each) => each.reading),
       labels: labelReadings.map((each) => each.reading)
     })
-    const [first] = yield* db.select({ model: pageReadings.model, promptVersion: pageReadings.promptVersion })
-      .from(pageReadings)
-      .where(and(eq(pageReadings.bookId, params.bookId), eq(pageReadings.role, "questions"), eq(pageReadings.group, "ps")))
-      .limit(1)
-      .pipe(Effect.orDie)
+    // Each Question keeps the model and prompt that read its own page.
+    const readers = new Map(
+      (yield* db.select({ page: pageReadings.page, model: pageReadings.model, promptVersion: pageReadings.promptVersion })
+        .from(pageReadings)
+        .where(and(eq(pageReadings.bookId, params.bookId), eq(pageReadings.role, "questions"), eq(pageReadings.group, "ps")))
+        .pipe(Effect.orDie)).map((row) => [row.page, row] as const)
+    )
     const bank = yield* loadBank("quant")
     const counts: Record<Linked, number> = { created: 0, merged: 0, relinked: 0, unchanged: 0, skipped: 0 }
     for (const item of linked) {
+      const reader = readers.get(item.page)
       const outcome = item._tag === "Skip"
-        ? yield* recordSkip(params.bookId, set.name, item)
+        ? yield* recordSkip(params.bookId, set.name, params.mapVersion, item)
         : yield* linkCandidate({
           bookId: params.bookId,
           set: set.name,
+          mapVersion: params.mapVersion,
           candidate: item,
           origin: {
             section: "quant",
             questionType: "quant.ps",
-            model: first?.model ?? "",
-            promptVersion: first?.promptVersion ?? ""
+            model: reader?.model ?? "",
+            promptVersion: reader?.promptVersion ?? ""
           }
         }, bank)
       counts[outcome] += 1

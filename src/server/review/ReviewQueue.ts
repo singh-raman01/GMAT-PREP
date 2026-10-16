@@ -15,18 +15,39 @@ import {
   SourceView
 } from "../../api/Review.ts"
 import { Db } from "../db/Database.ts"
+import { readLinkReasons, recheckSources, RepeatCodes } from "../books/bankWrites.ts"
 import { books, options, parts, questions, reviewItems, sources } from "../db/schema.ts"
 
 // The Curator's decisions on held Questions and unread pages.
 
-const decodeReasons = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(ReviewReason)))
-const readReasons = (json: string) => Option.getOrElse(decodeReasons(json), () => [] as ReadonlyArray<ReviewReason>)
+const decodeReason = Schema.decodeUnknownOption(ReviewReason)
+
+// Each stored reason, as the API names it. One this version does not know,
+// such as one an older version wrote, still blocks publishing.
+const readReasons = (json: string): ReadonlyArray<ReviewReason> => {
+  let stored: unknown
+  try {
+    stored = JSON.parse(json)
+  } catch {
+    stored = undefined
+  }
+  if (!Array.isArray(stored)) {
+    return [new ReviewReason({ code: "structure", detail: "Its reasons could not be read; withdraw it or extract it again." })]
+  }
+  return stored.map((reason: unknown) =>
+    Option.getOrElse(decodeReason(reason), () =>
+      new ReviewReason({
+        code: "structure",
+        detail: `A reason this version of the app does not know: ${JSON.stringify(reason).slice(0, 200)}.`
+      }))
+  )
+}
 
 type ItemRow = typeof reviewItems.$inferSelect
 
 // Near matches and identical text with another key, which the Curator
 // settles as a Variant or a merge.
-const RepeatReasons: ReadonlySet<string> = new Set(["near-match", "same-text-other-key"])
+const RepeatReasons: ReadonlySet<string> = RepeatCodes
 
 export class ReviewQueue extends Context.Service<ReviewQueue, {
   readonly list: Effect.Effect<ReadonlyArray<ReviewItemView>>
@@ -132,13 +153,23 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
           Effect.flatMap((rows) => (rows[0] === undefined ? Effect.fail(new ReviewItemNotFound()) : Effect.succeed(rows[0])))
         )
 
-      // The open item, or the reason the action cannot go ahead.
+      // The open item, or the reason the action cannot go ahead. Actions read
+      // it inside their transaction, so a re-link the worker commits meanwhile
+      // is either seen or waits.
       const openItem = (id: ReviewItemId, fits: (row: ItemRow) => boolean) =>
         Effect.gen(function*() {
           const row = yield* rowOf(id)
           if (row.status !== "open" || !fits(row)) return yield* new ReviewItemNotOpen({ item: yield* viewOf(row) })
           return row
         })
+
+      // Runs an action in one transaction; its failures come back as values
+      // so they do not roll back as defects.
+      const inTransaction = <A, E>(action: Effect.Effect<A, E, never>) =>
+        db.transaction(() => Effect.result(action)).pipe(
+          Effect.orDie,
+          Effect.flatMap((result) => (result._tag === "Success" ? Effect.succeed(result.success) : Effect.fail(result.failure)))
+        )
 
       const decide = (row: ItemRow, decision: string, changes: Partial<ItemRow> = {}) =>
         Effect.gen(function*() {
@@ -162,69 +193,74 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
       const isQuestion = (row: ItemRow) => row.questionId !== null
 
       const publish = (id: ReviewItemId) =>
-        Effect.gen(function*() {
+        inTransaction(Effect.gen(function*() {
           const row = yield* openItem(id, isQuestion)
           const blocking = readReasons(row.reasons).filter((reason) => !PublishableReasons.has(reason.code))
           if (blocking.length > 0) return yield* new CannotPublish({ reasons: blocking })
-          const decided = yield* db.transaction(() =>
-            Effect.gen(function*() {
-              yield* setQuestionStatus(row.questionId!, "published")
-              return yield* decide(row, "published")
-            })
-          ).pipe(Effect.orDie)
-          return yield* viewOf(decided)
-        }).pipe(oneAtATime)
+          yield* setQuestionStatus(row.questionId!, "published")
+          return yield* decide(row, "published")
+        })).pipe(Effect.flatMap(viewOf), oneAtATime)
 
       const withdraw = (id: ReviewItemId) =>
-        Effect.gen(function*() {
+        inTransaction(Effect.gen(function*() {
           const row = yield* openItem(id, isQuestion)
-          const decided = yield* db.transaction(() =>
-            Effect.gen(function*() {
-              yield* setQuestionStatus(row.questionId!, "withdrawn")
-              return yield* decide(row, "withdrawn")
-            })
-          ).pipe(Effect.orDie)
-          return yield* viewOf(decided)
-        }).pipe(oneAtATime)
+          yield* setQuestionStatus(row.questionId!, "withdrawn")
+          return yield* decide(row, "withdrawn")
+        })).pipe(Effect.flatMap(viewOf), oneAtATime)
 
       const repeats = (row: ItemRow) =>
         isQuestion(row) && row.relatedQuestionId !== null &&
         readReasons(row.reasons).some((reason) => RepeatReasons.has(reason.code))
 
-      // A Variant stays a Question of its own, still waiting for the Curator.
+      // A Variant stays a Question of its own, still waiting for the Curator;
+      // the repeat is settled for good, so re-linking does not raise it again.
       const keepAsVariant = (id: ReviewItemId) =>
-        Effect.gen(function*() {
+        inTransaction(Effect.gen(function*() {
           const row = yield* openItem(id, repeats)
           const reasons = readReasons(row.reasons).filter((reason) => !RepeatReasons.has(reason.code))
+          const [question] = yield* db.select({ linkReasons: questions.linkReasons }).from(questions)
+            .where(eq(questions.id, row.questionId!)).pipe(Effect.orDie)
+          const kept = readLinkReasons(question?.linkReasons ?? "[]").filter((reason) => !RepeatReasons.has(reason.code))
+          yield* db.update(questions).set({ linkReasons: JSON.stringify(kept), relatedQuestionId: null })
+            .where(eq(questions.id, row.questionId!)).pipe(Effect.orDie)
           const [updated] = yield* db.update(reviewItems)
             .set({ reasons: JSON.stringify(reasons), relatedQuestionId: null })
             .where(eq(reviewItems.id, row.id))
             .returning()
             .pipe(Effect.orDie)
-          return yield* viewOf(updated!)
-        }).pipe(oneAtATime)
+          return updated!
+        })).pipe(Effect.flatMap(viewOf), oneAtATime)
 
       // The same Question: its Sources join the related one, and it goes.
+      // Items and Questions that pointed at it point at the related one now,
+      // and the related one is held if its Sources now disagree on the key.
       const merge = (id: ReviewItemId) =>
-        Effect.gen(function*() {
+        inTransaction(Effect.gen(function*() {
           const row = yield* openItem(id, repeats)
-          const decided = yield* db.transaction(() =>
-            Effect.gen(function*() {
-              yield* db.update(sources).set({ questionId: row.relatedQuestionId!, merged: true })
-                .where(eq(sources.questionId, row.questionId!))
-              const updated = yield* decide(row, "merged", { questionId: null })
-              yield* db.delete(questions).where(eq(questions.id, row.questionId!))
-              return updated
-            })
-          ).pipe(Effect.orDie)
-          return yield* viewOf(decided)
-        }).pipe(oneAtATime)
+          const target = row.relatedQuestionId!
+          const [other] = yield* db.select({ status: questions.status }).from(questions).where(eq(questions.id, target))
+            .pipe(Effect.orDie)
+          if (other === undefined || other.status === "withdrawn") {
+            return yield* new ReviewItemNotOpen({ item: yield* viewOf(row) })
+          }
+          yield* db.update(sources).set({ questionId: target, merged: true })
+            .where(eq(sources.questionId, row.questionId!)).pipe(Effect.orDie)
+          yield* db.update(reviewItems).set({ relatedQuestionId: target })
+            .where(and(eq(reviewItems.relatedQuestionId, row.questionId!), eq(reviewItems.status, "open")))
+            .pipe(Effect.orDie)
+          yield* db.update(questions).set({ relatedQuestionId: target })
+            .where(eq(questions.relatedQuestionId, row.questionId!)).pipe(Effect.orDie)
+          const updated = yield* decide(row, "merged", { questionId: null })
+          yield* db.delete(questions).where(eq(questions.id, row.questionId!)).pipe(Effect.orDie)
+          yield* recheckSources(target).pipe(Effect.provideService(Db, db), Effect.orDie)
+          return updated
+        })).pipe(Effect.flatMap(viewOf), oneAtATime)
 
       const dismiss = (id: ReviewItemId) =>
-        Effect.gen(function*() {
+        inTransaction(Effect.gen(function*() {
           const row = yield* openItem(id, (item) => item.questionId === null && item.page !== null)
-          return yield* viewOf(yield* decide(row, "dismissed"))
-        }).pipe(oneAtATime)
+          return yield* decide(row, "dismissed")
+        })).pipe(Effect.flatMap(viewOf), oneAtATime)
 
       return ReviewQueue.of({ list, publish, withdraw, keepAsVariant, merge, dismiss })
     })

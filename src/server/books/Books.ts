@@ -151,6 +151,7 @@ export class Books extends Context.Service<Books, {
               withdrawn: sum((outcome) => !outcome.merged && outcome.status === "withdrawn"),
               skippedGeometry: skipped("geometry"),
               skippedSentenceCorrection: skipped("sentence-correction"),
+              skippedRepeatedNumbers: skipped("repeated-number"),
               unreadPages: unread.flatMap((item) => (item.bookId === row.id && item.page !== null ? [item.page] : []))
             })
           }
@@ -307,8 +308,12 @@ export class Books extends Context.Service<Books, {
           if (row.status !== "previewed" && !restart) {
             return yield* new BookNotReady({ status: row.status as BookStatus })
           }
+          // The full run maps the Book, then extracts it.
           const llm = yield* settings.llm
-          const missing = missingSettings(llm, Option.isSome(yield* keys.read), "book-map")
+          const hasKey = Option.isSome(yield* keys.read)
+          const missing = [
+            ...new Set([...missingSettings(llm, hasKey, "book-map"), ...missingSettings(llm, hasKey, "extraction")])
+          ]
           if (missing.length > 0) return yield* new LlmNotConfigured({ missing })
           const spent = yield* runSpent(row.id)
           if (spendCap <= spent) return yield* new RunCapTooLow({ spent })
@@ -340,17 +345,21 @@ export class Books extends Context.Service<Books, {
           if (!Mappable.has(row.status) || row.pageCount === null) {
             return yield* new BookNotReady({ status: row.status as BookStatus })
           }
-          const runCap = row.runCap ?? spendCap
+          // A cap given with the map sets the run's cap, or raises it.
+          const runCap = spendCap ?? row.runCap ?? undefined
           if (runCap === undefined) return yield* new RunCapNeeded()
           const problems = mapProblems(ranges, row.pageCount)
           if (problems.length > 0) return yield* new BookMapInvalid({ problems })
           // Mapped by hand before any full run: extraction is the run.
           const llm = row.runCap === null ? yield* settings.llm : undefined
           const now = yield* Clock.currentTimeMillis
-          // Extraction for an older version stops; the new run reuses its pages.
+          // Extraction for an older version stops, and the new run reuses its
+          // pages. A Book Map survey still running stops too: the Curator has
+          // mapped the Book, and the survey would spend the run's cap alongside
+          // extraction.
           const current = yield* jobOf(row)
           if (
-            current !== undefined && current.kind === BookExtraction.kind &&
+            current !== undefined && (current.kind === BookExtraction.kind || current.kind === BookMapping.kind) &&
             (current.status === "queued" || current.status === "running" || current.status === "paused" ||
               current.status === "failed")
           ) {
