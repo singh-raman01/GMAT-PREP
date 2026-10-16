@@ -102,6 +102,16 @@ export const proposedFrom = (curator: Curator, options: Parameters<typeof makeBo
     return yield* waitFor(curator, book.id, statusIs("map-proposed"))
   })
 
+// A Book from its bytes, through its proposed Book Map to extraction.
+export const extractBook = (curator: Curator, bytes: Uint8Array, title: string) =>
+  Effect.gen(function*() {
+    const book = yield* upload(curator, bytes, title)
+    yield* waitFor(curator, book.id, statusIs("previewed"))
+    yield* curator.api.books.start({ params: { id: book.id }, payload: { spendCap: 1 } })
+    const proposed = yield* waitFor(curator, book.id, statusIs("map-proposed"))
+    return yield* confirmAndExtract(curator, book.id, rangesOf(proposed))
+  })
+
 export const confirmAndExtract = (curator: Curator, id: BookId, ranges: ReadonlyArray<MapRangeInput>) =>
   Effect.gen(function*() {
     const confirmed = yield* curator.api.books.confirmMap({ params: { id }, payload: { ranges } })

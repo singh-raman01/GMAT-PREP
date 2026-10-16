@@ -6,9 +6,9 @@ import type { BookId } from "../src/api/Books.ts"
 import { Db } from "../src/server/db/Database.ts"
 import { datasets, options, parts, questions, sources, stimuli } from "../src/server/db/schema.ts"
 import { AllJobKinds } from "../src/server/jobs/kinds/index.ts"
-import { configure, confirmAndExtract, curatorBrowser, proposedFrom, rangesOf } from "./bookFlow.ts"
-import { DiNumbers } from "./fixtures/book.ts"
-import { runWithWorker } from "./harness.ts"
+import { configure, confirmAndExtract, curatorBrowser, extractBook, proposedFrom, rangesOf, withModel } from "./bookFlow.ts"
+import { bookOfPages, DiNumbers } from "./fixtures/book.ts"
+import { advanceUntil, runWithWorker } from "./harness.ts"
 
 // The default fixture's numbering: nine Problem Solving questions and two
 // Data Sufficiency ones come first.
@@ -103,6 +103,20 @@ describe("Extracting Data Insights Questions", () => {
         )
         expect(image.headers["content-type"]).toBe("image/png")
 
+        // The Curator changes one Part's key; a letter its menu lacks is refused.
+        expect(held.question!.parts.map((part) => part.options.map((option) => option.text))).toEqual([["three", "four", "five"]])
+        const refused = yield* curator.api.review.overrideKey({
+          params: { id: held.id },
+          payload: { part: 0, key: "D", reason: "The errata say so." }
+        }).pipe(Effect.flip)
+        expect(refused).toMatchObject({ _tag: "KeyNotAnOption", options: ["A", "B", "C"] })
+        const changed = yield* curator.api.review.overrideKey({
+          params: { id: held.id },
+          payload: { part: 0, key: "C", reason: "The errata say so." }
+        })
+        expect(changed.question?.keyOverrides).toMatchObject([{ part: 0, previousKey: "B", newKey: "C" }])
+        expect(changed.question?.parts[0]).toMatchObject({ key: "C", keyBasis: "override" })
+
         const twoPart = yield* itemOf(id, di.twoPart)
         expect(twoPart.question).toMatchObject({ questionType: "di.tpa", status: "published" })
         expect(twoPart.parts.map((part) => [part.kind, part.prompt, part.key, part.options.join(" ")])).toEqual([
@@ -119,6 +133,119 @@ describe("Extracting Data Insights Questions", () => {
         const tabs = yield* db.select().from(stimuli).where(eq(stimuli.parentId, choice!.question.stimulusId!))
           .orderBy(asc(stimuli.position)).pipe(Effect.orDie)
         expect(tabs.map((tab) => [tab.title, tab.kind])).toEqual([["Email", "passage"], ["Orders", "table"]])
+      }),
+      AllJobKinds
+    ), 120_000)
+})
+
+describe("Charts and older Books", () => {
+  test("a chart that does not draw holds its Question with the reason", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const bytes = yield* Effect.promise(() =>
+          bookOfPages("Venn Drills", [
+            [
+              "Graphics Interpretation",
+              "1. The Venn diagram shows how many of 50 people drink tea or coffee.",
+              "Sets: Tea, Coffee",
+              "Region | Count",
+              "Tea | 12",
+              "Tea & Coffee | 8",
+              "Tea & Milk | 5",
+              "none | 25",
+              "[blank] people drink tea. (12 | 20 | 25)"
+            ],
+            ["Data Insights Answer Key", "1. 20"]
+          ])
+        )
+        const extracted = yield* extractBook(curator, bytes, "Venn Drills")
+        const item = yield* itemOf(extracted.book.id, 1)
+        expect(item.question.status).toBe("held")
+        expect(item.stimulus).toMatchObject({ kind: "chart" })
+        const [held] = yield* curator.api.review.list()
+        expect(held?.reasons).toEqual([{
+          code: "render",
+          detail: 'The chart does not draw: The region "Milk & Tea" names a set the diagram lacks.'
+        }])
+      }),
+      AllJobKinds
+    ), 120_000)
+
+  test("an older Book's Integrated Reasoning becomes the Focus types it maps onto", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        // The solves give this Book's keys.
+        yield* withModel({ solve: (stem) => (/teams' wins/.test(stem) ? "A,B" : /sum of 9/.test(stem) ? "B,C" : undefined) })
+        const bytes = yield* Effect.promise(() =>
+          bookOfPages("Integrated Reasoning Drills", [
+            [
+              "Integrated Reasoning",
+              "Table Analysis",
+              "1. The table shows the teams' wins.",
+              "Team | Wins",
+              "Reds | 10",
+              "Blues | 7",
+              "For each statement, choose Yes if it is true, otherwise No.",
+              "The Reds won more games.",
+              "The Blues won 10 games.",
+              "Two-Part Analysis",
+              "2. Two whole numbers have a sum of 9 and a product of 20.",
+              "Select the smaller and the larger.",
+              "Smaller | Larger",
+              "3",
+              "4",
+              "5",
+              "6"
+            ],
+            ["Integrated Reasoning Answer Key", "1. Yes, No", "2. 4, 5"]
+          ])
+        )
+        const extracted = yield* extractBook(curator, bytes, "Integrated Reasoning Drills")
+        const [table, twoPart] = yield* Effect.forEach([1, 2], (number) => itemOf(extracted.book.id, number))
+        expect(table!.question).toMatchObject({ section: "di", questionType: "di.ta", status: "published" })
+        expect(table!.parts.map((part) => part.key)).toEqual(["A", "B"])
+        expect(twoPart!.question).toMatchObject({ section: "di", questionType: "di.tpa", status: "published" })
+        expect(twoPart!.parts.map((part) => [part.prompt, part.key])).toEqual([["Smaller", "B"], ["Larger", "C"]])
+      }),
+      AllJobKinds
+    ), 120_000)
+})
+
+describe("The golden set with Data Insights Questions", () => {
+  test("a check reads a table, the sources of an MSR set and every Part again, and passes when nothing changed", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const proposed = yield* proposedFrom(curator, { edition: "First edition", di: true })
+        yield* confirmAndExtract(curator, proposed.book.id, rangesOf(proposed))
+        const golden = curator.api.golden
+        const view = yield* golden.get()
+        const picked = [di.table, di.twoPart, ...di.sources].map((number) =>
+          view.candidates.find((each) => each.number === number)!
+        )
+        expect(picked.map((each) => each.stimulus?.kind ?? null)).toEqual(["table", null, "tabs", "tabs"])
+        expect(picked[0]!.parts.map((part) => part.prompt)).toEqual([
+          "North sold the most.",
+          "Every region grew.",
+          "East grew fastest."
+        ])
+        for (const each of picked) {
+          yield* golden.approve({
+            params: { questionId: each.questionId },
+            payload: { primarySkill: each.primarySkill!, secondarySkills: [...each.secondarySkills] }
+          })
+        }
+        yield* golden.check({ payload: { spendCap: 1 } })
+        const done = yield* advanceUntil(
+          golden.get().pipe(Effect.map((current) => (current.report !== null ? current : undefined))),
+          { step: "200 millis", maxSteps: 3000 }
+        )
+        expect(done.report).toMatchObject({ items: 4, textExact: 4, partsExact: 4, keysExact: 4, tagAgreement: 1, passed: true })
       }),
       AllJobKinds
     ), 120_000)

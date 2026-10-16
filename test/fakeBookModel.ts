@@ -49,6 +49,12 @@ const survey = (request: TransportRequest) => ({
     if (heading === "Data Insights Answer Key") {
       return { page: number, role: "answer-key", group: "mixed", chapter: "Data Insights" }
     }
+    if (heading === "Integrated Reasoning") {
+      return { page: number, role: "questions", group: "ir", chapter: "Integrated Reasoning" }
+    }
+    if (heading === "Integrated Reasoning Answer Key") {
+      return { page: number, role: "answer-key", group: "ir", chapter: "Integrated Reasoning" }
+    }
     return { page: number, role: "other", group: null, chapter: null }
   })
 })
@@ -219,12 +225,22 @@ const giQuestions = (page: string) => ({
   questions: numberedItems(page.split("\n")).map((item) => {
     const rows = item.rest.filter(isRow)
     const data = rows.length === 0 ? null : tableOf(rows[0]!, rows.slice(1))
+    // A Venn diagram names its sets on a line of their own.
+    const sets = item.rest.find((line) => line.startsWith("Sets: "))?.slice(6).split(", ") ?? []
     return {
       number: item.number,
       intro: item.first,
       chart: data === null
         ? null
-        : { kind: "bar", title: "", data, x: data.columns[0]!.name, y: data.columns[1]!.name, series: "", sets: [] },
+        : {
+          kind: sets.length > 0 ? "venn" : "bar",
+          title: "",
+          data,
+          x: data.columns[0]!.name,
+          y: data.columns[1]!.name,
+          series: "",
+          sets
+        },
       figure: data === null,
       statements: item.rest.filter((line) => line.includes("[blank]")).map(blankStatement),
       difficulty: null
@@ -279,6 +295,26 @@ const msrPage = (page: string) => {
       : { number: item.number, stem: item.first, options: [], statements: item.rest, pair: ["Yes", "No"], difficulty: null }
   })
   return { sources, questions }
+}
+
+// An older Book's Integrated Reasoning page: each kind under its own heading.
+const irPage = (page: string) => {
+  const sections = new Map<string, Array<string>>()
+  let current = ""
+  for (const line of page.split("\n").slice(1)) {
+    if (["Table Analysis", "Graphics Interpretation", "Two-Part Analysis", "Multi-Source Reasoning"].includes(line)) {
+      current = line
+      continue
+    }
+    sections.set(current, [...(sections.get(current) ?? []), line])
+  }
+  const text = (heading: string) => ["", ...(sections.get(heading) ?? [])].join("\n")
+  return {
+    ta: taQuestions(text("Table Analysis")).questions,
+    gi: giQuestions(text("Graphics Interpretation")).questions,
+    tpa: tpaQuestions(text("Two-Part Analysis")).questions,
+    msr: sections.has("Multi-Source Reasoning") ? msrPage(text("Multi-Source Reasoning")) : { sources: [], questions: [] }
+  }
 }
 
 // An answer key whose questions may have several parts: each part's answer
@@ -453,6 +489,8 @@ export const makeFakeBookModel = (options: FakeEnrichment = {}) => (request: Tra
     ? tpaQuestions(page)
     : system.includes("Multi-Source Reasoning sets")
     ? msrPage(page)
+    : system.includes("Integrated Reasoning questions")
+    ? irPage(page)
     : system.includes("may have several parts")
     ? partsAnswers(page)
     : system.includes("answer keys")

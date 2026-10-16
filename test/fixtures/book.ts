@@ -273,3 +273,17 @@ export const makeBook = async (
   const bytes = await doc.save()
   return { bytes, pageCount: doc.getPageCount(), scannedPages: [scannedPage] }
 }
+
+// A book of the given pages, each a list of lines, after a title page.
+export const bookOfPages = async (title: string, pages: ReadonlyArray<ReadonlyArray<string>>) => {
+  const doc = await PDFDocument.create()
+  doc.setTitle(title)
+  doc.setCreationDate(new Date(Date.UTC(2026, 0, 1)))
+  doc.setModificationDate(new Date(Date.UTC(2026, 0, 1)))
+  const font = await doc.embedFont(StandardFonts.Helvetica)
+  for (const lines of [[title, "A made-up book for tests"], ...pages]) {
+    const added = doc.addPage([612, 792])
+    lines.forEach((line, i) => added.drawText(line, { x: 60, y: 720 - i * 18, size: 11, font }))
+  }
+  return doc.save()
+}
