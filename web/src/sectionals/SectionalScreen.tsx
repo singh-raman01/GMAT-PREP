@@ -784,6 +784,7 @@ const ResultRow = (
                 timed
                 parts={served.question.parts}
                 mistakes={served.mistakes}
+                onFailure={onFailure}
               />
             )}
           </>

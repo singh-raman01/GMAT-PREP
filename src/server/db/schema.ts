@@ -682,7 +682,7 @@ export const mistakeLabels = sqliteTable(
     mistakeType: text("mistake_type").notNull(),
     createdAt: integer("created_at").notNull()
   },
-  (t) => [index("mistake_labels_profile").on(t.profileId)]
+  (t) => [index("mistake_labels_profile").on(t.profileId), index("mistake_labels_response").on(t.responseId, t.part)]
 )
 
 // A Profile's Bookmarks: one per Question, whichever set marked it, so a

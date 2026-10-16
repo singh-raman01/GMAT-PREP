@@ -499,6 +499,8 @@ export class Sectionals extends Context.Service<Sectionals, {
           readonly marked: ReadonlySet<string>
           readonly resolve: (id: string) => string
           readonly revealed: boolean
+          // The time the first answer took; a change in Review & Edit takes none.
+          readonly firstTimeMs?: number | undefined
         },
         final: ResponseRow | undefined
       ) =>
@@ -528,7 +530,7 @@ export class Sectionals extends Context.Service<Sectionals, {
             response: !over || final === undefined ? null : new ResponseView({
               selection,
               guessed: false,
-              timeSpentMs: final.timeSpentMs,
+              timeSpentMs: context.firstTimeMs ?? final.timeSpentMs,
               correct: final.kind !== "time-out" && isCorrect(selection, keys),
               rated,
               timedOut: final.kind === "time-out"
@@ -821,11 +823,12 @@ export class Sectionals extends Context.Service<Sectionals, {
           const served = yield* servedOf(id)
           const row = served.find((each) => each.position === position)
           if (row === undefined) return yield* outOfStep(session, caller.device, "not-current")
-          const final = (yield* responsesOf(id)).findLast((each) => each.questionId === row.questionId)
+          const given = (yield* responsesOf(id)).filter((each) => each.questionId === row.questionId)
+          const final = given.at(-1)
           const marked = yield* run(bookmarkedBy(session.profileId))
           const resolve = yield* run(mergeTargets)
           return new SectionalQuestion({
-            served: yield* servedView(session, row, { marked, resolve, revealed: shown }, final),
+            served: yield* servedView(session, row, { marked, resolve, revealed: shown, firstTimeMs: given[0]?.timeSpentMs }, final),
             selection: final === undefined || final.kind === "time-out" ? null : readSelection(final.selection)
           })
         })

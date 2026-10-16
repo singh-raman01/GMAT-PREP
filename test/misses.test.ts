@@ -20,11 +20,10 @@ const question = (id: string, changes: Partial<QuestionFact> = {}): QuestionFact
   parts: [{
     position: 0,
     key: "C",
-    labels: ["A", "B", "C", "D", "E"],
     notes: new Map([
-      [0, { mistakeType: "trap", trapPattern: "quant.trap.partial-answer" }],
-      [1, { mistakeType: "calculation-slip", trapPattern: null }],
-      [3, { mistakeType: "misread", trapPattern: null }]
+      ["A", { mistakeType: "trap", trapPattern: "quant.trap.partial-answer" }],
+      ["B", { mistakeType: "calculation-slip", trapPattern: null }],
+      ["D", { mistakeType: "misread", trapPattern: null }]
     ])
   }],
   ...changes
@@ -70,22 +69,32 @@ describe("A Session's final Response enters the Error Log", () => {
       {
         question: "q1",
         reasons: ["wrong"],
-        parts: [{ part: 0, picked: "A", mistakeType: "trap", trapPattern: "quant.trap.partial-answer" }]
+        parts: [{ part: 0, picked: "A", mistakeType: "trap", trapPattern: "quant.trap.partial-answer", basis: "option" }]
       },
-      { question: "q3", reasons: ["wrong"], parts: [{ part: 0, picked: "B", mistakeType: "calculation-slip", trapPattern: null }] }
+      {
+        question: "q3",
+        reasons: ["wrong"],
+        parts: [{ part: 0, picked: "B", mistakeType: "calculation-slip", trapPattern: null, basis: "option" }]
+      }
     ])
   })
 
   test("an option with no note leaves the Mistake Type for the Learner", () => {
-    expect(brief(run([response("q1", "E")]))[0]!.parts).toEqual([{ part: 0, picked: "E", mistakeType: null, trapPattern: null }])
+    expect(brief(run([response("q1", "E")]))[0]!.parts).toEqual([
+      { part: 0, picked: "E", mistakeType: null, trapPattern: null, basis: "none" }
+    ])
   })
 
-  test("when slow: right but over 1.5 times the Target Time", () => {
-    expect(brief(run([response("q1", "C", { timeSpentMs: 180_000 }), response("q2", "C", { timeSpentMs: 180_001 })])))
-      .toEqual([{ question: "q2", reasons: ["slow"], parts: [] }])
+  test("when slow: right but over 1.5 times the Target Time, in a timed Session only", () => {
+    const timed: SessionFact = { id: "s1", kind: "practice", limitMs: 600_000, shown: true }
+    const answers = [response("q1", "C", { timeSpentMs: 180_000 }), response("q2", "C", { timeSpentMs: 180_001 })]
+    expect(brief(run(answers, { sessions: [timed] }))).toEqual([{ question: "q2", reasons: ["slow"], parts: [] }])
+    // An untimed set's time runs while the Question sits open, so it says nothing.
+    expect(run(answers)).toEqual([])
   })
 
   test("when guessed: right but marked guessed, in Practice Sets only", () => {
+    const timed: SessionFact = { id: "s1", kind: "practice", limitMs: 600_000, shown: true }
     const sectional: SessionFact = { id: "s2", kind: "sectional", limitMs: 2_700_000, shown: true }
     expect(brief(run(
       [
@@ -93,7 +102,7 @@ describe("A Session's final Response enters the Error Log", () => {
         response("q2", "C", { guessed: true, timeSpentMs: 200_000 }),
         response("q3", "C", { guessed: true, sessionId: "s2" })
       ],
-      { sessions: [untimed, sectional] }
+      { sessions: [timed, sectional] }
     ))).toEqual([
       { question: "q1", reasons: ["guessed"], parts: [] },
       { question: "q2", reasons: ["slow", "guessed"], parts: [] }
@@ -109,7 +118,11 @@ describe("A Session's final Response enters the Error Log", () => {
 describe("Time pressure", () => {
   test("is the Mistake Type of a time-out, whatever was on screen", () => {
     expect(brief(run([response("q1", null)]))).toEqual([
-      { question: "q1", reasons: ["wrong"], parts: [{ part: 0, picked: null, mistakeType: "time-pressure", trapPattern: null }] }
+      {
+        question: "q1",
+        reasons: ["wrong"],
+        parts: [{ part: 0, picked: null, mistakeType: "time-pressure", trapPattern: null, basis: "timing" }]
+      }
     ])
   })
 
@@ -149,7 +162,11 @@ describe("Review & Edit", () => {
       { sessions: [sectional] }
     )
     expect(brief(misses)).toEqual([
-      { question: "q2", reasons: ["wrong"], parts: [{ part: 0, picked: "D", mistakeType: "time-pressure", trapPattern: null }] }
+      {
+        question: "q2",
+        reasons: ["wrong"],
+        parts: [{ part: 0, picked: "D", mistakeType: "time-pressure", trapPattern: null, basis: "timing" }]
+      }
     ])
   })
 })
@@ -157,19 +174,38 @@ describe("Review & Edit", () => {
 describe("A passage or set", () => {
   test("is timed as a whole: each right Question of a slow passage is slow", () => {
     const passage = ["q1", "q2", "q3"].map((id) => question(id, { unit: "passage-1" }))
+    const sectional: SessionFact = { id: "s1", kind: "sectional", limitMs: 2_700_000, shown: true }
     const slow = run([
       response("q1", "C", { timeSpentMs: 200_000 }),
       response("q2", "A", { timeSpentMs: 200_000 }),
       response("q3", "C", { timeSpentMs: 141_000 })
-    ], { questions: passage })
+    ], { questions: passage, sessions: [sectional] })
     expect(brief(slow).map((miss) => [miss.question, miss.reasons])).toEqual([["q1", ["slow"]], ["q2", ["wrong"]], ["q3", ["slow"]]])
     // 3 x 120 s x 1.5 is 540 s: a passage done in 540 s is not slow.
     const inTime = run([
       response("q1", "C", { timeSpentMs: 300_000 }),
       response("q2", "C", { timeSpentMs: 120_000 }),
       response("q3", "C", { timeSpentMs: 120_000 })
-    ], { questions: passage })
+    ], { questions: passage, sessions: [sectional] })
     expect(inTime).toEqual([])
+  })
+
+  test("is rushed as a whole: a quick later Question of a passage read at pace is not Time pressure", () => {
+    const passage = ["q1", "q2", "q3"].map((id) => question(id, { unit: "passage-1" }))
+    const sectional: SessionFact = { id: "s1", kind: "sectional", limitMs: 2_700_000, shown: true }
+    const read = run([
+      response("q1", "C", { timeSpentMs: 300_000 }),
+      response("q2", "A", { timeSpentMs: 25_000 }),
+      response("q3", "C", { timeSpentMs: 40_000 })
+    ], { questions: passage, sessions: [sectional] })
+    expect(brief(read).map((miss) => miss.parts[0]!.mistakeType)).toEqual(["trap"])
+    // 3 x 120 s / 4 is 90 s: a passage done in 85 s is rushed.
+    const rushed = run([
+      response("q1", "C", { timeSpentMs: 45_000 }),
+      response("q2", "A", { timeSpentMs: 20_000 }),
+      response("q3", "C", { timeSpentMs: 20_000 })
+    ], { questions: passage, sessions: [sectional] })
+    expect(brief(rushed).map((miss) => miss.parts[0]!.mistakeType)).toEqual(["time-pressure"])
   })
 })
 
@@ -179,14 +215,29 @@ describe("A Question of several Parts", () => {
       parts: [0, 1].map((position) => ({
         position,
         key: position === 0 ? "B" : "C",
-        labels: ["A", "B", "C", "D", "E"],
-        notes: new Map([[0, { mistakeType: "misread", trapPattern: null }]])
+        notes: new Map([["A", { mistakeType: "misread", trapPattern: null }]])
       }))
     })
     expect(brief(run([response("q1", "B", { selection: [{ part: 0, choice: "B" }, { part: 1, choice: "A" }] })], {
       questions: [tpa]
     }))).toEqual([
-      { question: "q1", reasons: ["wrong"], parts: [{ part: 1, picked: "A", mistakeType: "misread", trapPattern: null }] }
+      { question: "q1", reasons: ["wrong"], parts: [{ part: 1, picked: "A", mistakeType: "misread", trapPattern: null, basis: "option" }] }
+    ])
+  })
+})
+
+describe("A merged Question", () => {
+  test("counts as the one it became, judged by that one's key", () => {
+    // m1 was merged into q1, whose key is now A.
+    const merged = missesOf({
+      sessions: [untimed],
+      responses: [response("m1", "C")],
+      served: [],
+      questions: [question("q1", { parts: [{ position: 0, key: "A", notes: new Map() }] }), question("m1")],
+      resolve: (id) => (id === "m1" ? "q1" : id)
+    })
+    expect(brief(merged)).toEqual([
+      { question: "q1", reasons: ["wrong"], parts: [{ part: 0, picked: "C", mistakeType: null, trapPattern: null, basis: "none" }] }
     ])
   })
 })

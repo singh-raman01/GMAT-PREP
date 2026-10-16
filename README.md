@@ -90,7 +90,7 @@ Under Done on paper, mark the Books, or the pages of them, you worked through on
 
 ## Error Log
 
-Every Question you answer wrong, slowly or by a guess goes into your Error Log, one entry each with every answer you gave it. A wrong answer's Debrief says what went wrong in each wrong part, as a Mistake Type the app picks from your answer and its timing; one tap changes it, and your choice is kept. An answer you fixed in Review & Edit stays out, and a Sectional's or Mock's answers come in only once their results show. Filter the log by Section, Question Type, Skill, Mistake Type, Trap Pattern, Difficulty, Book, status or date, and open an entry to see the Question and its Debrief again.
+Every Question you answer wrong, or right but slowly in a timed set, or by a guess, goes into your Error Log, one entry each with every answer you gave it. A wrong answer's Debrief says what went wrong in each wrong part, as a Mistake Type the app picks from your answer and its timing; one tap changes it, and your choice is kept. An answer you fixed in Review & Edit stays out, and a Sectional's or Mock's answers come in only once their results show. Filter the log by Section, Question Type, Skill, Mistake Type (Not yet labelled finds the ones to label), Trap Pattern, Difficulty, Book, status or date, and open an entry to see the Question and its Debrief again. While a Sectional or Mock runs, the entries for its Questions wait until it ends.
 
 ## Scores
 

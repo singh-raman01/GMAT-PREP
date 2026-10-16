@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react"
 import type { ErrorLogDetail, ErrorLogEntry, ErrorLogFilters, ErrorLogView } from "../../../src/api/ErrorLog.ts"
 import { bandNames } from "../../../src/api/difficulty.ts"
+import type { PracticeQuestion } from "../../../src/api/Practice.ts"
 import { call } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
 import { dayAndTime, spokenDuration } from "../format.ts"
@@ -10,7 +11,8 @@ import { RichText } from "../RichText.tsx"
 import { StimulusDetails } from "../stimulus/StimulusPane.tsx"
 
 // The Error Log: every Question answered wrong, slowly or by a guess, one
-// entry each, the latest first, with filters for every way to slice it.
+// entry each, the latest first, a page at a time, with filters for every way
+// to slice it.
 
 interface Props {
   readonly onSessionLost: () => void
@@ -26,7 +28,7 @@ const selects = [
   ["section", "Section", "sections"],
   ["questionType", "Question Type", "questionTypes"],
   ["skill", "Skill", "skills"],
-  ["mistakeType", "What went wrong", "mistakeTypes"],
+  ["mistakeType", "Mistake Type", "mistakeTypes"],
   ["trapPattern", "Trap Pattern", "trapPatterns"],
   ["band", "Difficulty", "bands"],
   ["book", "Book", "books"],
@@ -42,18 +44,36 @@ const whyText = (entry: ErrorLogEntry) => {
     const traps = [...new Set(entry.parts.flatMap((part) => (part.trapPattern === null ? [] : [part.trapPattern.name.toLowerCase()])))]
     return `Wrong: ${kinds.join(", ")}${traps.length === 0 ? "" : ` (${traps.join(", ")})`}`
   }
-  return entry.reasons.map((reason) => (reason === "slow" ? "Slow" : "Guessed")).join(" and ")
+  return entry.reasons.includes("slow") && entry.reasons.includes("guessed")
+    ? "Slow and guessed"
+    : entry.reasons.includes("slow")
+    ? "Slow"
+    : "Guessed"
 }
 
-const historyText = (item: ErrorLogDetail["history"][number]) => {
+// How often it came here: wrong answers are missed; a right one that was
+// slow or guessed is only logged.
+const countText = (entry: ErrorLogEntry) => {
+  const verb = entry.reasons.includes("wrong") ? "Missed" : "Logged"
+  return entry.misses === 1 ? `${verb} once` : `${verb} ${entry.misses} times`
+}
+
+// An answer as the screen showed it: a letter for a choice of five, else the
+// option's words.
+const answerText = (question: PracticeQuestion, selection: ErrorLogDetail["history"][number]["selection"]) =>
+  selection.map((choice) => {
+    const part = question.parts.find((each) => each.position === choice.part)
+    if (part === undefined || part.kind === "single-choice") return choice.choice
+    return part.options.find((option) => option.label === choice.choice)?.text ?? choice.choice
+  }).join(", ")
+
+const historyText = (item: ErrorLogDetail["history"][number], question: PracticeQuestion, timeZone: string) => {
   const where = item.sessionKind === "practice" ? "Practice Set" : item.sessionKind === "sectional" ? "Sectional" : "Mock"
-  const answer = item.kind === "time-out"
-    ? "time ran out"
-    : item.selection.map((choice) => choice.choice).join(", ") || "no answer"
+  const answer = item.kind === "time-out" ? "time ran out" : answerText(question, item.selection) || "no answer"
   const result = item.correct === null ? "" : item.correct ? ", right" : ", wrong"
   const change = item.kind === "edit" ? ", changed in Review & Edit" : ""
   const time = item.kind === "first" ? `, ${spokenDuration(item.timeSpentMs)}` : ""
-  return `${dayAndTime(item.at)}, ${where}: ${answer}${result}${change}${time}${item.guessed ? ", marked as a guess" : ""}`
+  return `${dayAndTime(item.at, timeZone)}, ${where}: ${answer}${result}${change}${time}${item.guessed ? ", marked as a guess" : ""}`
 }
 
 export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
@@ -61,9 +81,12 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
   const ids = { from: useId(), to: useId(), base: useId() }
   const [filters, setFilters] = useState<Filters>({})
   const [log, setLog] = useState<ErrorLogView>()
+  const [entries, setEntries] = useState<ReadonlyArray<ErrorLogEntry>>([])
   const [open, setOpen] = useState<string>()
+  const [more, setMore] = useState(false)
   // The filters start open on a wide screen, folded on a narrow one.
   const [filtersOpen, setFiltersOpen] = useState(() => window.matchMedia("(min-width: 48rem)").matches)
+  const summary = useRef<HTMLElement>(null)
   const request = useRef(0)
 
   const handle = useCallback(
@@ -77,8 +100,32 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
       if (mine !== request.current) return
       if (result._tag === "Failure") return handle(result.failure)
       setLog(result.success)
+      setEntries(result.success.entries)
     })
   }, [filters, handle])
+
+  const showMore = async () => {
+    if (more) return
+    setMore(true)
+    const mine = request.current
+    const result = await call((client) => client.errorLog.list({ query: { ...filters, offset: entries.length } }))
+    setMore(false)
+    if (mine !== request.current) return
+    if (result._tag === "Failure") return handle(result.failure)
+    setLog(result.success)
+    setEntries((current) => [...current, ...result.success.entries])
+  }
+
+  // A label changed in an open entry: the entry shows it at once, and the
+  // counts follow without moving the list.
+  const changed = useCallback((entry: ErrorLogEntry) => {
+    setEntries((current) => current.map((each) => (each.questionId === entry.questionId ? entry : each)))
+    const mine = request.current
+    void call((client) => client.errorLog.list({ query: { ...filters, limit: 1 } })).then((result) => {
+      if (mine !== request.current || result._tag === "Failure") return
+      setLog((current) => (current === undefined ? current : { ...current, ...result.success, entries: current.entries }))
+    })
+  }, [filters])
 
   const set = (key: keyof Filters, value: string) =>
     setFilters((current) => {
@@ -88,20 +135,31 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
       return next
     })
 
+  const clear = () => {
+    setFilters({})
+    summary.current?.focus()
+  }
+
   const filtered = Object.keys(filters).length > 0
+  const timeZone = log?.timeZone ?? "UTC"
   return (
     <>
       <h1 ref={heading} tabIndex={-1}>Error Log</h1>
       <p className="lede">
         Every Question you answered wrong, slowly or by a guess, one entry each with every answer you gave it. Say what
-        went wrong in each one: the label decides what you practise next.
+        went wrong in each one, so the patterns show.
       </p>
+      {log !== undefined && log.held > 0 && (
+        <p className="hint">
+          {plural(log.held, "entry is", "entries are")} in your Sectional or Mock, and come back once it ends.
+        </p>
+      )}
       {log === undefined ? <p className="quiet" aria-busy="true">Reading your Error Log</p> : log.total === 0
         ? <p className="empty">Nothing yet. Questions you miss in Practice Sets, Sectionals and Mocks come here.</p>
         : (
           <>
             <details className="error-filters" open={filtersOpen} onToggle={(event) => setFiltersOpen(event.currentTarget.open)}>
-              <summary>
+              <summary ref={summary}>
                 Filters{filtered ? ` (${Object.keys(filters).length} in use)` : ""}
               </summary>
               <div className="filter-grid">
@@ -133,48 +191,68 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
                 </div>
               </div>
             </details>
-            <p className="filter-count" role="status">
-                {filtered ? `${log.entries.length} of ${plural(log.total, "entry", "entries")}` : plural(log.total, "entry", "entries")}
-                {filtered && (
-                  <>
-                    {" "}
-                    <button type="button" className="link-button" onClick={() => setFilters({})}>Clear the filters</button>
-                  </>
-                )}
-            </p>
+            <div className="filter-count">
+              <p role="status">
+                {filtered ? `${log.matching} of ${plural(log.total, "entry", "entries")}` : plural(log.total, "entry", "entries")}
+              </p>
+              {filtered && <button type="button" className="link-button" onClick={clear}>Clear the filters</button>}
+            </div>
             <ol className="error-list">
-              {log.entries.map((entry) => (
+              {entries.map((entry) => (
                 <EntryRow
                   key={entry.questionId}
                   entry={entry}
+                  timeZone={timeZone}
                   open={open === entry.questionId}
                   onToggle={() => setOpen((current) => (current === entry.questionId ? undefined : entry.questionId))}
+                  onChanged={changed}
                   onFailure={handle}
                 />
               ))}
             </ol>
+            {entries.length < log.matching && (
+              <div className="actions">
+                <button type="button" className="button button-quiet" onClick={() => void showMore()} disabled={more}>
+                  Show {Math.min(log.matching - entries.length, 50)} more
+                </button>
+              </div>
+            )}
           </>
         )}
     </>
   )
 }
 
+type Opened =
+  | { readonly _tag: "Loading" }
+  | { readonly _tag: "Held" }
+  | { readonly _tag: "Shown"; readonly detail: ErrorLogDetail }
+
 const EntryRow = (
-  { entry, open, onToggle, onFailure }: {
+  { entry, timeZone, open, onToggle, onChanged, onFailure }: {
     readonly entry: ErrorLogEntry
+    readonly timeZone: string
     readonly open: boolean
     readonly onToggle: () => void
+    readonly onChanged: (entry: ErrorLogEntry) => void
     readonly onFailure: (failure: { readonly _tag: string }) => void
   }
 ) => {
   const panel = useId()
-  const [detail, setDetail] = useState<ErrorLogDetail>()
+  const [opened, setOpened] = useState<Opened>({ _tag: "Loading" })
   useEffect(() => {
     if (!open) return
+    let live = true
+    setOpened({ _tag: "Loading" })
     void call((client) => client.errorLog.get({ params: { questionId: entry.questionId } })).then((result) => {
-      if (result._tag === "Success") return setDetail(result.success)
+      if (!live) return
+      if (result._tag === "Success") return setOpened({ _tag: "Shown", detail: result.success })
+      if (result.failure._tag === "ErrorLogEntryHeld") return setOpened({ _tag: "Held" })
       onFailure(result.failure)
     })
+    return () => {
+      live = false
+    }
   }, [open, entry.questionId, onFailure])
   const about = [entry.questionType.name, entry.primarySkill?.name, `${bandNames[entry.band].toLowerCase()} difficulty`]
     .filter((part) => part !== undefined).join(", ")
@@ -194,37 +272,44 @@ const EntryRow = (
         </div>
       )}
       <p className="set-facts">
-        {whyText(entry)}. {entry.misses === 1 ? "Missed once" : `Missed ${entry.misses} times`}, last{" "}
-        {dayAndTime(entry.lastMissedAt)}
+        {whyText(entry)}. {countText(entry)}, last {dayAndTime(entry.lastMissedAt, timeZone)}
         {entry.books.length === 0 ? "" : `, from ${entry.books.map((book) => book.name).join(" and ")}`}
         {entry.status === "withdrawn" ? ". Withdrawn from the Question Bank, so this entry is closed" : ""}.
       </p>
-      {open && (
-        <div id={panel} className="error-detail">
-          {detail === undefined ? <p className="quiet" aria-busy="true">Opening the entry</p> : (
+      <div id={panel} className="error-detail" hidden={!open}>
+        {!open ? null : opened._tag === "Loading"
+          ? <p className="quiet" aria-busy="true">Opening the entry</p>
+          : opened._tag === "Held"
+          ? <p className="hint">This Question is in your Sectional or Mock now. Its entry opens once that ends.</p>
+          : (
             <>
-              {detail.served.question.stimulus !== null && <StimulusDetails stimulus={detail.served.question.stimulus} />}
+              {opened.detail.served.question.stimulus !== null && (
+                <StimulusDetails stimulus={opened.detail.served.question.stimulus} />
+              )}
               <div className="question-body">
-                <RichText source={detail.served.question.stem} />
-                <AnsweredOptions served={detail.served} />
+                <RichText source={opened.detail.served.question.stem} />
+                <AnsweredOptions served={opened.detail.served} />
               </div>
-              {detail.served.debrief !== null && (
+              {opened.detail.served.debrief !== null && (
                 <DebriefPanel
-                  debrief={detail.served.debrief}
-                  response={detail.served.response}
-                  timed={detail.timed}
-                  parts={detail.served.question.parts}
-                  mistakes={detail.served.mistakes}
+                  debrief={opened.detail.served.debrief}
+                  response={opened.detail.served.response}
+                  timed={opened.detail.timed}
+                  parts={opened.detail.served.question.parts}
+                  mistakes={opened.detail.served.mistakes}
+                  onMistakeChanged={onChanged}
+                  onFailure={onFailure}
                 />
               )}
               <h3 className="history-title">Every answer you gave it</h3>
               <ul className="error-history">
-                {detail.history.map((item, index) => <li key={index}>{historyText(item)}</li>)}
+                {opened.detail.history.map((item, index) => (
+                  <li key={index}>{historyText(item, opened.detail.served.question, timeZone)}</li>
+                ))}
               </ul>
             </>
           )}
-        </div>
-      )}
+      </div>
     </li>
   )
 }
