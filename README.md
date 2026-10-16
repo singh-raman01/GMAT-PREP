@@ -34,7 +34,7 @@ Open Curator tools from the profile page and set the Curator passphrase. Under S
 
 ## Add a book
 
-Under Books, choose the book's PDF (up to 500 MB), give its title and edition, and say whether it is official GMAC material. The app reads every page, then has the Book Map model read 10 pages spread through the book, and shows what the full run would cost. Nothing more is spent until you start the full run with a spend cap. The Book Map model then reads the other pages and proposes the Book Map: where the book's questions, answer keys, explanations and difficulty labels are. Correct it on the book's page, opening any page in the browser's PDF viewer to check, and confirm it. Each confirmation is a new version, and starts extracting the book's Problem Solving questions.
+Under Books, choose the book's PDF (up to 500 MB), give its title and edition, and say whether it is official GMAC material. The app reads every page, then tries the full run on 10 pages spread through the book: the Book Map model reads them, and the extraction model reads those with questions, keys or explanations. It shows what the full run would cost. Nothing more is spent until you start the full run with a spend cap, which covers the whole run even if you cancel and start it again. The Book Map model then reads every page in order and proposes the Book Map: where the book's questions, answer keys, explanations and difficulty labels are. You can also enter the Book Map yourself instead. Correct it on the book's page, opening any page in the browser's PDF viewer to check, and confirm it. Each confirmation is a new version, and starts extracting the book's Problem Solving questions.
 
 ## Review the questions
 

@@ -29,6 +29,7 @@ export const BookPage = ({ id, notice, onLocked, onStopped }: Props) => {
   const heading = useFocusOnMount<HTMLHeadingElement>()
   const [detail, setDetail] = useState<BookDetail>()
   const [missing, setMissing] = useState(false)
+  const [mapByHand, setMapByHand] = useState(false)
   const [since, setSince] = useState<number | "now">()
   const mounted = useRef(true)
 
@@ -119,17 +120,17 @@ export const BookPage = ({ id, notice, onLocked, onStopped }: Props) => {
       {book.status === "mapping" && book.job?.status === "cancelled" && book.preview !== null && (
         <Preview book={book} preview={book.preview} onStarted={replace} onFailure={handle} again />
       )}
-      {editable
-        ? (
-          <BookMapEditor
-            key={detail.proposal?.createdAt ?? 0}
-            detail={detail}
-            onConfirmed={setDetail}
-            onFailure={handle}
-          />
-        )
+      {/* One editor for the whole life of the page, so a proposal that
+          arrives, or the Book's status moving on, never resets the rows. */}
+      {editable || mapByHand
+        ? <BookMapEditor detail={detail} onConfirmed={setDetail} onFailure={handle} />
         : (book.status === "previewed" || book.status === "mapping") && (
-          <ManualMap detail={detail} onConfirmed={setDetail} onFailure={handle} />
+          <p className="aside">
+            You can also map the book yourself, which skips the Book Map model's survey.{" "}
+            <button type="button" className="link-button" onClick={() => setMapByHand(true)}>
+              Enter the Book Map by hand
+            </button>
+          </p>
         )}
     </>
   )
@@ -245,8 +246,9 @@ const Preview = (
   }
 ) => {
   const capId = useId()
-  const [cap, setCap] = useState(() => String(suggestedCap(preview)))
-  const [problem, setProblem] = useState<string>()
+  // A restart keeps the run's cap, which covers what it already spent.
+  const [cap, setCap] = useState(() => String(again && book.runCap !== null ? book.runCap : suggestedCap(preview)))
+  const [problem, setProblem] = useState<{ readonly text: string; readonly aboutCap: boolean }>()
   const busy = useRef(false)
 
   const start = async (event: FormEvent<HTMLFormElement>) => {
@@ -254,7 +256,7 @@ const Preview = (
     if (busy.current) return
     const spendCap = Number(cap)
     if (!Number.isFinite(spendCap) || spendCap <= 0 || spendCap > 10_000) {
-      return setProblem("Enter a cap in dollars, above 0.")
+      return setProblem({ text: "Enter a cap in dollars, above 0.", aboutCap: true })
     }
     busy.current = true
     const result = await call((client) => client.books.start({ params: { id: book.id }, payload: { spendCap } }))
@@ -262,9 +264,14 @@ const Preview = (
     if (result._tag === "Success") return onStarted(result.success)
     switch (result.failure._tag) {
       case "LlmNotConfigured":
-        return setProblem(`Set ${result.failure.missing.join(", ")} in Settings first.`)
+        return setProblem({ text: `Set ${result.failure.missing.join(", ")} in Settings first.`, aboutCap: false })
       case "BookNotReady":
-        return setProblem("The book changed in the meantime; reload the page.")
+        return setProblem({ text: "The book changed in the meantime; reload the page.", aboutCap: false })
+      case "RunCapTooLow":
+        return setProblem({
+          text: `Enter a cap above the ${formatDollars(result.failure.spent)} the run already spent.`,
+          aboutCap: true
+        })
       default:
         return onFailure(result.failure)
     }
@@ -279,7 +286,7 @@ const Preview = (
           ? "No page has a text layer, so nothing was sampled."
           : `The full run, tried on ${preview.sampledPages.length} pages spread through the book: about ${
             tokens(preview.projectedTokens)
-          } tokens and ${formatDollars(preview.projectedCost)} for the rest of it.`}
+          } tokens and ${formatDollars(preview.projectedCost)} in all.`}
       </p>
       <dl className="facts">
         {preview.steps.map((step) => (
@@ -293,7 +300,7 @@ const Preview = (
                 } tokens, ${formatDollars(step.sampleCost)}.`}{" "}
               {step.projectedPages === 0
                 ? "Nothing more to read."
-                : `About ${step.projectedPages} more ${step.projectedPages === 1 ? "page" : "pages"}: ${
+                : `The full run reads about ${step.projectedPages} ${step.projectedPages === 1 ? "page" : "pages"}: ${
                   tokens(step.projectedTokens)
                 } tokens, ${formatDollars(step.projectedCost)}.`}
             </dd>
@@ -321,7 +328,9 @@ const Preview = (
         <div className="field cap-field">
           <label htmlFor={capId}>Spend cap in dollars</label>
           <p id={`${capId}-hint`} className="hint">
-            The run pauses if it reaches this. The suggested cap allows half again the projected cost.
+            {again
+              ? `The cap covers the whole run, including the ${formatDollars(book.runSpent)} it already spent. The run pauses if it reaches the cap.`
+              : "The run pauses if it reaches this. The suggested cap allows half again the projected cost."}
           </p>
           <input
             id={capId}
@@ -330,34 +339,16 @@ const Preview = (
             autoComplete="off"
             value={cap}
             aria-describedby={`${capId}-hint`}
-            aria-invalid={problem !== undefined}
+            aria-invalid={problem?.aboutCap === true}
             onChange={(event) => setCap(event.target.value)}
           />
         </div>
         <div className="actions">
           <button type="submit" className="button">{again ? "Start the full run again" : "Start the full run"}</button>
         </div>
-        {problem !== undefined && <p className="problem" role="alert">{problem}</p>}
+        {problem !== undefined && <p className="problem" role="alert">{problem.text}</p>}
       </form>
     </section>
   )
 }
 
-// Before any proposal: the Curator can map the Book by hand instead of
-// waiting for, or paying for, the Book Map model.
-const ManualMap = (
-  { detail, onConfirmed, onFailure }: {
-    readonly detail: BookDetail
-    readonly onConfirmed: (detail: BookDetail) => void
-    readonly onFailure: (failure: { readonly _tag: string }) => void
-  }
-) => {
-  const [open, setOpen] = useState(false)
-  if (open) return <BookMapEditor detail={detail} onConfirmed={onConfirmed} onFailure={onFailure} />
-  return (
-    <p className="aside">
-      You can also map the book yourself.{" "}
-      <button type="button" className="link-button" onClick={() => setOpen(true)}>Enter the Book Map by hand</button>
-    </p>
-  )
-}

@@ -11,7 +11,7 @@ export interface BookFixture {
 }
 
 // A 4 by 4 grey PNG, standing in for a scanned page.
-const greyPng = Uint8Array.from(
+export const greyPng = Uint8Array.from(
   atob(
     "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAAAAACMmsGiAAAAEklEQVR4nGNoaGhgYGBgYGAAAAwQAoGq0r3+AAAAAElFTkSuQmCC"
   ),

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Option, Schema } from "effect"
-import { HttpClient, HttpClientRequest } from "effect/http"
+import { HttpClient, HttpClientRequest, HttpServer } from "effect/http"
 import { existsSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import {
@@ -192,6 +192,45 @@ describe("Adding a Book", () => {
       AllJobKinds
     ))
 
+  test("an upload with no length, or longer than the limit, is refused before it is read", () =>
+    runWithWorkers(
+      Effect.gen(function*() {
+        const curator = yield* curatorBrowser
+        const server = yield* HttpServer.HttpServer
+        const port = (server.address as { readonly port: number }).port
+        const path = `${BookUploadPath}?title=Big&edition=&official=false`
+        // The status line of a request sent as written.
+        const send = (headers: string, body: string) =>
+          Effect.promise(() =>
+            new Promise<string>((resolve, reject) => {
+              void Bun.connect({
+                hostname: "127.0.0.1",
+                port,
+                socket: {
+                  open: (socket) => {
+                    socket.write(
+                      `POST ${path} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nContent-Type: application/pdf\r\n` +
+                        `Cookie: ${curator.cookie}\r\n${headers}\r\n${body}`
+                    )
+                  },
+                  data: (socket, data) => {
+                    resolve(new TextDecoder().decode(data).split("\r\n")[0] ?? "")
+                    socket.end()
+                  },
+                  error: (_socket, error) => reject(error)
+                }
+              })
+            })
+          )
+        expect(yield* send("Transfer-Encoding: chunked\r\n", "5\r\n%PDF-\r\n")).toStartWith("HTTP/1.1 411")
+        const statusLine = yield* send(`Content-Length: ${600 * 1024 * 1024}\r\n`, "%PDF-")
+        expect(statusLine).toStartWith("HTTP/1.1 413")
+        // Nothing was written.
+        expect(existsSync(yield* booksFolder)).toBe(false)
+      }),
+      AllJobKinds
+    ))
+
   test("the stored file opens in the browser's own viewer, for the Curator only", () =>
     runWithWorkers(
       Effect.gen(function*() {
@@ -207,6 +246,8 @@ describe("Adding a Book", () => {
         expect(opened.headers["content-disposition"]).toBe(`inline; filename="Practice Questions.pdf"`)
         expect(opened.headers["content-security-policy"]).toBe("frame-ancestors 'none'")
         expect(opened.headers["x-frame-options"]).toBe("DENY")
+        // Kept out of the browser's cache, where it would open after locking.
+        expect(opened.headers["cache-control"]).toBe("no-store")
         expect(Buffer.from(yield* opened.arrayBuffer).equals(Buffer.from(book.bytes))).toBe(true)
         const locked = yield* client.execute(HttpClientRequest.get(bookFilePath(view.id)))
         expect(locked.status).toBe(401)
@@ -216,7 +257,7 @@ describe("Adding a Book", () => {
 })
 
 describe("Reading a Book", () => {
-  test("finds pages without a text layer and sends them to the Review Queue when the extraction model cannot read images", () =>
+  test("finds pages without a text layer, and routes them by whether the extraction model reads images", () =>
     runWithWorker(
       Effect.gen(function*() {
         yield* configure(false)
@@ -253,7 +294,7 @@ describe("Reading a Book", () => {
         const damaged = new TextEncoder().encode(`%PDF-1.7\n${"this is not really a PDF\n".repeat(50)}`)
         const { book: view } = added(yield* upload(curator.cookie, damaged, { title: "Damaged" }))
         const unreadable = yield* waitForStatus(curator.api, view.id, "unreadable")
-        expect(unreadable.book.note).toBe("The file is not a PDF the app can read.")
+        expect(unreadable.book.note).toStartWith("The PDF is damaged and could not be read (")
         expect(unreadable.book.job).toMatchObject({ status: "failed", note: unreadable.book.note })
         const again = yield* curator.api.books.readAgain({ params: { id: view.id } })
         expect(again).toMatchObject({ status: "added", note: null, job: { kind: "book-intake", status: "queued" } })
@@ -356,6 +397,82 @@ describe("The cost preview", () => {
     ))
 })
 
+describe("The full run", () => {
+  test("starting it again keeps one budget for the whole run", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure()
+        yield* surveyByHeading
+        const curator = yield* curatorBrowser
+        const book = yield* Effect.promise(() => makeBook({ psPages: 10 }))
+        const { book: view } = added(yield* upload(curator.cookie, book.bytes, { title: "Big Practice" }))
+        yield* waitForStatus(curator.api, view.id, "previewed")
+        // Two survey calls of $0.0014 pass this cap, and the run pauses.
+        const started = yield* curator.api.books.start({ params: { id: view.id }, payload: { spendCap: 0.002 } })
+        const paused = yield* advanceUntil(
+          detailOf(curator.api, view.id).pipe(
+            Effect.map((detail) => (detail.book.job?.status === "paused" ? detail : undefined))
+          ),
+          { step: "200 millis", maxSteps: 3000 }
+        )
+        expect(paused.book.runSpent).toBeCloseTo(0.0028, 12)
+        yield* curator.api.jobs.cancel({ params: { id: started.job!.id } })
+
+        const tooLow = yield* curator.api.books.start({ params: { id: view.id }, payload: { spendCap: 0.0028 } }).pipe(
+          Effect.flip
+        )
+        expect(tooLow).toMatchObject({ _tag: "RunCapTooLow" })
+        const again = yield* curator.api.books.start({ params: { id: view.id }, payload: { spendCap: 0.05 } })
+        expect(again).toMatchObject({ status: "mapping", runCap: 0.05, job: { kind: "book-map" } })
+        expect(again.job!.spendCap).toBeCloseTo(0.05 - 0.0028, 12)
+        expect(again.runSpent).toBeCloseTo(0.0028, 12)
+        const proposed = yield* waitForStatus(curator.api, view.id, "map-proposed")
+        expect(proposed.book.runSpent).toBeCloseTo(0.0042, 12)
+      }),
+      AllJobKinds
+    ))
+
+  test("mapping a Book by hand before it starts takes the scanned-page route chosen then", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure(false)
+        yield* surveyByHeading
+        const curator = yield* curatorBrowser
+        const book = yield* Effect.promise(() => makeBook())
+        const { book: view } = added(yield* upload(curator.cookie, book.bytes, { title: "Practice Questions" }))
+        expect((yield* waitForStatus(curator.api, view.id, "previewed")).book.scannedRoute).toBe("review")
+        yield* configure(true)
+        const confirmed = yield* curator.api.books.confirmMap({
+          params: { id: view.id },
+          payload: {
+            ranges: [{ role: "questions", firstPage: 2, lastPage: 4, set: "Problem Solving", group: "ps" }],
+            spendCap: 1
+          }
+        })
+        expect(confirmed.book).toMatchObject({ status: "extracting", runCap: 1, scannedRoute: "image" })
+      }),
+      AllJobKinds
+    ))
+
+  test("a survey reply that leaves out a page is tried again", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure()
+        yield* surveyByHeading
+        const fake = yield* FakeLlm
+        yield* fake.reply({ content: JSON.stringify({ pages: [] }) })
+        const curator = yield* curatorBrowser
+        const book = yield* Effect.promise(() => makeBook())
+        const { book: view } = added(yield* upload(curator.cookie, book.bytes, { title: "Practice Questions" }))
+        yield* waitForStatus(curator.api, view.id, "previewed")
+        const [first, retry] = yield* fake.requests
+        expect(quotedPages(retry!)).toEqual(quotedPages(first!))
+        expect(retry!.messages.at(-1)?.content).toContain("it leaves out pages")
+      }),
+      AllJobKinds
+    ))
+})
+
 describe("The Book Map", () => {
   const mappedBook = (curator: Effect.Success<typeof curatorBrowser>) =>
     Effect.gen(function*() {
@@ -400,7 +517,7 @@ describe("The Book Map", () => {
       AllJobKinds
     ))
 
-  test("is corrected and confirmed on one screen, and each confirmation makes a new version", () =>
+  test("is corrected and confirmed, and each confirmation makes a new version", () =>
     runWithWorker(
       Effect.gen(function*() {
         const curator = yield* curatorBrowser

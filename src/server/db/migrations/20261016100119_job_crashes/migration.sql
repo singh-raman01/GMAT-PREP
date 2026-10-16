@@ -1,0 +1,1 @@
+ALTER TABLE `jobs` ADD `crashes` integer DEFAULT 0 NOT NULL;

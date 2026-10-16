@@ -13,6 +13,9 @@ export const HeartbeatEvery = "5 seconds"
 export const PollEvery = "1 second"
 // How long a job waits after the API kept failing before it tries again.
 export const ApiPauseMs = 5 * 60 * 1000
+// A step during which the worker stopped this often is not tried again until
+// the Curator resumes the job, so one bad file cannot stall every other job.
+export const MaxCrashes = 3
 
 // Why a step stopped, as the job's note.
 export const endForError = (error: LlmError | JobStepFailed, now: number): JobEnd => {
@@ -45,6 +48,57 @@ export const endForError = (error: LlmError | JobStepFailed, now: number): JobEn
       return { _tag: "Failed", note: error.message }
   }
 }
+
+// The errors a defect wraps, outermost first.
+const causesOf = (defect: unknown): ReadonlyArray<unknown> => {
+  const chain: Array<unknown> = []
+  let current: unknown = defect
+  while (current !== undefined && current !== null && chain.length < 8 && !chain.includes(current)) {
+    chain.push(current)
+    current = (current as { readonly cause?: unknown }).cause
+  }
+  return chain
+}
+
+const diskIsFull = (cause: Cause.Cause<unknown>) =>
+  cause.reasons.some((reason) =>
+    Cause.isDieReason(reason) &&
+    causesOf(reason.defect).some((error) => {
+      const { code, message } = error as { readonly code?: unknown; readonly message?: unknown }
+      return code === "SQLITE_FULL" || code === "ENOSPC" ||
+        (typeof message === "string" && /database or disk is full|no space left on device/i.test(message))
+    })
+  )
+
+export const DiskFullNote = "The disk is full. Free some space, then resume the job."
+
+// A defect for the log. A failed query is named without its parameters,
+// which can hold whole pages of a Book.
+const describeDefect = (defect: unknown): string =>
+  causesOf(defect).map((error) => {
+    const { _tag, query, name, message, stack } = error as {
+      readonly _tag?: unknown
+      readonly query?: unknown
+      readonly name?: unknown
+      readonly message?: unknown
+      readonly stack?: unknown
+    }
+    if (_tag === "EffectDrizzleQueryError" && typeof query === "string") {
+      return `Failed query: ${query.slice(0, 300)} (parameters left out)`
+    }
+    const text = typeof message === "string" ? `${String(name ?? "Error")}: ${message}` : String(error)
+    const frames = typeof stack === "string" ? stack.split("\n").slice(1, 6).join("\n") : ""
+    return [text.slice(0, 1000), frames].filter((part) => part !== "").join("\n")
+  }).join("\ncaused by ")
+
+const describeCause = (cause: Cause.Cause<unknown>) =>
+  cause.reasons.map((reason) =>
+    Cause.isDieReason(reason)
+      ? describeDefect(reason.defect)
+      : Cause.isFailReason(reason)
+      ? describeDefect(reason.error)
+      : "interrupted"
+  ).join("\n")
 
 const encodeCheckpoint = (kind: AnyJobKind, checkpoint: unknown) =>
   JSON.stringify(Schema.encodeSync(Schema.toCodecJson(kind.checkpoint))(checkpoint))
@@ -79,6 +133,12 @@ export class JobRunner extends Context.Service<JobRunner, {
           }
           if (row.requested === "cancel") return yield* end({ _tag: "Cancelled", note: CancelledByCurator })
           if (row.requested === "pause") return yield* end({ _tag: "PausedOnRequest" })
+          if (row.crashes >= MaxCrashes) {
+            return yield* end({
+              _tag: "Failed",
+              note: `The job worker stopped ${MaxCrashes} times during the same step, so the job was stopped to let other jobs run. Resume it to try that step again.`
+            })
+          }
 
           // The last saved step, so steps carry on from it after a pause the
           // Curator took back.
@@ -133,7 +193,11 @@ export class JobRunner extends Context.Service<JobRunner, {
               Effect.catchCause((cause) =>
                 Cause.hasInterruptsOnly(cause)
                   ? Effect.failCause(cause)
-                  : Effect.logError(`Job ${row.id} stopped on an internal error`, Cause.pretty(cause)).pipe(
+                  : diskIsFull(cause)
+                  ? Effect.logWarning(`Job ${row.id} paused: the disk is full`).pipe(
+                    Effect.as({ _tag: "Paused", note: DiskFullNote, resumeAt: null } as JobEnd)
+                  )
+                  : Effect.logError(`Job ${row.id} stopped on an internal error`, describeCause(cause)).pipe(
                     Effect.as({
                       _tag: "Failed",
                       note: "The job stopped on an internal error; see the app's log."

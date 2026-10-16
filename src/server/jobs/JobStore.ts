@@ -123,6 +123,9 @@ export class JobStore extends Context.Service<JobStore, {
   saveStep(id: string, workerId: string, save: StepSave): Effect.Effect<Option.Option<Control>>
   finish(id: string, workerId: string, end: JobEnd): Effect.Effect<Finished>
   spendOf(id: string): Effect.Effect<Option.Option<{ readonly spend: number; readonly cap: number }>>
+  // The supervisor's side: whether the worker with this process id holds a
+  // job whose heartbeat stopped, as when it is stuck in a loop.
+  heartbeatStopped(pid: number): Effect.Effect<boolean>
 }>()("gmat-prep/server/JobStore") {
   static readonly layer = Layer.effect(
     JobStore,
@@ -213,6 +216,7 @@ export class JobStore extends Context.Service<JobStore, {
                   resumeAt: null,
                   requested: null,
                   spendCap: cap,
+                  crashes: 0,
                   finishedAt: null
                 })
             case "running":
@@ -278,6 +282,8 @@ export class JobStore extends Context.Service<JobStore, {
               claimant: workerId,
               heartbeatAt: now,
               resumeAt: null,
+              // A job still running here was left by a worker that stopped.
+              crashes: sql`case when ${jobs.status} = 'running' then ${jobs.crashes} + 1 else ${jobs.crashes} end`,
               revision: nextRevision,
               updatedAt: now
             })
@@ -311,6 +317,7 @@ export class JobStore extends Context.Service<JobStore, {
               stepsTotal: save.stepsTotal,
               note: save.note,
               heartbeatAt: now,
+              crashes: 0,
               revision: nextRevision,
               updatedAt: now
             })
@@ -357,7 +364,22 @@ export class JobStore extends Context.Service<JobStore, {
           Effect.orDie
         )
 
+      const heartbeatStopped = (pid: number) =>
+        Effect.gen(function*() {
+          const now = yield* Clock.currentTimeMillis
+          const [stuck] = yield* db.select({ id: jobs.id }).from(jobs)
+            .where(and(
+              eq(jobs.status, "running"),
+              sql`${jobs.claimant} like ${`worker-${pid}-%`}`,
+              sql`${jobs.heartbeatAt} < ${now - StaleAfterMs}`
+            ))
+            .limit(1)
+            .pipe(Effect.orDie)
+          return stuck !== undefined
+        })
+
       return JobStore.of({
+        heartbeatStopped,
         create,
         list,
         pause,

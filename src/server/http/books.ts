@@ -109,10 +109,11 @@ const serveUpload = Effect.gen(function*() {
         return refuse(400, "incomplete", "The file did not arrive in full. Try adding it again.")
     }
   }
+  // A request that stops here leaves no temporary file behind.
   const added = yield* books.add(
     { title: details.value.title, edition: details.value.edition, official: details.value.official === "true" },
     received.success
-  )
+  ).pipe(Effect.onInterrupt(() => files.discard(received.success)))
   return HttpServerResponse.jsonUnsafe(encodeAdded(added), { status: added.alreadyAdded ? 200 : 201 })
 })
 
@@ -132,7 +133,8 @@ const serveFile = Effect.gen(function*() {
     headers: {
       "content-disposition": `inline; filename="${name}.pdf"`,
       "content-security-policy": "frame-ancestors 'none'",
-      "cache-control": "private, max-age=3600"
+      // Not kept in the browser's cache, where it would open after locking.
+      "cache-control": "no-store"
     }
   }).pipe(Effect.orDie)
 })
