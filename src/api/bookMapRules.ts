@@ -1,4 +1,4 @@
-import { type MapRangeInput, MapRoleLabels } from "./Books.ts"
+import { type MapRangeInput, MapRoleLabels, MaxMapRanges, MaxSetName } from "./Books.ts"
 
 // What a Book Map must meet to be confirmed, shared by the server, which
 // enforces it, and the Book Map editor, which shows it as the Curator types.
@@ -17,8 +17,14 @@ export const mapProblems = (ranges: ReadonlyArray<MapRangeInput>, pageCount: num
   if (!ranges.some((range) => range.role === "questions")) {
     problems.push("Add at least one range of questions.")
   }
+  if (ranges.length > MaxMapRanges) problems.push(`A Book Map holds at most ${MaxMapRanges} ranges.`)
   for (const range of ranges) {
-    if (range.firstPage > range.lastPage) {
+    const name = range.set.trim()
+    if (name === "") problems.push(`${describe(range)}: give it a set name.`)
+    else if (name.length > MaxSetName) problems.push(`${describe(range)}: shorten the set name to ${MaxSetName} characters.`)
+    if (range.firstPage < 1 || range.lastPage < 1) {
+      problems.push(`${describe(range)}: pages are numbered from 1.`)
+    } else if (range.firstPage > range.lastPage) {
       problems.push(`${describe(range)}: the first page comes after the last.`)
     } else if (range.lastPage > pageCount) {
       problems.push(`${describe(range)}: the Book has ${pageCount} pages.`)
@@ -26,7 +32,7 @@ export const mapProblems = (ranges: ReadonlyArray<MapRangeInput>, pageCount: num
   }
   const questionSets = new Set(ranges.filter((range) => range.role === "questions").map((range) => setKey(range.set)))
   for (const range of ranges) {
-    if (range.role !== "questions" && !questionSets.has(setKey(range.set))) {
+    if (range.role !== "questions" && range.set.trim() !== "" && !questionSets.has(setKey(range.set))) {
       problems.push(
         `${describe(range)}: the set "${range.set.trim()}" has no questions. Use the set name of the questions it belongs to.`
       )

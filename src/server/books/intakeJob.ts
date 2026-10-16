@@ -118,8 +118,9 @@ const projectStep = (
   })
 
 // The full run on 10 pages spread through the Book: the Book Map model
-// surveys them, and the extraction model reads those it can extract. Their
-// readings are kept for the full run. What the calls took, read back from
+// surveys them, and the extraction model reads those it can extract. The
+// readings are kept for the full run; the surveys only cost the run, since
+// the full run surveys those pages again among their neighbours. What the calls took, read back from
 // the job's own call records, projects the full run; a repeated step adds
 // nothing it did not spend.
 const sampleStep = (jobId: string, bookId: string) =>
@@ -144,7 +145,7 @@ const sampleStep = (jobId: string, bookId: string) =>
     if (firstUnsurveyed !== undefined) {
       const surveyed = yield* surveyPages({ jobId, pages: [firstUnsurveyed, ...otherUnsurveyed], chapterBefore: null })
       for (const [number, survey] of surveyed.surveys) {
-        yield* db.update(bookPages).set({ survey: JSON.stringify(survey) })
+        yield* db.update(bookPages).set({ survey: JSON.stringify({ ...survey, sample: true }) })
           .where(and(eq(bookPages.bookId, bookId), eq(bookPages.number, number)))
           .pipe(Effect.orDie)
       }
@@ -169,11 +170,11 @@ const sampleStep = (jobId: string, bookId: string) =>
       model: sql<string>`max(${llmCalls.model})`
     }).from(llmCalls).where(eq(llmCalls.jobId, jobId)).groupBy(llmCalls.task).pipe(Effect.orDie)
     const of = (task: string) => spent.find((row) => row.task === task) ?? { tokens: 0, cost: 0, model: "" }
-    const remaining = textPages.length - sample.length
     // Pages like the sampled extractable ones, in the same share.
     const extractablePages = sample.length === 0 ? 0 : Math.round(extractable.length / sample.length * textPages.length)
     const steps = [
-      projectStep("Book Map", { pages: sample.length, ...of("book-map") }, remaining),
+      // The full run surveys every page with text, the sampled ones again.
+      projectStep("Book Map", { pages: sample.length, ...of("book-map") }, textPages.length),
       projectStep(
         "Extraction",
         { pages: extractable.length, ...of("extraction") },
@@ -185,7 +186,7 @@ const sampleStep = (jobId: string, bookId: string) =>
       sampledPages: sample,
       sampleTokens: steps.reduce((total, step) => total + step.sampleTokens, 0),
       sampleCost: steps.reduce((total, step) => total + step.sampleCost, 0),
-      projectedPages: remaining,
+      projectedPages: textPages.length,
       projectedTokens: steps.reduce((total, step) => total + step.projectedTokens, 0),
       projectedCost: steps.reduce((total, step) => total + step.projectedCost, 0),
       steps

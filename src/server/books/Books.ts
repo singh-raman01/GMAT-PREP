@@ -16,7 +16,8 @@ import {
   MapRange,
   type MapRangeInput,
   type PageRoute,
-  RunCapNeeded
+  RunCapNeeded,
+  RunCapTooLow
 } from "../../api/Books.ts"
 import { JobId, LlmNotConfigured } from "../../api/Jobs.ts"
 import { Db } from "../db/Database.ts"
@@ -73,7 +74,10 @@ export class Books extends Context.Service<Books, {
   readonly list: Effect.Effect<ReadonlyArray<BookView>>
   get(id: BookId): Effect.Effect<BookDetail, BookNotFound>
   readAgain(id: BookId): Effect.Effect<BookView, BookNotFound | BookNotReady>
-  start(id: BookId, spendCap: number): Effect.Effect<BookView, BookNotFound | BookNotReady | LlmNotConfigured>
+  start(
+    id: BookId,
+    spendCap: number
+  ): Effect.Effect<BookView, BookNotFound | BookNotReady | LlmNotConfigured | RunCapTooLow>
   confirmMap(
     id: BookId,
     ranges: ReadonlyArray<MapRangeInput>,
@@ -93,10 +97,23 @@ export class Books extends Context.Service<Books, {
       // Changes to Books read, decide and write; one at a time.
       const oneAtATime = (yield* Semaphore.make(1)).withPermits(1)
 
+      const bookOfJob = sql<string>`json_extract(${jobs.params}, '$.bookId')`
+
+      // What each Book's full run has spent, across restarts.
+      const runSpends = (ids: ReadonlyArray<string>) =>
+        db.select({ bookId: bookOfJob, spent: sql<number>`coalesce(sum(${jobs.spend}), 0)` }).from(jobs)
+          .where(and(inArray(jobs.kind, RunKinds), inArray(bookOfJob, [...ids])))
+          .groupBy(bookOfJob)
+          .pipe(Effect.orDie)
+
+      const runSpent = (bookId: string) =>
+        runSpends([bookId]).pipe(Effect.map((rows) => rows[0]?.spent ?? 0))
+
       const viewsOf = (rows: ReadonlyArray<BookRow>) =>
         Effect.gen(function*() {
           if (rows.length === 0) return []
           const ids = rows.map((row) => row.id)
+          const spends = yield* runSpends(ids)
           const scanned = yield* db.select({ bookId: bookPages.bookId, number: bookPages.number }).from(bookPages)
             .where(and(inArray(bookPages.bookId, ids), eq(bookPages.hasText, false)))
             .orderBy(bookPages.number)
@@ -155,6 +172,7 @@ export class Books extends Context.Service<Books, {
               preview: row.preview === null ? null : Option.getOrNull(decodePreview(row.preview)),
               mapVersion: versions.find((version) => version.bookId === row.id)?.version ?? null,
               runCap: row.runCap,
+              runSpent: spends.find((spend) => spend.bookId === row.id)?.spent ?? 0,
               report: reportOf(row),
               job: job === undefined ? null : toJobView(job, kinds),
               createdAt: row.createdAt
@@ -268,8 +286,19 @@ export class Books extends Context.Service<Books, {
           return yield* viewOf(updated)
         }).pipe(oneAtATime)
 
+      // Scanned pages follow the extraction model chosen when the full run
+      // starts, or when a Book mapped by hand starts extracting.
+      const settleScannedRoute = (row: BookRow, llm: Effect.Success<typeof settings.llm>) =>
+        Effect.gen(function*() {
+          const route = scannedRouteFor(taskReadsImages(llm, "extraction"))
+          yield* db.update(bookPages).set({ route })
+            .where(and(eq(bookPages.bookId, row.id), eq(bookPages.hasText, false)))
+          return row.scannedRoute === null ? null : route
+        })
+
       // Starts the full run after the cost preview, or again after the
-      // Curator cancelled it.
+      // Curator cancelled it. The cap covers the whole run, so a restart's
+      // job gets what is left of it.
       const start = (id: BookId, spendCap: number) =>
         Effect.gen(function*() {
           const row = yield* rowOf(id)
@@ -281,34 +310,29 @@ export class Books extends Context.Service<Books, {
           const llm = yield* settings.llm
           const missing = missingSettings(llm, Option.isSome(yield* keys.read), "book-map")
           if (missing.length > 0) return yield* new LlmNotConfigured({ missing })
+          const spent = yield* runSpent(row.id)
+          if (spendCap <= spent) return yield* new RunCapTooLow({ spent })
 
-          // Scanned pages follow the extraction model chosen now.
-          const route = scannedRouteFor(taskReadsImages(llm, "extraction"))
-          const [left] = yield* db.select({ pages: count() }).from(bookPages)
-            .where(and(eq(bookPages.bookId, row.id), eq(bookPages.hasText, true), isNull(bookPages.survey)))
-            .pipe(Effect.orDie)
-          const batches = Math.ceil((left?.pages ?? 0) / PagesPerBatch)
           const updated = yield* db.transaction(() =>
             Effect.gen(function*() {
-              yield* db.update(bookPages).set({ route })
-                .where(and(eq(bookPages.bookId, row.id), eq(bookPages.hasText, false)))
-              const next = yield* store.create(BookMapping, { bookId: row.id, title: row.title, batches }, spendCap)
-              return yield* update(row.id, {
-                status: "mapping",
-                jobId: next.id,
-                runCap: spendCap,
-                scannedRoute: row.scannedRoute === null ? null : route
-              })
+              const scannedRoute = yield* settleScannedRoute(row, llm)
+              // The sample surveyed its pages out of context; the full run
+              // reads them again among their neighbours.
+              yield* db.update(bookPages).set({ survey: null })
+                .where(and(eq(bookPages.bookId, row.id), sql`json_extract(${bookPages.survey}, '$.sample') = 1`))
+              const [left] = yield* db.select({ pages: count() }).from(bookPages)
+                .where(and(eq(bookPages.bookId, row.id), eq(bookPages.hasText, true), isNull(bookPages.survey)))
+              const batches = Math.ceil((left?.pages ?? 0) / PagesPerBatch)
+              const next = yield* store.create(
+                BookMapping,
+                { bookId: row.id, title: row.title, batches },
+                spendCap - spent
+              )
+              return yield* update(row.id, { status: "mapping", jobId: next.id, runCap: spendCap, scannedRoute })
             })
           ).pipe(Effect.orDie)
           return yield* viewOf(updated)
         }).pipe(oneAtATime)
-
-      // What the full run's jobs have spent so far.
-      const runSpent = (bookId: string) =>
-        db.select({ spent: sql<number>`coalesce(sum(${jobs.spend}), 0)` }).from(jobs)
-          .where(and(inArray(jobs.kind, RunKinds), sql`json_extract(${jobs.params}, '$.bookId') = ${bookId}`))
-          .pipe(Effect.map((rows) => rows[0]?.spent ?? 0), Effect.orDie)
 
       const confirmMap = (id: BookId, ranges: ReadonlyArray<MapRangeInput>, spendCap: number | undefined) =>
         Effect.gen(function*() {
@@ -320,6 +344,8 @@ export class Books extends Context.Service<Books, {
           if (runCap === undefined) return yield* new RunCapNeeded()
           const problems = mapProblems(ranges, row.pageCount)
           if (problems.length > 0) return yield* new BookMapInvalid({ problems })
+          // Mapped by hand before any full run: extraction is the run.
+          const llm = row.runCap === null ? yield* settings.llm : undefined
           const now = yield* Clock.currentTimeMillis
           // Extraction for an older version stops; the new run reuses its pages.
           const current = yield* jobOf(row)
@@ -343,7 +369,8 @@ export class Books extends Context.Service<Books, {
                 confirmedAt: now
               })
               const job = yield* store.create(BookExtraction, { bookId: row.id, title: row.title, mapVersion: version }, left)
-              yield* update(row.id, { status: "extracting", jobId: job.id, runCap })
+              const scannedRoute = llm === undefined ? row.scannedRoute : yield* settleScannedRoute(row, llm)
+              yield* update(row.id, { status: "extracting", jobId: job.id, runCap, scannedRoute })
             })
           ).pipe(Effect.orDie)
           return yield* get(id)

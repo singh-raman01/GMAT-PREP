@@ -95,7 +95,7 @@ export const PageRoute = Schema.Literals(["text", "image", "review"])
 export type PageRoute = typeof PageRoute.Type
 
 // One step of the full run in the cost preview: what it took on the sample,
-// and what it would take on the rest of the Book.
+// and what it would take on the pages the full run still reads.
 export class CostStep extends Schema.Class<CostStep>("gmat-prep/api/CostStep")({
   // Such as "Book Map" or "Extraction".
   name: Schema.String,
@@ -114,7 +114,8 @@ export class CostPreview extends Schema.Class<CostPreview>("gmat-prep/api/CostPr
   // Totals over the steps.
   sampleTokens: Schema.Int,
   sampleCost: Schema.Number,
-  // The pages the Book Map model reads in the full run.
+  // The pages the Book Map model reads in the full run: every page with
+  // text, the sampled ones again among their neighbours.
   projectedPages: Schema.Int,
   projectedTokens: Schema.Int,
   projectedCost: Schema.Number,
@@ -159,6 +160,8 @@ export class BookView extends Schema.Class<BookView>("gmat-prep/api/BookView")({
   mapVersion: Schema.NullOr(Schema.Int),
   // The spend cap of the full run, which its jobs share; null before it starts.
   runCap: Schema.NullOr(Schema.Number),
+  // What the full run's jobs have spent, across restarts.
+  runSpent: Schema.Number,
   report: Schema.NullOr(BookReport),
   // The job working on the Book: reading it, proposing its Book Map or
   // extracting its Questions.
@@ -172,9 +175,11 @@ const PageNumber = Schema.Int.check(
 
 // Ranges with the same set name belong together: questions, their answer
 // key, their explanations and their difficulty labels.
+export const MaxSetName = 100
+
 export const SetName = Schema.String.check(
-  Schema.makeFilter((name: string) => name.trim().length >= 1 && name.trim().length <= 100, {
-    description: "a set name of 1 to 100 characters"
+  Schema.makeFilter((name: string) => name.trim().length >= 1 && name.trim().length <= MaxSetName, {
+    description: `a set name of 1 to ${MaxSetName} characters`
   })
 )
 
@@ -236,6 +241,14 @@ export class RunCapNeeded extends Schema.TaggedError<RunCapNeeded>()(
   { httpApiStatus: 409 }
 ) {}
 
+// Starting the full run again: its cap covers the whole run, so it must be
+// above what the run already spent.
+export class RunCapTooLow extends Schema.TaggedError<RunCapTooLow>()(
+  "RunCapTooLow",
+  { spent: Schema.Number },
+  { httpApiStatus: 422 }
+) {}
+
 // A Book Map that cannot be right, with every problem found.
 export class BookMapInvalid extends Schema.TaggedError<BookMapInvalid>()(
   "BookMapInvalid",
@@ -261,12 +274,13 @@ export class BooksApi extends HttpApiGroup.make("books")
       success: BookView,
       error: [BookNotFound, BookNotReady]
     }),
-    // After the cost preview: the Curator starts the full run with its cap.
+    // After the cost preview: the Curator starts the full run with its cap,
+    // or starts it again after cancelling it, with a cap for the whole run.
     HttpApiEndpoint.post("start", "/books/:id/start", {
       ...bookParams,
       payload: Schema.Struct({ spendCap: SpendCap }),
       success: BookView,
-      error: [BookNotFound, BookNotReady, LlmNotConfigured]
+      error: [BookNotFound, BookNotReady, LlmNotConfigured, RunCapTooLow]
     }),
     // Each confirmation makes a new Book Map version and starts extraction
     // for it. spendCap sets the run's cap when the full run never started.

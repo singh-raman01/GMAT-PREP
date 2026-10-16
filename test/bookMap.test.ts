@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import type { MapRangeInput } from "../src/api/Books.ts"
 import { mapProblems, setsWithoutKeys, tidyMap } from "../src/api/bookMapRules.ts"
-import { assembleMap, chapterKey, type SurveyedPage } from "../src/server/books/bookMap.ts"
+import { assembleMap, parseChapter, sameChapter, type SurveyedPage } from "../src/server/books/bookMap.ts"
 import { spread } from "../src/server/books/intakeJob.ts"
 import type { PageSurvey } from "../src/server/books/survey.ts"
 
@@ -32,8 +32,10 @@ describe("Proposing a Book Map", () => {
   })
 
   test("chapter titles match whatever their numbering, and the set takes the commonest spelling", () => {
-    expect(chapterKey("5.0 Problem Solving")).toBe("problem solving")
-    expect(chapterKey("Chapter 5: Problem  solving")).toBe("problem solving")
+    expect(parseChapter("5.0 Problem Solving")).toEqual({ number: "5", title: "problem solving" })
+    expect(parseChapter("Chapter 5: Problem  solving")).toEqual({ number: "5", title: "problem solving" })
+    expect(parseChapter("Part II Review")).toEqual({ number: "ii", title: "review" })
+    expect(parseChapter("Index")).toEqual({ number: null, title: "index" })
     expect(assembleMap([
       page(10, q("ps", "5.0 Problem Solving")),
       page(11, q("ps", "Chapter 5 Problem Solving")),
@@ -62,6 +64,82 @@ describe("Proposing a Book Map", () => {
       ["questions", 7, "Critical Reasoning"],
       ["answer-key", 8, "Critical Reasoning"]
     ])
+  })
+
+  test("chapters with different numbers are different chapters, even when their titles match", () => {
+    expect(sameChapter(parseChapter("Chapter 3 Practice Questions"), parseChapter("Chapter 4 Practice Questions"))).toBe(
+      false
+    )
+    expect(sameChapter(parseChapter("Chapter 3"), parseChapter("Chapter 4"))).toBe(false)
+    expect(sameChapter(parseChapter("Chapter 3"), parseChapter("Chapter 3 Practice Questions"))).toBe(true)
+    expect(sameChapter(parseChapter("Practice Questions"), parseChapter("4 Practice Questions"))).toBe(true)
+    const ranges = assembleMap([
+      page(10, q("ps", "Chapter 3 Practice Questions")),
+      page(11, q("ps", "Chapter 3 Practice Questions")),
+      page(12, key("ps", "Chapter 3 Practice Questions")),
+      page(13, q("ps", "Chapter 4")),
+      page(14, q("ps", "Chapter 5")),
+      page(15, key("ps", "Chapter 5")),
+      page(20, q("ps", "Chapter 4 Practice Questions")),
+      page(22, key("ps", "Chapter 4 Practice Questions"))
+    ])
+    expect(ranges.map((range) => [range.role, range.firstPage, range.lastPage, range.set])).toEqual([
+      ["questions", 10, 11, "Chapter 3 Practice Questions"],
+      ["answer-key", 12, 12, "Chapter 3 Practice Questions"],
+      ["questions", 13, 13, "Chapter 4"],
+      ["questions", 14, 14, "Chapter 5"],
+      ["answer-key", 15, 15, "Chapter 5"],
+      ["questions", 20, 20, "Chapter 4"],
+      ["answer-key", 22, 22, "Chapter 4"]
+    ])
+  })
+
+  test("a key joins the questions of its chapter only when their groups fit", () => {
+    const ranges = assembleMap([
+      page(1, q("rc", "3.4 Practice Questions")),
+      page(2, q("cr", "4.4 Practice Questions")),
+      page(3, key("cr", "4.4 Practice Questions")),
+      page(4, key("rc", "3.4 Practice Questions")),
+      page(5, q("mixed", "Review")),
+      page(6, key("ps", "Review"))
+    ])
+    expect(ranges.map((range) => [range.role, range.firstPage, range.set])).toEqual([
+      ["questions", 1, "3.4 Practice Questions"],
+      ["questions", 2, "4.4 Practice Questions"],
+      ["answer-key", 3, "4.4 Practice Questions"],
+      ["answer-key", 4, "3.4 Practice Questions"],
+      ["questions", 5, "Review"],
+      ["answer-key", 6, "Review"]
+    ])
+  })
+
+  test("sets without a chapter, or sharing one across groups, get names of their own", () => {
+    const ranges = assembleMap([
+      page(2, q("ps", null)),
+      page(3, key("ps", null)),
+      page(5, q("ps", null)),
+      page(6, key("ps", null)),
+      page(8, q("ps", "2.0 Diagnostic Test")),
+      page(9, q("ds", "2.0 Diagnostic Test")),
+      page(10, key("ds", "2.0 Diagnostic Test"))
+    ])
+    expect(ranges.map((range) => [range.role, range.firstPage, range.set])).toEqual([
+      ["questions", 2, "Problem Solving from page 2"],
+      ["answer-key", 3, "Problem Solving from page 2"],
+      ["questions", 5, "Problem Solving from page 5"],
+      ["answer-key", 6, "Problem Solving from page 5"],
+      ["questions", 8, "2.0 Diagnostic Test"],
+      ["questions", 9, "2.0 Diagnostic Test, Data Sufficiency"],
+      ["answer-key", 10, "2.0 Diagnostic Test, Data Sufficiency"]
+    ])
+  })
+
+  test("a page with no chapter carries on the range before it", () => {
+    expect(assembleMap([
+      page(2, q("ps", "Problem Solving")),
+      page(3, q("ps", null)),
+      page(4, q("ps", "Problem Solving"))
+    ])).toEqual([{ role: "questions", firstPage: 2, lastPage: 4, set: "Problem Solving", group: "ps" }])
   })
 
   test("a page with no group counts as mixed", () => {
@@ -94,6 +172,17 @@ describe("Checking a Book Map", () => {
       "Questions, pages 2 to 25: the Book has 22 pages.",
       "Two ranges of questions in the set \"Problem Solving\" share pages: pages 2 to 25 and pages 20 to 21."
     ])
+  })
+
+  test("every range needs a set name of at most 100 characters, and pages from 1", () => {
+    expect(mapProblems([ps("questions", 2, 4, "   "), ps("questions", 0, 3, "x".repeat(101))], 10)).toEqual([
+      "Questions, pages 2 to 4: give it a set name.",
+      `Questions, pages 0 to 3: shorten the set name to 100 characters.`,
+      "Questions, pages 0 to 3: pages are numbered from 1."
+    ])
+    expect(mapProblems(Array.from({ length: 501 }, (_, i) => ps("questions", i + 1, i + 1)), 600)).toContain(
+      "A Book Map holds at most 500 ranges."
+    )
   })
 
   test("ranges of different roles or sets may share pages", () => {
