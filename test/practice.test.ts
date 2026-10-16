@@ -288,6 +288,33 @@ describe("Choosing a Practice Set", () => {
     })))
 })
 
+describe("Reading Comprehension passages", () => {
+  const passage = (n: number) => `Passage ${n}: the town council met twice before it chose a site.`
+  const rc = (number: number, n: number) =>
+    ({ number, questionType: "verbal.rc-detail", primarySkill: "verbal.reading.stated-info", passage: passage(n) }) as const
+
+  test("a passage's Questions are served one after another, each beside the passage", () =>
+    runWithWorkers(Effect.gen(function*() {
+      yield* seedBook("Verbal Review", [rc(1, 1), rc(2, 1), rc(3, 1), rc(4, 2), rc(5, 2), rc(6, 2)])
+      yield* seedBook("Quant Review", numbered(4))
+      const asha = yield* learner("Asha")
+      for (const size of [10, 4]) {
+        const started = yield* asha.api.practice.start({ payload: { choice: filters({ size }) } })
+        const { view, served } = yield* answerAll(asha, started)
+        expect(served).toHaveLength(size)
+        const passages = yield* Effect.forEach(
+          view.results,
+          (result) => asha.api.practice.review({ params: { id: view.id, position: result.position } })
+        ).pipe(Effect.map((reviews) => reviews.map((each) => each.question.stimulus)))
+        // Each passage's Questions sit together, whatever comes between.
+        const runs = passages.filter((text, index) => text !== null && passages[index - 1] !== text)
+        expect(new Set(runs).size).toBe(runs.length)
+      }
+      const started = yield* asha.api.practice.start({ payload: { choice: filters({ section: "verbal", size: 3 }) } })
+      expect(started.current?.question.stimulus).toMatch(/^Passage \d/)
+    })))
+})
+
 describe("Answering", () => {
   test("a submit sent twice is recorded once, a Response is never edited, and time is the server's", () =>
     runWithWorkers(Effect.gen(function*() {

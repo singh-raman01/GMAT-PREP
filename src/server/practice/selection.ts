@@ -17,6 +17,8 @@ export interface PoolQuestion {
   // Whether it joined the Mock Reserve; null until that is decided.
   readonly reserve: boolean | null
   readonly released: boolean
+  // The passage it asks about, shared with the passage's other Questions.
+  readonly stimulusId: string | null
 }
 
 // What a Profile has done with Questions.
@@ -68,6 +70,9 @@ export interface Picked {
 // The Questions the filters match, in hash order, up to the set size. Under
 // any status, unseen Questions come before Seen ones; under a Skill, those
 // whose primary Skill it is come before those that have it as a secondary.
+// A passage's matching Questions are taken together, in the order the Bank
+// holds them, at the place of the best of them, so a set serves them one
+// after another; the set size may cut the last passage short.
 export const pickByFilters = (
   pool: ReadonlyArray<PoolQuestion>,
   history: History,
@@ -78,8 +83,18 @@ export const pickByFilters = (
   const rank = (question: PoolQuestion) =>
     (filters.status === "any" && history.seen.has(question.id) ? 2 : 0) +
     (filters.skill !== undefined && question.primarySkill !== filters.skill ? 1 : 0)
-  const ordered = hashOrder(matching, salt).toSorted((a, b) => rank(a) - rank(b))
-  return { questionIds: ordered.slice(0, filters.size).map((question) => question.id), matching: matching.length }
+  const units = new Map<string, Array<PoolQuestion>>()
+  for (const question of matching) {
+    const key = question.stimulusId ?? question.id
+    units.set(key, [...(units.get(key) ?? []), question])
+  }
+  const best = (members: ReadonlyArray<PoolQuestion>) => Math.min(...members.map(rank))
+  const ordered = hashOrder([...units].map(([id, members]) => ({ id, members })), salt)
+    .toSorted((a, b) => best(a.members) - best(b.members))
+  return {
+    questionIds: ordered.flatMap((unit) => unit.members).slice(0, filters.size).map((question) => question.id),
+    matching: matching.length
+  }
 }
 
 export interface SimilarTarget {

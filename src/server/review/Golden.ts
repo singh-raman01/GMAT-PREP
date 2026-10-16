@@ -15,7 +15,7 @@ import { LlmNotConfigured } from "../../api/Jobs.ts"
 import { QuestionId, type QuestionStatus } from "../../api/Review.ts"
 import { tagProblems } from "../../api/taxonomyRules.ts"
 import { Db } from "../db/Database.ts"
-import { books, goldenQuestions, goldenRuns, jobs, options, parts, questions, sources } from "../db/schema.ts"
+import { books, goldenQuestions, goldenRuns, jobs, options, parts, questions, sources, stimuli } from "../db/schema.ts"
 import { JobKinds } from "../jobs/JobKind.ts"
 import { JobStore, toJobView } from "../jobs/JobStore.ts"
 import { ApiKeyStore } from "../settings/ApiKeyStore.ts"
@@ -61,10 +61,12 @@ export class Golden extends Context.Service<Golden, {
             set: sources.set,
             page: sources.page,
             number: sources.number,
-            bookKey: sources.bookKey
+            bookKey: sources.bookKey,
+            passage: stimuli.body
           })
             .from(sources)
             .innerJoin(questions, eq(questions.id, sources.questionId))
+            .leftJoin(stimuli, eq(stimuli.id, questions.stimulusId))
             .where(and(eq(sources.bookId, bookId), eq(sources.merged, false), inArray(questions.status, ["published", "held"])))
             .orderBy(asc(sources.page), asc(sources.number))
           const ids = rows.map((row) => row.question.id)
@@ -88,6 +90,7 @@ export class Golden extends Context.Service<Golden, {
               set: row.set,
               number: row.number,
               page: row.page,
+              passage: row.passage,
               stem: row.question.stem,
               options: optionRows.filter((option) => option.partId === part?.id).map((option) => ({
                 label: option.label,
@@ -155,6 +158,7 @@ export class Golden extends Context.Service<Golden, {
           const now = yield* Clock.currentTimeMillis
           const expected = encodeExpected({
             questionType: found.questionType,
+            passage: found.passage,
             stem: found.stem,
             options: found.options,
             key: found.bookKey,

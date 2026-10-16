@@ -20,6 +20,8 @@ export class GoldenCandidate extends Schema.Class<GoldenCandidate>("gmat-prep/ap
   set: Schema.String,
   number: Schema.Int,
   page: Schema.Int,
+  // The passage a Reading Comprehension Question asks about.
+  passage: Schema.NullOr(Schema.String),
   stem: Schema.String,
   options: Schema.Array(Schema.Struct({ label: Schema.String, text: Schema.String })),
   key: Schema.NullOr(Schema.String),

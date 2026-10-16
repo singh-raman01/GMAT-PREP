@@ -14,11 +14,13 @@ import {
   questions,
   reviewItems,
   solverRuns,
-  sources
+  sources,
+  stimuli
 } from "../src/server/db/schema.ts"
 import { AllJobKinds } from "../src/server/jobs/kinds/index.ts"
 import { FakeLlm } from "../src/server/llm/LlmTransport.ts"
 import { fakeBookModel, makeFakeBookModel } from "./fakeBookModel.ts"
+import { PassageLines } from "./fixtures/book.ts"
 import {
   bankItem,
   byNumber,
@@ -27,6 +29,7 @@ import {
   confirmAndExtract,
   curatorBrowser,
   proposedBook,
+  proposedFrom,
   rangesOf,
   sentFor,
   waitFor,
@@ -1179,6 +1182,98 @@ describe("When a reply or a job falls short", () => {
         const third = yield* bankItem(first.book.id, 3)
         expect(third.question.status).toBe("published")
         expect(third.question.reserve).not.toBeNull()
+      }),
+      AllJobKinds
+    ))
+})
+
+// The verbal fixture Book: Problem Solving 1 to 9, Data Sufficiency 10 and
+// 11, Critical Reasoning 12 to 14, and a passage with Reading Comprehension
+// 15 to 17, the passage and 15 on one page and 16 and 17 on the next.
+const verbalBook = (curator: Effect.Success<typeof curatorBrowser>) =>
+  Effect.gen(function*() {
+    const proposed = yield* proposedFrom(curator, { edition: "First edition", verbal: true })
+    return yield* confirmAndExtract(curator, proposed.book.id, rangesOf(proposed))
+  })
+
+describe("Extracting verbal and Data Sufficiency Questions", () => {
+  test("each item joins its Section, a passage becomes one Stimulus, and the Taxonomy's type rules hold", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const extracted = yield* verbalBook(curator)
+        const id = extracted.book.id
+        expect(extracted.book.report).toMatchObject({ extracted: 16, skippedGeometry: 1 })
+        // The model read the boldface question as an inference and the
+        // EXCEPT question as a weakener; the question's own words settle them.
+        const cr = yield* Effect.forEach([12, 13, 14], (number) => bankItem(id, number))
+        expect(cr.map((item) => [item.question.section, item.question.questionType, item.question.status])).toEqual([
+          ["verbal", "verbal.cr-weaken", "published"],
+          ["verbal", "verbal.cr-structure", "published"],
+          ["verbal", "verbal.cr-strengthen", "published"]
+        ])
+        const rc = yield* Effect.forEach([15, 16, 17], (number) => bankItem(id, number))
+        expect(rc.map((item) => [item.question.questionType, item.question.status])).toEqual([
+          ["verbal.rc-main-idea", "published"],
+          ["verbal.rc-detail", "published"],
+          ["verbal.rc-application", "published"]
+        ])
+        const db = yield* Db
+        const passages = yield* db.select().from(stimuli).pipe(Effect.orDie)
+        expect(passages).toMatchObject([{ kind: "passage", body: PassageLines.join(" ") }])
+        expect(rc.map((item) => item.question.stimulusId)).toEqual([passages[0]!.id, passages[0]!.id, passages[0]!.id])
+        // The Mock Reserve decides the passage as one.
+        expect(new Set(rc.map((item) => item.question.reserve)).size).toBe(1)
+        // Old-style Data Sufficiency joins Data Insights, with Quant maths and
+        // one sufficiency Skill.
+        const value = yield* bankItem(id, 10)
+        expect(value.question).toMatchObject({
+          section: "di",
+          questionType: "di.ds",
+          stem: "What is the value of x?\n\n(1) x + 2 = 5\n\n(2) x is a prime number.",
+          status: "published",
+          primarySkill: expect.stringMatching(/^quant\./)
+        })
+        expect(value.key).toBe("A")
+        expect(JSON.parse(value.question.secondarySkills)).toEqual(["di.sufficiency.value"])
+        expect(JSON.parse((yield* bankItem(id, 11)).question.secondarySkills)).toEqual(["di.sufficiency.yes-no"])
+        // Enrichment reads the passage with each of its Questions.
+        const tagged = (yield* sentFor("You tag a GMAT question")).filter((request) =>
+          (request.messages.at(-1)?.content ?? "").includes("how many times did the council meet")
+        )
+        expect(tagged[0]?.messages.at(-1)?.content).toContain(`The passage:\n${PassageLines.join(" ")}`)
+        const sufficiency = (yield* sentFor("You tag a GMAT question")).filter((request) =>
+          (request.messages[0]?.content ?? "").includes("This is a Data Sufficiency question")
+        )
+        expect(sufficiency).toHaveLength(2)
+      }),
+      AllJobKinds
+    ))
+
+  test("the golden set covers them: the check reads a passage from the page before its Question", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        yield* verbalBook(curator)
+        const golden = curator.api.golden
+        const view = yield* golden.get()
+        const candidate = (number: number) => view.candidates.find((each) => each.number === number)!
+        expect(candidate(16).passage).toBe(PassageLines.join(" "))
+        for (const number of [10, 13, 16]) {
+          const each = candidate(number)
+          yield* golden.approve({
+            params: { questionId: each.questionId },
+            payload: { primarySkill: each.primarySkill!, secondarySkills: [...each.secondarySkills] }
+          })
+        }
+        yield* golden.check({ payload: { spendCap: 1 } })
+        const done = yield* advanceUntil(
+          golden.get().pipe(Effect.map((current) => (current.report !== null ? current : undefined))),
+          { step: "200 millis", maxSteps: 3000 }
+        )
+        expect(done.report).toMatchObject({ items: 3, textExact: 3, keysExact: 3, tagAgreement: 1, passed: true })
       }),
       AllJobKinds
     ))

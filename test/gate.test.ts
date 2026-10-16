@@ -64,6 +64,11 @@ describe("The Publish Gate", () => {
     expect(gateReasons(taxonomy, { ...ds, primarySkill: "di.sufficiency.value", secondarySkills: [] })).toEqual([
       { code: "tags", detail: "Its primary Skill is a sufficiency Skill, not its maths." }
     ])
+    // A table Skill may join as a secondary, but the primary is the maths.
+    expect(codes({ ...ds, secondarySkills: ["di.sufficiency.yes-no", "di.displays.tables"] })).toEqual([])
+    expect(gateReasons(taxonomy, { ...ds, primarySkill: "di.displays.tables" })).toEqual([
+      { code: "tags", detail: "Its primary Skill should be the maths it tests, a Quant Skill." }
+    ])
   })
 
   test("any solve that disagrees with the key holds the Question, as does a missing solve", () => {

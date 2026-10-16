@@ -1,6 +1,6 @@
 import { Clock, Effect } from "effect"
 import { Db } from "../../src/server/db/Database.ts"
-import { approaches, books, optionNotes, options, parts, questions, sources } from "../../src/server/db/schema.ts"
+import { approaches, books, optionNotes, options, parts, questions, sources, stimuli } from "../../src/server/db/schema.ts"
 
 // A Question Bank as ingestion leaves it, written straight to the database
 // so Practice Set tests can choose what each Question carries.
@@ -26,6 +26,8 @@ export interface SeedQuestion {
   readonly reserve?: boolean
   readonly key?: string
   readonly approaches?: ReadonlyArray<SeedApproach>
+  // The passage it asks about; items with the same text share one Stimulus.
+  readonly passage?: string
 }
 
 export const PsSkill = "quant.algebra.linear-equations"
@@ -53,8 +55,23 @@ export const seedBook = (title: string, items: ReadonlyArray<SeedQuestion>) =>
       updatedAt: now
     })
     const ids = new Map<number, string>()
+    const passages = new Map<string, string>()
     for (const item of items) {
       const questionId = crypto.randomUUID()
+      let stimulusId: string | null = null
+      if (item.passage !== undefined) {
+        stimulusId = passages.get(item.passage) ?? crypto.randomUUID()
+        if (!passages.has(item.passage)) {
+          yield* db.insert(stimuli).values({
+            id: stimulusId,
+            kind: "passage",
+            body: item.passage,
+            normalizedHash: crypto.randomUUID(),
+            createdAt: now
+          })
+          passages.set(item.passage, stimulusId)
+        }
+      }
       const questionType = item.questionType ?? "quant.ps"
       const key = item.key ?? "C"
       const stem = `${title} item ${item.number}: what is \\(x\\)?`
@@ -77,6 +94,7 @@ export const seedBook = (title: string, items: ReadonlyArray<SeedQuestion>) =>
         enrichment: "done",
         reserve: item.reserve ?? false,
         reserveDecidedAt: now,
+        stimulusId,
         createdAt: now,
         updatedAt: now
       })

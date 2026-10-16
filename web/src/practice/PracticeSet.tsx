@@ -388,20 +388,8 @@ const QuestionScreen = (
 
   const key = current.debrief?.keys.find((each) => each.part === part.position)?.key
 
-  return (
+  const work = (
     <>
-      {current.position === 0 && <Skipped view={view} />}
-      <h1 ref={questionHeading} tabIndex={-1} className="question-count">
-        Question {current.position + 1} of {view.total}
-      </h1>
-      <p className="question-meta">
-        <span className="swatch" aria-hidden="true" />
-        {question.questionType.name}
-        {question.source === null
-          ? ""
-          : `. ${question.source.bookTitle}, ${question.source.set}, question ${question.source.number}`}
-      </p>
-
       <div className="question-body">
         <RichText source={question.stem} />
         {part.prompt !== null && <RichText source={part.prompt} />}
@@ -481,6 +469,41 @@ const QuestionScreen = (
         </>
       )}
     </>
+  )
+
+  return (
+    <>
+      {current.position === 0 && <Skipped view={view} />}
+      <h1 ref={questionHeading} tabIndex={-1} className="question-count">
+        Question {current.position + 1} of {view.total}
+      </h1>
+      <p className="question-meta">
+        <span className="swatch" aria-hidden="true" />
+        {question.questionType.name}
+        {question.source === null
+          ? ""
+          : `. ${question.source.bookTitle}, ${question.source.set}, question ${question.source.number}`}
+      </p>
+      {question.stimulus === null ? work : (
+        <div className="with-passage">
+          <Passage source={question.stimulus} />
+          <div className="beside-passage">{work}</div>
+        </div>
+      )}
+    </>
+  )
+}
+
+// A Reading Comprehension passage, beside its Question on a wide screen and
+// above it on a narrow one. It scrolls on its own, so it takes focus for the
+// keyboard to scroll it.
+const Passage = ({ source }: { readonly source: string }) => {
+  const title = useId()
+  return (
+    <section className="passage" aria-labelledby={title} tabIndex={0}>
+      <h2 id={title} className="passage-title">The passage</h2>
+      <RichText source={source} />
+    </section>
   )
 }
 
@@ -657,6 +680,12 @@ const ResultRow = (
       <div id={panel} className="set-result-review" hidden={review._tag !== "Open"}>
         {review._tag === "Open" && (
           <>
+            {review.served.question.stimulus !== null && (
+              <details className="review-passage">
+                <summary>The passage</summary>
+                <RichText source={review.served.question.stimulus} />
+              </details>
+            )}
             <RichText source={review.served.question.stem} />
             <AnsweredOptions served={review.served} />
             {review.served.debrief !== null && (

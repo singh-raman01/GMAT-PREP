@@ -84,7 +84,10 @@ export const tagProblems = (taxonomy: TaxonomyView, tags: QuestionTags): Readonl
   }
   if (tags.questionType === "di.ds" && tags.primarySkill !== null) {
     if (isSufficiency(tags.primarySkill)) problems.push("Its primary Skill is a sufficiency Skill, not its maths.")
-    else if (tags.secondarySkills.filter(isSufficiency).length !== 1) {
+    else if (allSkills.has(tags.primarySkill) && sectionOf(tags.primarySkill) !== "quant") {
+      problems.push("Its primary Skill should be the maths it tests, a Quant Skill.")
+    }
+    if (!isSufficiency(tags.primarySkill) && tags.secondarySkills.filter(isSufficiency).length !== 1) {
       problems.push("It needs exactly one sufficiency Skill among its secondary Skills.")
     }
   }

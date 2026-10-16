@@ -34,7 +34,7 @@ Open Curator tools from the profile page and set the Curator passphrase. Under S
 
 ## Add a book
 
-Under Books, choose the book's PDF (up to 500 MB), give its title and edition, and say whether it is official GMAC material. The app reads every page, then tries the full run on 10 pages spread through the book: the Book Map model reads them, and the extraction model reads those with questions, keys or explanations. It shows what the full run would cost. Nothing more is spent until you start the full run with a spend cap, which covers the whole run even if you cancel and start it again. The Book Map model then reads every page in order and proposes the Book Map: where the book's questions, answer keys, explanations and difficulty labels are. You can also enter the Book Map yourself instead. Correct it on the book's page, opening any page in the browser's PDF viewer to check, and confirm it. Each confirmation is a new version, and starts extracting the book's Problem Solving questions.
+Under Books, choose the book's PDF (up to 500 MB), give its title and edition, and say whether it is official GMAC material. The app reads every page, then tries the full run on 10 pages spread through the book: the Book Map model reads them, and the extraction model reads those with questions, keys or explanations. It shows what the full run would cost. Nothing more is spent until you start the full run with a spend cap, which covers the whole run even if you cancel and start it again. The Book Map model then reads every page in order and proposes the Book Map: where the book's questions, answer keys, explanations and difficulty labels are. You can also enter the Book Map yourself instead. Correct it on the book's page, opening any page in the browser's PDF viewer to check, and confirm it. Each confirmation is a new version, and starts extracting the book's Problem Solving, Data Sufficiency, Critical Reasoning and Reading Comprehension questions. Data Sufficiency joins Data Insights, as on the Focus exam, even from an older book that prints it under Quant. Each passage is kept once and shown beside every question about it. Sentence Correction and geometry are counted and skipped, since the Focus exam dropped them.
 
 ## Review the questions
 
@@ -42,7 +42,7 @@ Each extracted question is enriched: tagged with its Skills from the Taxonomy, g
 
 The rest wait in the Review Queue, each with every reason:
 
-- answer choices that are not A to E, or text whose math does not render;
+- answer choices that are not A to E, a passage question with no passage, or text whose math does not render;
 - no key, a key that disagrees with the explanation, or another book giving another key;
 - a figure the text does not hold;
 - a near match, or the same text with another key, to a question already in the bank;
@@ -53,7 +53,7 @@ The rest wait in the Review Queue, each with every reason:
 
 You can publish past a solver's doubt or a difficulty mismatch, change the key with a reason (the question's Approaches and notes are written again and it is checked again), keep a near match as a Variant or merge it into the other question, or withdraw it. Fixing the Book Map checks each question again, and questions it no longer covers leave the bank. The book's page shows what became of every question it held.
 
-A quarter of each book's questions is held back for Mocks, spread over question types and difficulty bands. The Books screen shows how many each Section holds back and can release some into Practice Sets; release cannot be undone. It also lists Skills with fewer than 15 questions.
+A quarter of each book's questions is held back for Mocks, spread over question types and difficulty bands, with a passage's questions kept together. The Books screen shows how many each Section holds back and can release some into Practice Sets; release cannot be undone. It also lists Skills with fewer than 15 questions.
 
 If a reply was unusable, "Check again" asks once more for the tags, solves, Approaches or notes. Questions waiting for a check that no job will run, as after a cancelled job, are counted at the top of the Review Queue with a button to check them.
 
@@ -61,7 +61,7 @@ Under Golden set, approve the first book's questions with their Skills, up to a 
 
 ## Practise
 
-Open your Profile and choose Practice. Pick Questions by Section, Question Type, Skill, Difficulty and whether you have seen, missed or Bookmarked them, or follow a book in its own order, as in one book's Data Sufficiency 1 to 30. A set shows one Question at a time: choose with A to E, mark it as a guess if it was one, and submit with Enter. The Debrief follows straight away: why the option you picked tempts, and the ways to solve it, fastest first. "Practise 3 similar" starts a short set of unseen Questions with the same main Skill and Question Type and a similar Difficulty. Questions held back for Mocks stay out of your sets until the Curator releases them or you have seen them; in a book-order set they are listed as held for Mocks. Untimed sets never change your scores.
+Open your Profile and choose Practice. Pick Questions by Section, Question Type, Skill, Difficulty and whether you have seen, missed or Bookmarked them, or follow a book in its own order, as in one book's Data Sufficiency 1 to 30. A set shows one Question at a time, with a reading passage beside its Questions, which come one after another: choose with A to E, mark it as a guess if it was one, and submit with Enter. The Debrief follows straight away: why the option you picked tempts, and the ways to solve it, fastest first. "Practise 3 similar" starts a short set of unseen Questions with the same main Skill and Question Type and a similar Difficulty. Questions held back for Mocks stay out of your sets until the Curator releases them or you have seen them; in a book-order set they are listed as held for Mocks. Untimed sets never change your scores.
 
 Tick "Time the set" for a timed set. It gives each Question its Target Time (2:09 in Quant, 1:57 in Verbal and 2:15 in Data Insights unless the Curator sets a Question Type's own under Settings) and runs on the app's clock, not the browser's: closing the tab does not stop it, so pause it when you step away. Each answer brings the next Question at once, and the Debriefs wait for the end. When time runs out, the set ends on its own and the Question on screen counts as timed out. A timed answer to a Question you had not seen before is Rated: when the set ends, it moves that Question's Difficulty and your Section's Score Estimate, which the Practice page shows with its likely range. A set is held by one tab at a time; another tab or device can look at it and take it over.
 
