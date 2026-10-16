@@ -2,7 +2,6 @@ import { and, asc, eq, isNotNull, isNull, lt, max, ne, sql } from "drizzle-orm"
 import { Clock, Effect, Option, Schema } from "effect"
 import { sha256 } from "../access/tokens.ts"
 import { Db } from "../db/Database.ts"
-import { parseCell } from "../../api/dataset.ts"
 import { joinedKey } from "../../api/keys.ts"
 import { normalizeText, renderProblem } from "../../api/richText.ts"
 import {
@@ -24,6 +23,7 @@ import {
   candidateProblems,
   comparableText,
   type ContentDraft,
+  datasetOfDraft,
   isPassageRender,
   NearMatch,
   nearText,
@@ -104,8 +104,9 @@ const tableText = (table: TableDraft) =>
   )].join("\n")
 
 // What a Stimulus is compared by, so the same passage, table or chart from
-// two Books is one Stimulus. A figure kept as an image is its own.
-const contentHash = (content: ContentDraft, figure: FigureSource | undefined): string => {
+// two Books is one Stimulus. A figure kept as an image is its own, and one
+// whose page could not be drawn is its item's own.
+const contentHash = (content: ContentDraft, figure: FigureSource | undefined, item: string): string => {
   switch (content.kind) {
     case "passage":
       return sha256(normalizeText(content.body))
@@ -114,14 +115,16 @@ const contentHash = (content: ContentDraft, figure: FigureSource | undefined): s
     case "chart":
       return sha256(`chart|${normalizeText(content.body)}|${tableText(content.table)}|${JSON.stringify(content.spec)}`)
     case "figure":
-      return sha256(`figure|${figure?.bookId}|${figure?.page}|${figure?.top}|${figure?.bottom}|${figure?.file}`)
+      return figure === undefined
+        ? sha256(`figure|item|${item}`)
+        : sha256(`figure|${figure.bookId}|${figure.page}|${figure.top}|${figure.bottom}|${figure.file}`)
   }
 }
 
-const stimulusHash = (draft: StimulusDraft, figure: FigureSource | undefined) =>
+const stimulusHash = (draft: StimulusDraft, figure: FigureSource | undefined, item: string) =>
   draft.kind === "tabs"
-    ? sha256(`tabs|${draft.tabs.map((tab) => `${normalizeText(tab.title)}:${contentHash(tab, figure)}`).join("|")}`)
-    : contentHash(draft, figure)
+    ? sha256(`tabs|${draft.tabs.map((tab) => `${normalizeText(tab.title)}:${contentHash(tab, figure, item)}`).join("|")}`)
+    : contentHash(draft, figure, item)
 
 const insertContent = (
   content: ContentDraft,
@@ -135,16 +138,11 @@ const insertContent = (
     let datasetId: string | null = null
     if (content.kind === "table" || content.kind === "chart") {
       datasetId = crypto.randomUUID()
-      const types = content.table.columns.map((column) => column.type)
+      const dataset = datasetOfDraft(content.table)
       yield* db.insert(datasets).values({
         id: datasetId,
-        columns: encodeColumns(content.table.columns),
-        rows: encodeRows(content.table.rows.map((row) =>
-          row.map((text, index) => {
-            const parsed = parseCell(types[index] ?? "text", text)
-            return { text, value: "value" in parsed ? parsed.value : null }
-          })
-        )),
+        columns: encodeColumns(dataset.columns),
+        rows: encodeRows(dataset.rows),
         origin: "book",
         createdAt: now
       })
@@ -191,11 +189,13 @@ const stimulusFor = (
   draft: StimulusDraft,
   now: number,
   figure: FigureSource | undefined,
+  // The item it is for, by Book, page and number.
+  item: string,
   passages: Array<PassageEntry>
 ) =>
   Effect.gen(function*() {
     const db = yield* Db
-    const hash = stimulusHash(draft, figure)
+    const hash = stimulusHash(draft, figure, item)
     const [found] = yield* db.select({ id: stimuli.id, body: stimuli.body }).from(stimuli)
       .where(and(eq(stimuli.normalizedHash, hash), isNull(stimuli.parentId))).limit(1)
     if (found !== undefined) {
@@ -212,7 +212,7 @@ const stimulusFor = (
     const id = crypto.randomUUID()
     yield* db.insert(stimuli).values({ id, kind: "tabs", body: "", normalizedHash: hash, createdAt: now })
     for (const [position, tab] of draft.tabs.entries()) {
-      yield* insertContent(tab, contentHash(tab, figure), now, figure, { parentId: id, position, title: tab.title })
+      yield* insertContent(tab, contentHash(tab, figure, item), now, figure, { parentId: id, position, title: tab.title })
     }
     return { id, hash, shown: draft, repaired: false }
   })
@@ -419,6 +419,8 @@ export const linkCandidate = (
     readonly origin: QuestionOrigin
     // For an item that needs a figure: the band of its page, kept as an image.
     readonly figure?: FigureSource
+    // Problems found before linking, such as a chart that does not draw.
+    readonly checks?: ReadonlyArray<Reason>
   },
   bank: Array<BankEntry>,
   passages: Array<PassageEntry>
@@ -434,10 +436,10 @@ export const linkCandidate = (
         // one.
         const stimulus = candidate.stimulus === null
           ? null
-          : yield* stimulusFor(candidate.stimulus, now, input.figure, passages)
+          : yield* stimulusFor(candidate.stimulus, now, input.figure, `${bookId}|${candidate.page}|${candidate.number}`, passages)
         const sentBack = stimulus?.repaired === true ? yield* passageRepaired(stimulus.id, bookId) : []
         const done = (linked: Linked): LinkOutcome => ({ linked, sentBack })
-        const problems = candidateProblems(candidate, stimulus?.shown ?? null)
+        const problems = [...candidateProblems(candidate, stimulus?.shown ?? null), ...(input.checks ?? [])]
         const text = comparableText(candidate.stem, candidate.parts)
         const hash = sha256(stimulus === null ? text : `${stimulus.hash}|${text}`)
 

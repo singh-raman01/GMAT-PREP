@@ -107,9 +107,10 @@ export type PageReading =
   | { readonly role: "explanations"; readonly value: typeof ExplanationsReading.Type }
   | { readonly role: "difficulty-labels"; readonly value: typeof LabelsReading.Type }
 
-// Groups whose questions may have several parts, so their answer keys give
-// an answer for each part.
-export const PartsGroups: ReadonlySet<TypeGroup> = new Set(["ta", "gi", "tpa", "msr", "ir"])
+// Groups whose answer keys may give an answer for each of several parts:
+// the Data Insights groups whose questions have them, and mixed pages, which
+// may key any question.
+export const PartsGroups: ReadonlySet<TypeGroup> = new Set(["ta", "gi", "tpa", "msr", "ir", "mixed"])
 
 // The pages extraction reads: those of the groups it extracts, and Sentence
 // Correction's question numbers, to count them. Answer keys, explanations

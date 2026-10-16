@@ -1,5 +1,5 @@
 import { parseCell } from "../../api/dataset.ts"
-import type { DatasetColumn } from "../../api/dataset.ts"
+import type { Dataset, DatasetColumn } from "../../api/dataset.ts"
 import type { PartKind } from "../../api/Practice.ts"
 import type { ReasonCode } from "../../api/Review.ts"
 import { normalizeText, renderProblem } from "../../api/richText.ts"
@@ -245,6 +245,10 @@ export const chartSpec = (chart: ChartReading): unknown => {
   }
 }
 
+// A figure the text does not hold is kept as the band of its page it sits
+// in, so the Curator sees it beside the Question.
+const figureOf = (needed: boolean): StimulusDraft | null => (needed ? { kind: "figure", body: "" } : null)
+
 const tableDraft = (table: TableReading): TableDraft => ({
   columns: table.columns.map((column) => ({ name: column.name.trim(), type: column.type, unit: column.unit.trim() })),
   rows: table.rows.map((row) => row.map((cell) => cell.trim()))
@@ -478,7 +482,7 @@ export const linkSet = (readings: SetReadings): ReadonlyArray<LinkedItem> => {
             page,
             section: "quant",
             questionType: "quant.ps",
-            stimulus: null,
+            stimulus: figureOf(item.figure),
             stem: item.stem,
             parts,
             figure: item.figure,
@@ -499,7 +503,7 @@ export const linkSet = (readings: SetReadings): ReadonlyArray<LinkedItem> => {
             page,
             section: "di",
             questionType: "di.ds",
-            stimulus: null,
+            stimulus: figureOf(item.figure),
             stem,
             parts: [{ kind: "single-choice", prompt: null, options: DsOptions }],
             figure: item.figure,
@@ -661,6 +665,18 @@ const partProblems = (candidate: Candidate): ReadonlyArray<Reason> => {
   return reasons
 }
 
+// A table as a Dataset: each cell keeps its printed text, with the value its
+// column's type reads in it.
+export const datasetOfDraft = (table: TableDraft): Dataset => ({
+  columns: table.columns,
+  rows: table.rows.map((row) =>
+    row.map((text, index) => {
+      const parsed = parseCell(table.columns[index]?.type ?? "text", text)
+      return { text, value: "value" in parsed ? parsed.value : null }
+    })
+  )
+})
+
 // A table's problems: a table with nothing in it, a row of the wrong length,
 // or a cell whose text is not of its column's type.
 export const tableProblems = (table: TableDraft): ReadonlyArray<string> => {
@@ -679,7 +695,7 @@ export const tableProblems = (table: TableDraft): ReadonlyArray<string> => {
   return problems
 }
 
-const contents = (stimulus: StimulusDraft | null): ReadonlyArray<ContentDraft & { readonly title?: string }> =>
+export const contents = (stimulus: StimulusDraft | null): ReadonlyArray<ContentDraft & { readonly title?: string }> =>
   stimulus === null ? [] : stimulus.kind === "tabs" ? stimulus.tabs : [stimulus]
 
 // An RC question whose passage no reading names.

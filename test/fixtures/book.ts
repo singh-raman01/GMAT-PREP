@@ -3,8 +3,9 @@ import { PDFDocument, StandardFonts } from "pdf-lib"
 // A small made-up prep book: a title page, Problem Solving questions, an
 // answer key, explanations, Data Sufficiency questions, and a scanned page
 // with no text layer; with verbal, Critical Reasoning and Reading
-// Comprehension questions too. Built at test time, so the repo holds no
-// binary.
+// Comprehension questions too; with di, Table Analysis, Graphics
+// Interpretation, Two-Part Analysis and Multi-Source Reasoning questions and
+// their answer key. Built at test time, so the repo holds no binary.
 
 export interface BookFixture {
   readonly bytes: Uint8Array
@@ -108,6 +109,83 @@ const passageQuestions: ReadonlyArray<ReadonlyArray<string>> = [
   ]
 ]
 
+// The Data Insights questions, numbered on from first: a Table Analysis
+// question, a Graphics Interpretation question about a chart and one about a
+// figure the text does not hold, a Two-Part Analysis question, and a
+// Multi-Source Reasoning set of two questions, one with five choices and one
+// with statements. Then their answer key, printed as words where the book
+// would print words.
+export const DiNumbers = (first: number) => ({
+  table: first,
+  chart: first + 1,
+  figure: first + 2,
+  twoPart: first + 3,
+  sources: [first + 4, first + 5] as const
+})
+
+const diPages = (first: number): ReadonlyArray<ReadonlyArray<string>> => {
+  const n = DiNumbers(first)
+  return [
+    [
+      "Table Analysis",
+      `${n.table}. The table shows sales by region last year.`,
+      "Region | Sales ($ thousands) | Growth",
+      "North | 1,200 | 4%",
+      "South | 980 | -2%",
+      "East | 15 | 12.5%",
+      "For each statement, choose Yes if it is true, otherwise No.",
+      "North sold the most.",
+      "Every region grew.",
+      "East grew fastest."
+    ],
+    [
+      "Graphics Interpretation",
+      `${n.chart}. The chart shows units sold by quarter.`,
+      "Quarter | Units",
+      "Q1 | 120",
+      "Q2 | 150",
+      "Q3 | 90",
+      "Q4 | 200",
+      "Sales rose in [blank] of the three changes from one quarter to the next. (one | two | three)",
+      "The best quarter sold [blank] units. (150 | 200 | 120)",
+      `${n.figure}. The figure shows the floor plan of an office.`,
+      "[A floor plan is printed here.]",
+      "The office has [blank] rooms. (three | four | five)"
+    ],
+    [
+      "Two-Part Analysis",
+      `${n.twoPart}. A rectangle's sides are whole numbers of metres, with an area of 12 and a perimeter of 14.`,
+      "Select a width and a height for it.",
+      "Width | Height",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6"
+    ],
+    [
+      "Multi-Source Reasoning",
+      `Questions ${n.sources[0]} to ${n.sources[1]} refer to the sources below.`,
+      "Tab Email: The plant ships on Fridays. Orders placed by Wednesday ship that week.",
+      "Tab Orders: Day | Orders / Monday | 40 / Wednesday | 55",
+      `${n.sources[0]}. On which day were the most orders placed?`,
+      "(A) Monday   (B) Tuesday   (C) Wednesday   (D) Thursday   (E) Friday",
+      `${n.sources[1]}. For each statement, choose Yes if the sources support it, otherwise No.`,
+      "Orders placed on Monday ship that week.",
+      "More orders came on Wednesday than on Monday."
+    ],
+    [
+      "Data Insights Answer Key",
+      `${n.table}. Yes, No, Yes`,
+      `${n.chart}. two, 200`,
+      `${n.figure}. four`,
+      `${n.twoPart}. 3, 4`,
+      `${n.sources[0]}. C`,
+      `${n.sources[1]}. Yes, Yes`
+    ]
+  ]
+}
+
 // psPages sets how many pages of Problem Solving questions it has, three
 // questions to a page, each with a page of explanations; past nine, the
 // questions repeat. Questions are numbered on through the book.
@@ -121,6 +199,8 @@ export const makeBook = async (
     // Critical Reasoning and Reading Comprehension pages at the end, each set
     // with its answer key.
     readonly verbal?: boolean
+    // Data Insights pages after those; see DiNumbers.
+    readonly di?: boolean
   } = {}
 ): Promise<BookFixture> => {
   const doc = await PDFDocument.create()
@@ -184,6 +264,10 @@ export const makeBook = async (
     ])
     page(["Reading Comprehension", ...numbered(passageQuestions[1]!, rc + 1), ...numbered(passageQuestions[2]!, rc + 2)])
     page(["Reading Comprehension Answer Key", ...passageQuestions.map((_, i) => `${rc + i}. C`)])
+  }
+  if (options.di === true) {
+    const first = questions + 3 + (options.verbal === true ? arguments_.length + passageQuestions.length : 0)
+    for (const lines of diPages(first)) page(lines)
   }
 
   const bytes = await doc.save()

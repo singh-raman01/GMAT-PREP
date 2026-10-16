@@ -36,6 +36,19 @@ const survey = (request: TransportRequest) => ({
       if (heading === chapter) return { page: number, role: "questions", group, chapter }
       if (heading === `${chapter} Answer Key`) return { page: number, role: "answer-key", group, chapter }
     }
+    const diGroups = [
+      ["Table Analysis", "ta"],
+      ["Graphics Interpretation", "gi"],
+      ["Two-Part Analysis", "tpa"],
+      ["Multi-Source Reasoning", "msr"]
+    ] as const
+    for (const [title, group] of diGroups) {
+      if (heading === title) return { page: number, role: "questions", group, chapter: "Data Insights" }
+    }
+    // One key for every Data Insights type, so its group is mixed.
+    if (heading === "Data Insights Answer Key") {
+      return { page: number, role: "answer-key", group: "mixed", chapter: "Data Insights" }
+    }
     return { page: number, role: "other", group: null, chapter: null }
   })
 })
@@ -142,6 +155,141 @@ const rcPage = (page: string) => {
   return { passages, questions: verbalQuestions(lines, rcType) }
 }
 
+// The Data Insights pages of the fixture (fixtures/book.ts). A table is a
+// header line and rows, cells set apart with " | ", a heading's unit in
+// brackets.
+const tableOf = (header: string, rows: ReadonlyArray<string>) => {
+  const cells = rows.map((row) => row.split(" | ").map((cell) => cell.trim()))
+  return {
+    columns: header.split(" | ").map((heading, index) => {
+      const unit = /\((.*)\)$/.exec(heading)?.[1] ?? ""
+      const column = cells.map((row) => row[index] ?? "")
+      const type = column.every((cell) => /%$/.test(cell))
+        ? "percent"
+        : unit.startsWith("$")
+        ? "currency"
+        : column.every((cell) => /^-?[\d,.]+$/.test(cell))
+        ? "number"
+        : "text"
+      return { name: heading.replace(/\s*\(.*\)$/, "").trim(), type, unit }
+    }),
+    rows: cells
+  }
+}
+
+// The lines of each question on a page: its number, its first line's words,
+// and the lines up to the next question.
+const numberedItems = (lines: ReadonlyArray<string>) => {
+  const items: Array<{ number: number; first: string; rest: Array<string> }> = []
+  for (const line of lines) {
+    const start = /^(\d+)\. (.*)$/.exec(line)
+    if (start !== null) items.push({ number: Number(start[1]), first: start[2]!, rest: [] })
+    else items.at(-1)?.rest.push(line)
+  }
+  return items
+}
+
+// A table's line; a statement's menu options are set apart the same way, so
+// a line with a blank is not one.
+const isRow = (line: string) => line.includes(" | ") && !line.includes("[blank]")
+
+const taQuestions = (page: string) => ({
+  questions: numberedItems(page.split("\n")).map((item) => {
+    const rows = item.rest.filter(isRow)
+    const after = item.rest.slice(item.rest.findIndex((line) => line.startsWith("For each statement")) + 1)
+    return {
+      number: item.number,
+      intro: item.first,
+      table: tableOf(rows[0]!, rows.slice(1)),
+      pair: ["Yes", "No"],
+      statements: after,
+      difficulty: null
+    }
+  })
+})
+
+// A statement with a menu: [blank] where the menu goes, its options in
+// brackets at the end.
+const blankStatement = (line: string) => {
+  const options = /\(([^()]*)\)$/.exec(line)?.[1]?.split(" | ") ?? []
+  return { text: line.replace(/\s*\([^()]*\)$/, "").replace("[blank]", "{{blank}}"), options }
+}
+
+const giQuestions = (page: string) => ({
+  questions: numberedItems(page.split("\n")).map((item) => {
+    const rows = item.rest.filter(isRow)
+    const data = rows.length === 0 ? null : tableOf(rows[0]!, rows.slice(1))
+    return {
+      number: item.number,
+      intro: item.first,
+      chart: data === null
+        ? null
+        : { kind: "bar", title: "", data, x: data.columns[0]!.name, y: data.columns[1]!.name, series: "", sets: [] },
+      figure: data === null,
+      statements: item.rest.filter((line) => line.includes("[blank]")).map(blankStatement),
+      difficulty: null
+    }
+  })
+})
+
+const tpaQuestions = (page: string) => ({
+  questions: numberedItems(page.split("\n")).map((item) => {
+    const heading = item.rest.findIndex(isRow)
+    return {
+      number: item.number,
+      stem: [item.first, ...item.rest.slice(0, heading)].join(" "),
+      columns: item.rest[heading]!.split(" | "),
+      options: item.rest.slice(heading + 1),
+      difficulty: null
+    }
+  })
+})
+
+const msrPage = (page: string) => {
+  const lines = page.split("\n")
+  const range = lines.map((line) => /^Questions (\d+) to (\d+) refer to the sources below\.$/.exec(line)).find((match) => match !== null)
+  const numbers = range === undefined || range === null
+    ? []
+    : Array.from({ length: Number(range[2]) - Number(range[1]) + 1 }, (_, k) => Number(range[1]) + k)
+  const sources = lines.flatMap((line): ReadonlyArray<{
+    readonly title: string
+    readonly kind: string
+    readonly text: string
+    readonly table: ReturnType<typeof tableOf> | null
+    readonly questions: ReadonlyArray<number>
+  }> => {
+    const tab = /^Tab ([^:]+): (.*)$/.exec(line)
+    if (tab === null) return []
+    const [title, body] = [tab[1]!, tab[2]!]
+    if (!isRow(body)) return [{ title, kind: "text", text: body, table: null, questions: numbers }]
+    const [header, ...rows] = body.split(" / ")
+    return [{ title, kind: "table", text: "", table: tableOf(header!, rows), questions: numbers }]
+  })
+  const questions = numberedItems(lines.filter((line) => !line.startsWith("Tab "))).map((item) => {
+    const choices = [...(item.rest[0] ?? "").matchAll(/\(([A-E])\)\s*(.*?)(?=\s+\([A-E]\)|$)/g)]
+    return choices.length > 0
+      ? {
+        number: item.number,
+        stem: item.first,
+        options: choices.map((match) => ({ label: match[1]!, text: match[2]!.trim() })),
+        statements: [],
+        pair: [],
+        difficulty: null
+      }
+      : { number: item.number, stem: item.first, options: [], statements: item.rest, pair: ["Yes", "No"], difficulty: null }
+  })
+  return { sources, questions }
+}
+
+// An answer key whose questions may have several parts: each part's answer
+// as printed, set apart with commas.
+const partsAnswers = (page: string) => ({
+  answers: [...page.matchAll(/^(\d+)\. (.+)$/gm)].map((match) => ({
+    number: Number(match[1]),
+    parts: match[2]!.split(", ").map((part) => part.trim())
+  }))
+})
+
 const answers = (page: string) => ({
   answers: [...page.matchAll(/^(\d+)\. ([A-E])$/gm)].map((match) => ({ number: Number(match[1]), answer: match[2] }))
 })
@@ -185,13 +333,34 @@ const firstListed = (system: string, heading: string) =>
 
 const questionOf = (request: TransportRequest) => {
   const body = quoted(request, "question")
+  // A Question with several Parts lists each Part and its options.
+  const parts = body.split(/^Part \d+ \([^)]*\):.*$/m).slice(1).map((section) =>
+    [...section.matchAll(/^\(([A-H])\) /gm)].map((match) => match[1]!)
+  )
+  const asked = body.split("\n\nThe question:\n").at(-1) ?? body
   return {
-    stem: body.split("\n\nAnswer choices:")[0] ?? "",
+    stem: (parts.length > 0 ? asked.split(/\n\nPart 1 /)[0] : asked.split("\n\nAnswer choices:")[0]) ?? "",
     labels: [...body.matchAll(/^\(([A-E])\) /gm)].map((match) => match[1]!),
     key: /^Right answer: ([A-E])$/m.exec(body)?.[1] ?? null,
+    parts,
+    keys: [...(/^Right answers: (.*)$/m.exec(body)?.[1] ?? "").matchAll(/part \d+ ([A-H])/g)].map((match) => match[1]!),
     explained: body.includes("The book's explanation:")
   }
 }
+
+// The fixture's Data Insights keys, by the start of the question.
+const fixtureParts = (stem: string): ReadonlyArray<string> | undefined =>
+  /^The table shows sales/.test(stem)
+    ? ["A", "B", "A"]
+    : /^The chart shows units/.test(stem)
+    ? ["B", "B"]
+    : /^The figure shows the floor plan/.test(stem)
+    ? ["B"]
+    : /^A rectangle's sides/.test(stem)
+    ? ["B", "C"]
+    : /^For each statement, choose Yes if the sources/.test(stem)
+    ? ["A", "A"]
+    : undefined
 
 // The fixture's keys: C, but for its two Data Sufficiency questions.
 const fixtureKey = (stem: string) => (/^What is the value of x\?/.test(stem) ? "A" : /^Is n even\?/.test(stem) ? "D" : "C")
@@ -212,10 +381,35 @@ const enrichment = (request: TransportRequest, options: FakeEnrichment) => {
   }
   if (system.includes("You solve a GMAT question")) {
     const run = system.includes("different route") ? 2 : system.includes("check your answer") ? 3 : 1
-    return { work: "Worked it out.", answer: options.solve?.(question.stem, run) ?? fixtureKey(question.stem) }
+    const solved = options.solve?.(question.stem, run)
+    if (question.parts.length > 0) {
+      return {
+        work: "Worked it out.",
+        answers: solved?.split(",") ?? fixtureParts(question.stem) ?? question.parts.map((labels) => labels[0] ?? "A")
+      }
+    }
+    return { work: "Worked it out.", answer: solved ?? fixtureKey(question.stem) }
   }
   const strategy = firstListed(system, "Strategies")[0] ?? "none"
   const attempt = request.messages.some((message) => message.content.includes("Your last reply had these problems")) ? 2 : 1
+  if (question.parts.length > 0) {
+    const keys = question.keys
+    const reached = options.approachAnswer?.(keys.join(","), attempt) ?? keys.join(",")
+    return {
+      approaches: [{ strategy, steps: "1. Work it out.", expectedSeconds: 120, validWhen: "Always.", answers: reached.split(",") }],
+      bookApproach: question.explained ? { strategy, expectedSeconds: 150, validWhen: "Always." } : null,
+      wrongOptions: question.parts.flatMap((labels, part) =>
+        labels.filter((label) => label !== keys[part]).map((label) => ({
+          // Numbered from 1, as the prompt asks.
+          part: part + 1,
+          label,
+          trapNote: `Choice ${label} of part ${part + 1} comes from a slip.`,
+          mistakeType: "calculation-slip",
+          trapPattern: null
+        }))
+      )
+    }
+  }
   const key = question.key ?? "C"
   return {
     approaches: [{
@@ -251,6 +445,16 @@ export const makeFakeBookModel = (options: FakeEnrichment = {}) => (request: Tra
     ? crQuestions(page)
     : system.includes("Reading Comprehension passages")
     ? rcPage(page)
+    : system.includes("Table Analysis questions")
+    ? taQuestions(page)
+    : system.includes("Graphics Interpretation questions")
+    ? giQuestions(page)
+    : system.includes("Two-Part Analysis questions")
+    ? tpaQuestions(page)
+    : system.includes("Multi-Source Reasoning sets")
+    ? msrPage(page)
+    : system.includes("may have several parts")
+    ? partsAnswers(page)
     : system.includes("answer keys")
     ? answers(page)
     : system.includes("worked explanations")
