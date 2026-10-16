@@ -7,6 +7,7 @@ import { DatabaseLive } from "./db/Database.ts"
 import { Generation } from "./generation/Generation.ts"
 import { JobFeed } from "./events/JobFeed.ts"
 import { ErrorLog } from "./learning/ErrorLog.ts"
+import { SiblingsReport } from "./learning/SiblingsReport.ts"
 import { BookFileRoutes } from "./http/books.ts"
 import { EventsRoutes } from "./http/events.ts"
 import { GuardLive } from "./http/guard.ts"
@@ -55,6 +56,7 @@ export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Layer.mergeAll(
   Scores.layer,
   PaperMarks.layer,
   ErrorLog.layer,
+  SiblingsReport.layer,
   RemoveUploadLeftovers
 ).pipe(
   // One Sectional engine, which Mocks run their Sections on.
