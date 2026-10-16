@@ -432,8 +432,9 @@ describe("A chart's spec", () => {
       mark: "bar",
       encoding: {
         x: { field: "Quarter", type: "nominal", sort: null, title: "Quarter" },
-        y: { field: "Units", type: "quantitative", title: "Units" },
-        color: { field: "Store", type: "nominal", title: "Store" }
+        y: { field: "Units", type: "quantitative", title: "Units", stack: null },
+        color: { field: "Store", type: "nominal", title: "Store" },
+        xOffset: { field: "Store", type: "nominal" }
       }
     })
     expect(chartSpec({ kind: "pie", title: "", data, x: "Quarter", y: "Units", series: "", sets: [] })).toMatchObject({

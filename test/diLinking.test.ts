@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import * as vl from "vega-lite"
-import type { ChartReading, GiItem, MsrSource } from "../src/server/books/diReadings.ts"
+import type { ChartReading, GiItem, MsrSource, TaItem } from "../src/server/books/diReadings.ts"
 import { type Candidate, candidateProblems, chartSpec, datasetOfDraft, linkSet } from "../src/server/books/linking.ts"
 import type { PageReading } from "../src/server/books/readings.ts"
 import { renderChart } from "../src/server/charts/charts.ts"
@@ -202,5 +202,48 @@ describe("MSR sets", () => {
     }])[0]!
     expect(graph.figure).toBe(true)
     expect(candidateProblems(graph).map((reason) => reason.code)).toEqual(["figure"])
+  })
+})
+
+describe("Reasons named for what they are about", () => {
+  test("a source whose text does not render is named by its title", () => {
+    const [item] = linked([{
+      page: 5,
+      reading: msrPage([{ title: "Email", text: "Orders ship within \\(1 day." }, { title: "Memo", text: "Docks close." }], [1], "orders")
+    }])
+    expect(candidateProblems(item!)).toEqual([
+      { code: "render", detail: expect.stringMatching(/^The source "Email" does not render: /) }
+    ])
+  })
+
+  test("an answer key that gives fewer answers than the Question has Parts says so", () => {
+    const [item] = linkSet({
+      questions: [{
+        page: 2,
+        reading: {
+          role: "questions",
+          group: "ta",
+          value: {
+            questions: [{
+              number: 1,
+              intro: "The table shows the clubs' members.",
+              table: {
+                columns: [{ name: "Club", type: "text", unit: "" }, { name: "Members", type: "number", unit: "" }],
+                rows: [["Chess", "1,200"], ["Golf", "980"]]
+              },
+              pair: ["Yes", "No"],
+              statements: ["Chess has more members.", "Golf has fewer than 500.", "They have 2,180 in all."],
+              difficulty: null
+            } satisfies TaItem]
+          }
+        } as PageReading
+      }],
+      answers: [{ role: "answer-key", value: { answers: [{ number: 1, parts: ["Yes", "No"] }] } } as PageReading],
+      explanations: [],
+      labels: []
+    }).filter((each): each is Candidate => each._tag === "Candidate")
+    expect(candidateProblems(item!)).toEqual([
+      { code: "no-key", detail: "The answer key gives 2 answers for its 3 parts: Yes, No." }
+    ])
   })
 })
