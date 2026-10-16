@@ -48,16 +48,18 @@ describe("Official Scores", () => {
       expect(again._tag).toBe("OfficialScoreNotFound")
     })))
 
-  test("a day still to come in the Profile's time zone is refused", () =>
+  test("a day still to come in the Profile's time zone is refused, and the estimates say which day is today", () =>
     run(Effect.gen(function*() {
       const london = yield* openBrowser
       yield* london.profiles.create({ payload: { name: "Asha", timeZone: "UTC" } })
+      expect((yield* london.scores.estimates()).today).toBe("2026-10-16")
       const tomorrow = yield* london.scores.addOfficial({ payload: score("2026-10-17") }).pipe(Effect.flip)
       expect(tomorrow._tag).toBe("OfficialScoreInFuture")
       expect(yield* london.scores.addOfficial({ payload: score("2026-10-16") })).toHaveLength(1)
 
       const auckland = yield* openBrowser
       yield* auckland.profiles.create({ payload: { name: "Ben", timeZone: "Pacific/Auckland" } })
+      expect((yield* auckland.scores.estimates()).today).toBe("2026-10-17")
       expect(yield* auckland.scores.addOfficial({ payload: score("2026-10-17") })).toHaveLength(1)
       const ahead = yield* auckland.scores.addOfficial({ payload: score("2026-10-18") }).pipe(Effect.flip)
       expect(ahead._tag).toBe("OfficialScoreInFuture")

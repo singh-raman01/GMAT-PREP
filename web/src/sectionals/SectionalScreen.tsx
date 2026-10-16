@@ -109,13 +109,13 @@ export const SectionalScreen = ({ id, onSessionLost, onStopped, onClosed }: Prop
   if (missing) {
     return (
       <>
-        <h1>This Sectional is not here</h1>
-        <p className="lede">It may belong to another Profile. Start a new one from Sectionals.</p>
+        <h1>This Section is not here</h1>
+        <p className="lede">It may belong to another Profile. Start a Sectional from Sectionals, or a Mock from Mocks.</p>
         <a className="button" {...linkProps("/sectionals")}>Back to Sectionals</a>
       </>
     )
   }
-  if (view === undefined) return <p className="quiet" aria-busy="true">Opening the Sectional</p>
+  if (view === undefined) return <p className="quiet" aria-busy="true">Opening the Section</p>
   if (view.stage === "finished") {
     return view.report === null ? <SectionClosed view={view} onClosed={onClosed} /> : <Report view={view} onFailure={handle} />
   }
@@ -142,8 +142,9 @@ const useActions = (onView: (view: SectionalView) => void, onFailure: (failure: 
       onView(outOfStep.view)
       setProblem(outOfStepText[outOfStep.reason])
     } else if (failure._tag === "SectionalHeldElsewhere") {
-      onView((failure as unknown as { readonly view: SectionalView }).view)
-      setProblem("Another tab or device has this Sectional now. Take it over here to go on.")
+      const held = (failure as unknown as { readonly view: SectionalView }).view
+      onView(held)
+      setProblem(`Another tab or device has this ${held.mock === null ? "Sectional" : "Mock"} now. Take it over here to go on.`)
     } else if (failure._tag === "SelectionInvalid") {
       setProblem((failure as unknown as { readonly problems: ReadonlyArray<string> }).problems.join(" "))
     } else {
@@ -262,7 +263,10 @@ const Running = (
       )}
       {!view.heldHere && (
         <div className="held-elsewhere" role="status">
-          <p>This Sectional is open in another tab or on another device, so you can only look at it here.</p>
+          <p>
+            This {view.mock === null ? "Sectional" : "Mock"} is open in another tab or on another device, so you can only
+            look at it here.
+          </p>
           <button type="button" className="button" onClick={claim} disabled={actions.busy}>Take it over here</button>
         </div>
       )}

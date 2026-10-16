@@ -1709,6 +1709,11 @@ input.number-input {
   gap: 1rem 1.5rem;
 }
 
+.item-range > .hint {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
 .practice-preview {
   min-height: 1.5em;
   color: var(--pencil);

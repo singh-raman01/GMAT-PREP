@@ -113,7 +113,7 @@ const countText = (preview: PracticePreview, mode: Mode) => {
     ? ` ${preview.unavailable} ${preview.unavailable === 1 ? "is" : "are"} not in the Question Bank.`
     : ""
   const running = preview.inSection > 0
-    ? ` ${preview.inSection} ${preview.inSection === 1 ? "is" : "are"} in your Sectional, until it ends.`
+    ? ` ${preview.inSection} ${preview.inSection === 1 ? "is" : "are"} in your Sectional or Mock, until it ends.`
     : ""
   if (preview.questions === 0) return `No Questions to practise with these choices.${held}${missing}${running}`
   if (mode === "book") {
@@ -278,7 +278,10 @@ const Scores = ({ scores }: { readonly scores: ScoreEstimates }) => (
         <li className="score-total">
           <span className="score-section">Total</span>
           <span className="score-value">{scores.total.score}</span>
-          <span className="score-facts">likely {scores.total.low} to {scores.total.high}</span>
+          <span className="score-facts">
+            likely {scores.total.low} to {scores.total.high}
+            {scores.total.calibrated ? "" : ", not yet calibrated"}
+          </span>
         </li>
       )}
       {scores.sections.map((each) => (
@@ -363,7 +366,7 @@ const StartForm = (
           result.failure.inSection > 0
             ? `No Questions to practise now: ${result.failure.inSection} ${
               result.failure.inSection === 1 ? "is" : "are"
-            } in your Sectional, until it ends.`
+            } in your Sectional or Mock, until it ends.`
             : chosen.choice.kind === "filters"
             ? "No Questions match these choices. Try fewer filters."
             : result.failure.heldForMocks > 0 || result.failure.unavailable > 0
