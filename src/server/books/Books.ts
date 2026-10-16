@@ -24,7 +24,7 @@ import { JobStore, toJobView } from "../jobs/JobStore.ts"
 import { ApiKeyStore } from "../settings/ApiKeyStore.ts"
 import { missingSettings, Settings, taskReadsImages } from "../settings/Settings.ts"
 import { BookFiles, type Received } from "./BookFiles.ts"
-import { mapProblems, tidyMap } from "./bookMap.ts"
+import { mapProblems, tidyMap } from "../../api/bookMapRules.ts"
 import { BookIntake, SampleCap, scannedRouteFor } from "./intakeJob.ts"
 import { BookMapping, encodeRanges, PagesPerBatch } from "./mapJob.ts"
 

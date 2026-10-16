@@ -5,6 +5,8 @@ import { call } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
 import { clockTime, minutesAndSeconds } from "../format.ts"
 import { linkProps, navigate } from "../router.ts"
+import { BookPage } from "./BookPage.tsx"
+import { CuratorBooks } from "./CuratorBooks.tsx"
 import { CuratorJobs } from "./CuratorJobs.tsx"
 import { CuratorSettings } from "./CuratorSettings.tsx"
 
@@ -21,6 +23,12 @@ type Gate =
 // The Curator's tools, behind the Curator passphrase.
 export const CuratorArea = ({ path, onStopped }: { readonly path: string; readonly onStopped: Stop }) => {
   const [gate, setGate] = useState<Gate>({ _tag: "Checking" })
+  // A message for the page the Curator is sent to, such as a Book that was
+  // added before. It is dropped once the Curator moves on from that page.
+  const [notice, setNotice] = useState<{ readonly text: string; readonly path: string }>()
+  useEffect(() => {
+    setNotice((current) => (current !== undefined && current.path !== path ? undefined : current))
+  }, [path])
 
   const check = useCallback(async () => {
     const result = await call((client) => client.curatorAccess.status())
@@ -57,7 +65,12 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
     case "Unlocking":
       return <Unlock notice={gate.notice} onUnlocked={() => setGate({ _tag: "Open" })} onStopped={onStopped} />
     case "Open": {
-      const section = path.startsWith("/curator/settings") ? "settings" : "jobs"
+      const section = path.startsWith("/curator/settings")
+        ? "settings"
+        : path.startsWith("/curator/jobs")
+        ? "jobs"
+        : "books"
+      const bookId = /^\/curator\/books\/([^/]+)/.exec(path)?.[1]
       return (
         <>
           <header className="topbar">
@@ -72,7 +85,10 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
           </header>
           <main className="page">
             <nav className="subnav" aria-label="Curator tools">
-              <a {...linkProps("/curator")} aria-current={section === "jobs" ? "page" : undefined}>
+              <a {...linkProps("/curator")} aria-current={section === "books" && bookId === undefined ? "page" : undefined}>
+                <span className={section === "books" ? "mark" : undefined}>Books</span>
+              </a>
+              <a {...linkProps("/curator/jobs")} aria-current={section === "jobs" ? "page" : undefined}>
                 <span className={section === "jobs" ? "mark" : undefined}>Jobs</span>
               </a>
               <a {...linkProps("/curator/settings")} aria-current={section === "settings" ? "page" : undefined}>
@@ -85,10 +101,29 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
                   key="settings"
                   onLocked={locked}
                   onStopped={onStopped}
-                  onTestStarted={() => navigate("/curator")}
+                  onTestStarted={() => navigate("/curator/jobs")}
                 />
               )
-              : <CuratorJobs key="jobs" onLocked={locked} onStopped={onStopped} />}
+              : section === "jobs"
+              ? <CuratorJobs key="jobs" onLocked={locked} onStopped={onStopped} />
+              : bookId !== undefined
+              ? (
+                <BookPage
+                  key={bookId}
+                  id={bookId}
+                  notice={notice?.path === path ? notice.text : undefined}
+                  onLocked={locked}
+                  onStopped={onStopped}
+                />
+              )
+              : (
+                <CuratorBooks
+                  key="books"
+                  onLocked={locked}
+                  onStopped={onStopped}
+                  onNotice={(text, page) => setNotice({ text, path: page })}
+                />
+              )}
           </main>
         </>
       )

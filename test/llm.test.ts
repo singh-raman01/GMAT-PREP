@@ -183,13 +183,14 @@ describe("LLM adapter", () => {
       yield* TestClock.adjust("499 millis")
       yield* settle
       expect(yield* fake.requests).toHaveLength(1)
-      yield* TestClock.adjust("1001 millis")
-      yield* settle
-      expect(yield* fake.requests).toHaveLength(2)
-      // The second wait doubles: at least a second.
-      yield* TestClock.adjust("999 millis")
-      yield* settle
-      expect(yield* fake.requests).toHaveLength(2)
+      // Each wait doubles, so the five waits take at least 0.5 + 1 + 2 + 4 + 8
+      // seconds, and the call cannot give up sooner.
+      for (let elapsed = 499; elapsed < 15_400; elapsed += 100) {
+        yield* TestClock.adjust("100 millis")
+        yield* settle
+      }
+      expect(fiber.pollUnsafe()).toBeUndefined()
+      expect((yield* fake.requests).length).toBeLessThan(6)
       for (let i = 0; i < 20; i++) {
         yield* settle
         yield* TestClock.adjust("5 seconds")

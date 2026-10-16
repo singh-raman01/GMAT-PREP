@@ -2,6 +2,7 @@ import { Schema } from "effect"
 import { useEffect, useRef } from "react"
 import { EventsPath, ServerEvent } from "../../../src/api/Events.ts"
 import type { JobView } from "../../../src/api/Jobs.ts"
+import { call } from "../api.ts"
 
 const decodeEvent = Schema.decodeUnknownOption(Schema.fromJsonString(ServerEvent))
 
@@ -17,14 +18,14 @@ export const mergeJob = (jobs: ReadonlyArray<JobView>, changed: JobView): Readon
 export const latestRevision = (jobs: ReadonlyArray<JobView>) =>
   jobs.reduce((latest, job) => Math.max(latest, job.revision), 0)
 
-// Listens for job changes after the given revision, which comes from a list
-// just read, so nothing between the list and the stream is missed. The
-// browser reconnects on its own after a dropped connection and resumes from
-// the last change it received. When the stream closes for good, as it does
-// once the Curator is locked, onClosed runs. Nothing opens while since is
-// undefined.
+// Listens for job changes after the given revision, which comes from what
+// the page just read, so nothing between the read and the stream is missed;
+// "now" listens from the moment the stream opens. The browser reconnects on
+// its own after a dropped connection and resumes from the last change it
+// received. When the stream closes for good, as it does once the Curator is
+// locked, onClosed runs. Nothing opens while since is undefined.
 export const useJobEvents = (
-  since: number | undefined,
+  since: number | "now" | undefined,
   onJob: (job: JobView) => void,
   onClosed: () => void
 ) => {
@@ -33,7 +34,7 @@ export const useJobEvents = (
 
   useEffect(() => {
     if (since === undefined) return
-    const events = new EventSource(`${EventsPath}?since=${since}`)
+    const events = new EventSource(since === "now" ? EventsPath : `${EventsPath}?since=${since}`)
     events.onmessage = (message) => {
       const event = decodeEvent(message.data)
       if (event._tag === "Some" && event.value._tag === "JobChanged") handlers.current.onJob(event.value.job)
@@ -43,4 +44,21 @@ export const useJobEvents = (
     }
     return () => events.close()
   }, [since])
+}
+
+// What a page does when its stream has closed for good: the Curator was
+// locked, so the page asks for the passphrase; or the app restarted, so the
+// page reads its data again and opens a new stream.
+export const afterStreamClosed = async (
+  reopen: () => unknown,
+  onLocked: () => void,
+  stillShown: () => boolean
+) => {
+  const status = await call((client) => client.curatorAccess.status())
+  if (!stillShown()) return
+  if (status._tag === "Success" && status.success.unlocked) {
+    reopen()
+    return
+  }
+  onLocked()
 }

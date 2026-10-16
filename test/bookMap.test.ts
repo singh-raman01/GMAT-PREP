@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import type { MapRangeInput } from "../src/api/Books.ts"
-import { assembleMap, chapterKey, mapProblems, type SurveyedPage, tidyMap } from "../src/server/books/bookMap.ts"
+import { mapProblems, setsWithoutKeys, tidyMap } from "../src/api/bookMapRules.ts"
+import { assembleMap, chapterKey, type SurveyedPage } from "../src/server/books/bookMap.ts"
 import { spread } from "../src/server/books/intakeJob.ts"
 import type { PageSurvey } from "../src/server/books/survey.ts"
 
@@ -97,6 +98,15 @@ describe("Checking a Book Map", () => {
 
   test("ranges of different roles or sets may share pages", () => {
     expect(mapProblems([ps("questions", 2, 4), ps("explanations", 4, 6), ps("difficulty-labels", 4, 6)], 10)).toEqual([])
+  })
+
+  test("sets with questions but no answer key are pointed out", () => {
+    expect(setsWithoutKeys([
+      ps("questions", 2, 8),
+      ps("answer-key", 9, 9),
+      ps("questions", 12, 14, "Diagnostic"),
+      ps("explanations", 15, 16, "Diagnostic")
+    ])).toEqual(["Diagnostic"])
   })
 
   test("a confirmed map is stored tidy, in page order", () => {
