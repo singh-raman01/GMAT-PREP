@@ -84,6 +84,9 @@ export const jobs = sqliteTable(
     // pause or cancel, asked while the job runs
     requested: text("requested"),
     resumeAt: integer("resume_at"),
+    // How often a worker stopped during the step now running, such as on a
+    // crash; cleared when a step is saved or the Curator resumes the job.
+    crashes: integer("crashes").notNull().default(0),
     revision: integer("revision").notNull(),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),

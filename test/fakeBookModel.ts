@@ -5,12 +5,15 @@ import type { FakeOutcome, TransportRequest } from "../src/server/llm/LlmTranspo
 // text the request quotes. It writes the first question's equation in LaTeX
 // and garbles the math of the remainder question, as a careless model might.
 
+// The request's own message, which a retry repeats before its feedback.
+const asked = (request: TransportRequest) => request.messages.find((message) => message.role === "user")?.content ?? ""
+
 const quoted = (request: TransportRequest, tag: string) =>
-  new RegExp(`<${tag}>\\n([\\s\\S]*?)\\n</${tag}>`).exec(request.messages.at(-1)?.content ?? "")?.[1] ?? ""
+  new RegExp(`<${tag}>\\n([\\s\\S]*?)\\n</${tag}>`).exec(asked(request))?.[1] ?? ""
 
 // The pages a survey request quotes, by number.
 export const surveyedPages = (request: TransportRequest) =>
-  [...(request.messages.at(-1)?.content ?? "").matchAll(/<page number="(\d+)">\n([\s\S]*?)\n<\/page>/g)].map((match) => ({
+  [...asked(request).matchAll(/<page number="(\d+)">\n([\s\S]*?)\n<\/page>/g)].map((match) => ({
     number: Number(match[1]),
     text: match[2]!
   }))

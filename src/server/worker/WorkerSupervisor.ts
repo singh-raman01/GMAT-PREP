@@ -1,6 +1,7 @@
 import { Clock, Context, Effect, Layer, Ref } from "effect"
 import { WorkerStatus } from "../../api/Api.ts"
 import { AppConfig } from "../AppConfig.ts"
+import { JobStore } from "../jobs/JobStore.ts"
 
 // The job worker is this same executable started with the "worker" argument.
 export const workerCommand = (): ReadonlyArray<string> =>
@@ -11,24 +12,29 @@ export const workerCommand = (): ReadonlyArray<string> =>
 export interface SpawnedWorker {
   readonly pid: number
   readonly exited: Promise<number>
-  kill(): void
+  kill(signal?: "SIGKILL"): void
 }
 
 // Starts a worker process; throws when the process cannot be started.
 export type SpawnWorker = (command: ReadonlyArray<string>, env: Record<string, string | undefined>) => SpawnedWorker
 
-const spawnWithBun: SpawnWorker = (command, env) =>
-  Bun.spawn([...command], {
+const spawnWithBun: SpawnWorker = (command, env) => {
+  const child = Bun.spawn([...command], {
     env,
     // Never written; the worker exits when this pipe closes.
     stdin: "pipe",
     stdout: "inherit",
     stderr: "inherit"
   })
+  return { pid: child.pid, exited: child.exited, kill: (signal) => child.kill(signal) }
+}
 
 // A worker that ran this long was healthy, so a crash after it restarts at once.
 const HealthyRunMs = 30_000
 const MaxRestartDelayMs = 60_000
+
+// How often the supervisor checks that the worker's job still has a heartbeat.
+export const WatchEvery = "10 seconds"
 
 // After a quick crash, or a failure to start, each wait is twice the last.
 export const restartDelayMs = (quickFailures: number) =>
@@ -50,8 +56,13 @@ export class WorkerSupervisor extends Context.Service<WorkerSupervisor, {
   )
 
   // Starts the worker and restarts it whenever it exits. Closing the scope
-  // (server shutdown) stops the worker.
-  static readonly layerWith = (spawn: SpawnWorker) =>
+  // (server shutdown) stops the worker. A worker that is alive but whose job
+  // has no heartbeat, such as one stuck in a parser loop, is killed, so the
+  // job is claimed again and counts the stop.
+  static readonly layerWith = (
+    spawn: SpawnWorker,
+    heartbeatStopped: (pid: number) => Effect.Effect<boolean> = () => Effect.succeed(false)
+  ) =>
     Layer.effect(
       WorkerSupervisor,
       Effect.gen(function*() {
@@ -73,6 +84,17 @@ export class WorkerSupervisor extends Context.Service<WorkerSupervisor, {
             (spawned) => Effect.sync(() => spawned.kill())
           )
           yield* Ref.update(state, (s) => ({ ...s, running: true, pid: child.pid }))
+          yield* Effect.forkScoped(
+            Effect.forever(
+              Effect.gen(function*() {
+                yield* Effect.sleep(WatchEvery)
+                if (yield* heartbeatStopped(child.pid)) {
+                  yield* Effect.logWarning(`Job worker ${child.pid} stopped answering; killing it`)
+                  child.kill("SIGKILL")
+                }
+              })
+            )
+          )
           const code = yield* Effect.promise(() => child.exited)
           yield* Ref.update(state, (s) => ({ ...s, running: false, pid: null, restarts: s.restarts + 1 }))
           yield* Effect.logWarning(`Job worker exited with code ${code}; restarting`)
@@ -101,5 +123,10 @@ export class WorkerSupervisor extends Context.Service<WorkerSupervisor, {
       })
     )
 
-  static readonly layer = WorkerSupervisor.layerWith(spawnWithBun)
+  static readonly layer = Layer.unwrap(
+    Effect.gen(function*() {
+      const store = yield* JobStore
+      return WorkerSupervisor.layerWith(spawnWithBun, store.heartbeatStopped)
+    })
+  )
 }

@@ -49,11 +49,11 @@ export const CuratorBooks = ({ onLocked, onStopped, onNotice }: Props) => {
   }, [load])
 
   // A Book's status moves on as its jobs run, so the list is read again
-  // when one of them changes.
+  // when any Book's job changes, including one started in another tab.
   useJobEvents(
     since,
     (job) => {
-      if ((books ?? []).some((book) => book.job?.id === job.id)) void load(false)
+      if (job.kind.startsWith("book-")) void load(false)
     },
     () =>
       void afterStreamClosed(() => {
@@ -113,6 +113,14 @@ const AddBook = (
   const [official, setOfficial] = useState(false)
   const [problem, setProblem] = useState<{ readonly field: "file" | "title" | "form"; readonly text: string }>()
   const [sending, setSending] = useState<Sending>({ _tag: "Idle" })
+  const fileInput = useRef<HTMLInputElement>(null)
+  const titleInput = useRef<HTMLInputElement>(null)
+
+  // A field's problem is read out with the field, which takes focus.
+  useEffect(() => {
+    if (problem?.field === "file") fileInput.current?.focus()
+    if (problem?.field === "title") titleInput.current?.focus()
+  }, [problem])
 
   const choose = (event: ChangeEvent<HTMLInputElement>) => {
     const chosen = event.target.files?.[0]
@@ -168,6 +176,7 @@ const AddBook = (
         <div className="field">
           <label htmlFor={ids.file}>PDF file</label>
           <input
+            ref={fileInput}
             id={ids.file}
             type="file"
             accept="application/pdf,.pdf"
@@ -180,6 +189,7 @@ const AddBook = (
         <div className="field">
           <label htmlFor={ids.title}>Title</label>
           <input
+            ref={titleInput}
             id={ids.title}
             type="text"
             autoComplete="off"

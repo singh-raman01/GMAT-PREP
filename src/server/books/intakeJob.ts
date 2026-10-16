@@ -7,13 +7,13 @@ import { bookPages, books, llmCalls } from "../db/schema.ts"
 import { type JobKind, JobStepFailed } from "../jobs/JobKind.ts"
 import { Settings, taskReadsImages } from "../settings/Settings.ts"
 import { BookFiles } from "./BookFiles.ts"
-import { hasTextLayer, readPdfPages, unreadableNote } from "./pdf.ts"
+import { readPdfPages, unreadableNote } from "./pdf.ts"
 import { readPage, readsGroup } from "./readings.ts"
 import { readSurvey, surveyPages } from "./survey.ts"
 
 // Reading a Book that was just added: its pages, a hundred per step, then
-// the cost preview from a 10-page sample read by the Book Map model. The
-// full run waits for the Curator after this.
+// the cost preview from the full run tried on a 10-page sample. The full run
+// waits for the Curator after this.
 
 export const PagesPerStep = 100
 export const SamplePages = 10
@@ -59,10 +59,13 @@ const readStep = (bookId: string, nextPage: number) =>
     const scannedRoute = scannedRouteFor(taskReadsImages(yield* settings.llm, "extraction"))
     if (pages.length > 0) {
       yield* db.insert(bookPages)
-        .values(pages.map((page) => {
-          const hasText = hasTextLayer(page.text)
-          return { bookId, number: page.number, text: page.text, hasText, route: hasText ? "text" : scannedRoute }
-        }))
+        .values(pages.map((page) => ({
+          bookId,
+          number: page.number,
+          text: page.text,
+          hasText: !page.scanned,
+          route: page.scanned ? scannedRoute : "text"
+        })))
         .onConflictDoUpdate({
           target: [bookPages.bookId, bookPages.number],
           set: { text: sql`excluded.text`, hasText: sql`excluded.has_text`, route: sql`excluded.route` }

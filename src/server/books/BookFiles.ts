@@ -1,6 +1,6 @@
 import { Context, Effect, Layer, Schema, Stream } from "effect"
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs"
-import { open } from "node:fs/promises"
+import { type FileHandle, open } from "node:fs/promises"
 import { join } from "node:path"
 import { AppConfig } from "../AppConfig.ts"
 
@@ -37,6 +37,17 @@ const hasPdfMarker = (head: Uint8Array) => {
 }
 
 const isDiskFull = (error: unknown) => (error as { readonly code?: string }).code === "ENOSPC"
+
+// A write may take only part of a chunk; the rest follows. Taking none means
+// there is no room left.
+const writeAll = async (file: FileHandle, chunk: Uint8Array) => {
+  let offset = 0
+  while (offset < chunk.length) {
+    const { bytesWritten } = await file.write(chunk, offset, chunk.length - offset)
+    if (bytesWritten === 0) throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" })
+    offset += bytesWritten
+  }
+}
 
 export class BookFiles extends Context.Service<BookFiles, {
   readonly folder: string
@@ -88,7 +99,7 @@ export class BookFiles extends Context.Service<BookFiles, {
                   if (head.length === MarkerWithin && !hasPdfMarker(head)) return yield* new NotAPdf()
                 }
                 hasher.update(chunk)
-                yield* io(() => file.write(chunk))
+                yield* io(() => writeAll(file, chunk))
               })).pipe(Effect.ensuring(Effect.promise(() => file.close())))
             if (size === 0) return yield* new EmptyFile()
             if (!hasPdfMarker(head)) return yield* new NotAPdf()

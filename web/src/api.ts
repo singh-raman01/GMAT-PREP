@@ -48,6 +48,14 @@ export const troubleOf = (error: { readonly _tag: string }): Trouble => {
   return "unreadable"
 }
 
+// The status of a reply the API refused without a declared error, such as a
+// request its schema rejects (400), or undefined for any other failure.
+export const refusedStatus = (error: { readonly _tag: string }): number | undefined => {
+  if (error._tag !== "HttpClientError") return undefined
+  const reason = (error as HttpClientError.HttpClientError).reason
+  return "response" in reason && reason.response !== undefined ? reason.response.status : undefined
+}
+
 // Tells the app's other tabs that this browser's unlock changed, so they show
 // the Profile now unlocked instead of acting as the one they showed before.
 const channel = typeof BroadcastChannel === "undefined" ? undefined : new BroadcastChannel("gmat-prep-unlock")

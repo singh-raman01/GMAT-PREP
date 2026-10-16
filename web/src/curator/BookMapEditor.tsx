@@ -1,4 +1,4 @@
-import { type FormEvent, useId, useRef, useState } from "react"
+import { type FormEvent, useEffect, useId, useRef, useState } from "react"
 import { mapProblems, setsWithoutKeys } from "../../../src/api/bookMapRules.ts"
 import {
   type BookDetail,
@@ -12,13 +12,14 @@ import {
   TypeGroups,
   TypeGroupSections
 } from "../../../src/api/Books.ts"
-import { call } from "../api.ts"
+import { call, refusedStatus } from "../api.ts"
 import { dayAndTime } from "../format.ts"
 import { pageRuns } from "./bookText.ts"
 
 // The Book Map on one screen: each range of pages, what it holds and which
 // set it belongs to. The Curator corrects the proposal and confirms it; each
-// confirmation is a new version.
+// confirmation is a new version. A newer map that arrives while the Curator
+// is editing waits to be loaded instead of replacing the edits.
 
 interface Row {
   readonly key: number
@@ -39,6 +40,20 @@ const rowOf = (range: MapRangeInput): Row => ({
   firstPage: String(range.firstPage),
   lastPage: String(range.lastPage)
 })
+
+// The map the rows start from: the latest confirmed version, else the
+// latest proposal.
+interface Source {
+  readonly from: string
+  readonly ranges: ReadonlyArray<MapRangeInput>
+}
+
+const latestOf = (detail: BookDetail): Source =>
+  detail.confirmed !== null
+    ? { from: `version-${detail.confirmed.version}`, ranges: detail.confirmed.ranges }
+    : detail.proposal !== null
+    ? { from: `proposal-${detail.proposal.createdAt}`, ranges: detail.proposal.ranges }
+    : { from: "none", ranges: [] }
 
 const pageNumber = (text: string) => (/^\s*\d{1,6}\s*$/.test(text) ? Number(text) : undefined)
 
@@ -65,14 +80,23 @@ export const BookMapEditor = (
     readonly onFailure: (failure: { readonly _tag: string }) => void
   }
 ) => {
-  const ids = { title: useId(), sets: useId(), problems: useId() }
+  const ids = { title: useId(), sets: useId(), problems: useId(), add: useId() }
   const book = detail.book
   const pageCount = book.pageCount ?? 0
-  const base = detail.confirmed?.ranges ?? detail.proposal?.ranges ?? []
-  const [rows, setRows] = useState<ReadonlyArray<Row>>(() => base.map(rowOf))
+  const latest = latestOf(detail)
+  const [rows, setRows] = useState<ReadonlyArray<Row>>(() => latest.ranges.map(rowOf))
+  const [loadedFrom, setLoadedFrom] = useState(latest.from)
+  const [proposalSeen, setProposalSeen] = useState(detail.proposal?.createdAt)
+  // The Curator changed the rows since they were loaded or confirmed.
+  const [edited, setEdited] = useState(false)
+  // A newer map that arrived while the rows were edited.
+  const [waiting, setWaiting] = useState<{ readonly text: string; readonly ranges: ReadonlyArray<MapRangeInput> }>()
   const [tried, setTried] = useState(false)
   const [serverProblems, setServerProblems] = useState<ReadonlyArray<string>>([])
   const [saved, setSaved] = useState("")
+  const [focusTarget, setFocusTarget] = useState<string>()
+  const heading = useRef<HTMLHeadingElement>(null)
+  const table = useRef<HTMLTableElement>(null)
   // Extraction spends from the full run's cap; a Book mapped by hand before
   // any run needs one here.
   const needsCap = book.runCap === null
@@ -94,35 +118,79 @@ export const BookMapEditor = (
   const uncovered = Array.from({ length: pageCount }, (_, i) => i + 1).filter((number) => !covered.has(number))
   const setNames = [...new Set(rows.map((row) => row.set.trim()).filter((name) => name !== ""))]
 
-  const change = (key: number, patch: Partial<Row>) => {
-    setRows((current) => current.map((row) => (row.key === key ? { ...row, ...patch } : row)))
+  const setInputId = (key: number) => `${ids.title}-set-${key}`
+
+  // Focus moves once the rows it names are on screen.
+  useEffect(() => {
+    if (focusTarget === undefined) return
+    document.getElementById(focusTarget)?.focus()
+    setFocusTarget(undefined)
+  }, [focusTarget])
+
+  const edit = () => {
+    setEdited(true)
     setServerProblems([])
     setSaved("")
   }
+  const change = (key: number, patch: Partial<Row>) => {
+    setRows((current) => current.map((row) => (row.key === key ? { ...row, ...patch } : row)))
+    edit()
+  }
   const remove = (key: number) => {
+    const index = rows.findIndex((row) => row.key === key)
+    const next = rows[index + 1] ?? rows[index - 1]
     setRows((current) => current.filter((row) => row.key !== key))
-    setSaved("")
+    setFocusTarget(next === undefined ? ids.add : setInputId(next.key))
+    edit()
   }
   const add = () => {
     const last = rows.at(-1)
+    const key = nextKey++
     setRows((current) => [
       ...current,
-      {
-        key: nextKey++,
-        role: "questions",
-        group: last?.group ?? "ps",
-        set: last?.set ?? "",
-        firstPage: "",
-        lastPage: ""
-      }
+      { key, role: "questions", group: last?.group ?? "ps", set: last?.set ?? "", firstPage: "", lastPage: "" }
     ])
-    setSaved("")
+    setFocusTarget(setInputId(key))
+    edit()
   }
-  const reset = (ranges: ReadonlyArray<MapRangeInput>) => {
+  // Replaces the rows. Focus inside the table would fall to the page, so it
+  // moves to the heading.
+  const load = (ranges: ReadonlyArray<MapRangeInput>, changed: boolean) => {
+    if (table.current?.contains(document.activeElement) === true) heading.current?.focus()
     setRows(ranges.map(rowOf))
+    setEdited(changed)
+    setWaiting(undefined)
     setTried(false)
     setServerProblems([])
     setSaved("")
+  }
+
+  // A newer map: a proposal the run just made, or a version confirmed in
+  // another tab. Unedited rows take it; edited ones keep the edits and offer it.
+  useEffect(() => {
+    const proposalChanged = detail.proposal !== null && detail.proposal.createdAt !== proposalSeen
+    if (latest.from === loadedFrom && !proposalChanged) return
+    setProposalSeen(detail.proposal?.createdAt)
+    if (latest.from !== loadedFrom) {
+      setLoadedFrom(latest.from)
+      if (!edited) return load(latest.ranges, false)
+      return setWaiting({
+        text: detail.confirmed !== null
+          ? `Version ${detail.confirmed.version} was confirmed elsewhere.`
+          : "The Book Map model proposed a map.",
+        ranges: latest.ranges
+      })
+    }
+    if (detail.proposal !== null) {
+      setWaiting({ text: "The Book Map model proposed a new map.", ranges: detail.proposal.ranges })
+    }
+  }, [latest.from, detail.proposal?.createdAt])
+
+  // Problems go in a box that takes focus once, when confirming fails, so it
+  // is read out then and not again on each keystroke.
+  const showProblems = (found: ReadonlyArray<string>) => {
+    setServerProblems(found)
+    setFocusTarget(ids.problems)
   }
 
   const confirm = async (event: FormEvent<HTMLFormElement>) => {
@@ -133,8 +201,9 @@ export const BookMapEditor = (
     const capProblem = needsCap && (!Number.isFinite(spendCap) || spendCap <= 0 || spendCap > 10_000)
       ? ["Enter a spend cap in dollars, above 0."]
       : []
-    if (capProblem.length > 0) return setServerProblems(capProblem)
-    if (problems.length > 0 || busy.current) return
+    if (capProblem.length > 0) return showProblems(capProblem)
+    if (problems.length > 0) return setFocusTarget(ids.problems)
+    if (busy.current) return
     busy.current = true
     const result = await call((client) =>
       client.books.confirmMap({
@@ -148,6 +217,9 @@ export const BookMapEditor = (
       setTried(false)
       if (confirmed !== null) {
         setRows(confirmed.ranges.map(rowOf))
+        setLoadedFrom(`version-${confirmed.version}`)
+        setEdited(false)
+        setWaiting(undefined)
         setSaved(`Version ${confirmed.version} confirmed; extraction started.`)
       }
       onConfirmed(result.success)
@@ -155,12 +227,17 @@ export const BookMapEditor = (
     }
     switch (result.failure._tag) {
       case "BookMapInvalid":
-        return setServerProblems(result.failure.problems)
+        return showProblems(result.failure.problems)
       case "BookNotReady":
-        return setServerProblems(["The book changed in the meantime; reload the page."])
+        return showProblems(["The book changed in the meantime; reload the page."])
       case "RunCapNeeded":
-        return setServerProblems(["Enter a spend cap for extraction."])
+        return showProblems(["Enter a spend cap for extraction."])
       default:
+        // A map the API's checks refuse, which the checks here should have
+        // caught first.
+        if (refusedStatus(result.failure) === 400) {
+          return showProblems(["The app could not accept this Book Map. Check each set name and page number."])
+        }
         return onFailure(result.failure)
     }
   }
@@ -173,12 +250,25 @@ export const BookMapEditor = (
 
   return (
     <section className="group book-map" aria-labelledby={ids.title}>
-      <h2 id={ids.title}>Book Map</h2>
+      <h2 id={ids.title} ref={heading} tabIndex={-1}>Book Map</h2>
       <p className="group-about">
         Each range tells extraction where to look. Ranges with the same set name belong together: questions, their
         answer key, their explanations and their difficulty labels.
       </p>
       <p className="map-source">{source}</p>
+      {waiting !== undefined && (
+        <div className="map-waiting" role="status">
+          <p>{waiting.text} Your changes are kept until you load it.</p>
+          <div className="actions">
+            <button type="button" className="button button-quiet" onClick={() => load(waiting.ranges, false)}>
+              Load it
+            </button>
+            <button type="button" className="button button-quiet" onClick={() => setWaiting(undefined)}>
+              Keep my changes
+            </button>
+          </div>
+        </div>
+      )}
       <form noValidate onSubmit={(event) => void confirm(event)}>
         <datalist id={ids.sets}>
           {setNames.map((name) => <option key={name} value={name} />)}
@@ -186,7 +276,7 @@ export const BookMapEditor = (
         {rows.length === 0
           ? <p className="empty">No ranges yet. Add the first one below.</p>
           : (
-            <table className="ranges">
+            <table className="ranges" ref={table}>
               <thead>
                 <tr>
                   <th scope="col">Set</th>
@@ -205,6 +295,7 @@ export const BookMapEditor = (
                     <tr key={row.key}>
                       <td data-label="Set">
                         <input
+                          id={setInputId(row.key)}
                           type="text"
                           list={ids.sets}
                           autoComplete="off"
@@ -278,7 +369,7 @@ export const BookMapEditor = (
             </table>
           )}
         <div className="actions">
-          <button type="button" className="button button-quiet" onClick={add}>Add a range</button>
+          <button id={ids.add} type="button" className="button button-quiet" onClick={add}>Add a range</button>
         </div>
         {rows.length > 0 && uncovered.length > 0 && (
           <p className="hint map-hint">
@@ -295,7 +386,7 @@ export const BookMapEditor = (
           </p>
         )}
         {shownProblems.length > 0 && (
-          <div className="map-problems" role="alert" id={ids.problems}>
+          <div className="map-problems" id={ids.problems} tabIndex={-1}>
             <p className="problem">Fix these before confirming:</p>
             <ul>
               {shownProblems.map((problem) => <li key={problem}>{problem}</li>)}
@@ -322,11 +413,13 @@ export const BookMapEditor = (
         <div className="actions confirm-actions">
           <button type="submit" className="button">Confirm Book Map</button>
           {detail.confirmed !== null && detail.proposal !== null && (
-            <button type="button" className="button button-quiet" onClick={() => reset(detail.proposal!.ranges)}>
+            <button type="button" className="button button-quiet" onClick={() => load(detail.proposal!.ranges, true)}>
               Start from the proposal
             </button>
           )}
-          <button type="button" className="button button-quiet" onClick={() => reset(base)}>Undo changes</button>
+          <button type="button" className="button button-quiet" onClick={() => load(latest.ranges, false)}>
+            Undo changes
+          </button>
           <p className="saved" role="status">{saved}</p>
         </div>
       </form>

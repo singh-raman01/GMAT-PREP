@@ -6,11 +6,15 @@ import { type SpawnWorker, WorkerSupervisor } from "../src/server/worker/WorkerS
 import { tempDataDir } from "./harness.ts"
 
 // The supervisor with a stand-in for spawning, on a fake clock.
-const supervise = <A>(spawn: SpawnWorker, test: Effect.Effect<A, never, WorkerSupervisor>) =>
+const supervise = <A>(
+  spawn: SpawnWorker,
+  test: Effect.Effect<A, never, WorkerSupervisor>,
+  heartbeatStopped?: (pid: number) => Effect.Effect<boolean>
+) =>
   Effect.runPromise(
     test.pipe(
       Effect.provide(
-        WorkerSupervisor.layerWith(spawn).pipe(
+        WorkerSupervisor.layerWith(spawn, heartbeatStopped).pipe(
           Layer.provide(AppConfig.layer({ dataDir: tempDataDir(), preferredPort: 0 })),
           Layer.provideMerge(TestClock.layer())
         )
@@ -41,6 +45,36 @@ describe("Worker supervision", () => {
     expect(status.afterFailure.running).toBe(false)
     expect(status.later).toMatchObject({ running: true, pid: 4242 })
     expect(calls).toBe(2)
+  })
+
+  test("a worker whose job lost its heartbeat is killed and started again", async () => {
+    const signals: Array<string | undefined> = []
+    let spawns = 0
+    let stuck = false
+    const spawn: SpawnWorker = () => {
+      spawns += 1
+      const { promise, resolve } = Promise.withResolvers<number>()
+      return {
+        pid: 7,
+        exited: promise,
+        kill: (signal) => {
+          signals.push(signal)
+          resolve(137)
+        }
+      }
+    }
+    const seen = await supervise(spawn, Effect.gen(function*() {
+      yield* settle
+      yield* at(10)
+      const killedEarly = signals.length
+      stuck = true
+      yield* at(20)
+      const killed = signals.filter((signal) => signal === "SIGKILL").length
+      stuck = false
+      yield* at(25)
+      return { killedEarly, killed, spawns }
+    }), (pid) => Effect.succeed(stuck && pid === 7))
+    expect(seen).toEqual({ killedEarly: 0, killed: 1, spawns: 2 })
   })
 
   test("a worker that keeps crashing at start is restarted less and less often", async () => {

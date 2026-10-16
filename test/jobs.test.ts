@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { Deferred, Effect, Fiber, Option, Schema } from "effect"
 import type { JobView } from "../src/api/Jobs.ts"
 import { type JobKind, JobStepFailed } from "../src/server/jobs/JobKind.ts"
+import { DiskFullNote } from "../src/server/jobs/JobRunner.ts"
 import { JobStore, settleEnd } from "../src/server/jobs/JobStore.ts"
 import { ConnectionTest } from "../src/server/jobs/kinds/connectionTest.ts"
 import { LlmAdapter } from "../src/server/llm/LlmAdapter.ts"
@@ -156,6 +157,58 @@ describe("Jobs", () => {
         expect((yield* fake.requests).length).toBe(4)
       }),
       [counting.kind]
+    )
+  })
+
+  test("a step during which the worker keeps stopping fails the job after three tries, until the Curator resumes it", async () => {
+    const counting = makeCounting()
+    await runWithWorkers(
+      Effect.gen(function*() {
+        yield* configure
+        const fake = yield* FakeLlm
+        yield* fake.respondWith(() => ({ content: JSON.stringify({ ok: true, word: "step" }) }))
+        const store = yield* JobStore
+        const job = yield* store.create(counting.kind, { steps: 2 }, 1)
+        const workers = yield* TestWorkers
+        for (const tries of [1, 2, 3]) {
+          // Each worker stops part way through step 1.
+          yield* counting.hold(1)
+          const worker = yield* workers.start
+          yield* advanceUntil(Effect.sync(() => (counting.started.length === tries ? true : undefined)))
+          yield* Fiber.interrupt(worker)
+        }
+        yield* workers.start
+        const failed = yield* advanceUntil(whenJob(job.id, (current) => current.status === "failed"))
+        expect(failed.note).toContain("stopped 3 times during the same step")
+        expect(counting.started).toEqual([1, 1, 1])
+
+        yield* store.resume(failed.id, undefined)
+        yield* advanceUntil(whenJob(job.id, (current) => current.status === "done"))
+        expect(counting.started).toEqual([1, 1, 1, 1, 2])
+      }),
+      [counting.kind]
+    )
+  })
+
+  test("a full disk pauses the job with a message instead of failing it", () => {
+    const Nothing = Schema.Struct({})
+    const filling: JobKind<typeof Nothing.Type, typeof Nothing.Type> = {
+      kind: "filling",
+      params: Nothing,
+      checkpoint: Nothing,
+      label: () => "Fill the disk",
+      start: () => ({}),
+      stepsTotal: () => 1,
+      step: () => Effect.die(Object.assign(new Error("database or disk is full"), { code: "SQLITE_FULL" }))
+    }
+    return runWithWorker(
+      Effect.gen(function*() {
+        const store = yield* JobStore
+        const job = yield* store.create(filling, {}, 1)
+        const paused = yield* advanceUntil(whenJob(job.id, (current) => current.status === "paused"))
+        expect(paused.note).toBe(DiskFullNote)
+      }),
+      [filling]
     )
   })
 
