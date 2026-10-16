@@ -328,11 +328,13 @@ describe("Computed keys match a brute-force reading of the Dataset", () => {
       const better = stores.filter((each) => (order === "descending" ? each > stores[index]! : each < stores[index]!)).length
       expect(result(predicate(row("r", `Item ${index + 1}`), rank("place", "r", "Stores", order)), dataset))
         .toEqual({ kind: "number", value: better + 1 })
-      // The first row of the sort is the first row with the best value.
+      // The first row of the sort is the row with the best value, and a tie
+      // for the best has no first row.
       const best = order === "descending" ? Math.max(...stores) : Math.min(...stores)
       const first = stores.indexOf(best)
-      expect(result(predicate(sort("s", "Stores", order), pick("top", "s", 1), label("name", "top")), dataset))
-        .toEqual({ kind: "words", value: `item ${first + 1}` })
+      const top = evaluate(predicate(sort("s", "Stores", order), pick("top", "s", 1), label("name", "top")), dataset)
+      if (stores.filter((each) => each === best).length > 1) expect("problem" in top).toBe(true)
+      else expect(top).toEqual({ value: { kind: "words", value: `item ${first + 1}` } })
     }))
   })
 

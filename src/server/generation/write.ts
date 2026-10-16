@@ -98,7 +98,8 @@ export const writeItem = (input: ItemToWrite) =>
     const ids: Array<string> = []
     for (const [index, question] of item.questions.entries()) {
       const seconds = input.seconds.predicates[index] ?? []
-      const reasons = [...input.checks, ...disagreements(question, item.datasets, seconds)]
+      const titles = item.stimulus.kind === "tabs" ? item.stimulus.tabs.map((tab) => tab.title) : []
+      const reasons = [...input.checks, ...disagreements(question, item.datasets, seconds, titles)]
       const text = comparableText(question.stem, question.parts)
       const questionId = crypto.randomUUID()
       ids.push(questionId)
@@ -156,19 +157,23 @@ export const writeItem = (input: ItemToWrite) =>
         }
         const dataset = item.datasets[part.statement.dataset] ?? null
         const second = seconds[position] ?? null
-        const again = second === null || dataset === null || part.kind === "column-choice" ? undefined : evaluate(second, dataset)
+        // The second predicate runs on the tab its reading chose.
+        const secondData = second === null ? null : item.datasets[second.dataset ?? part.statement.dataset] ?? null
+        const again = second === null || secondData === null || part.kind === "column-choice"
+          ? undefined
+          : evaluate(second.predicate, secondData)
         yield* db.insert(statementPredicates).values({
           partId,
           kind: "computed",
           datasetId: stimulus.datasetIds[part.statement.dataset] ?? null,
           predicate: encodePredicate(part.statement.predicate),
-          second: encodePredicate(second),
-          result: dataset === null ? null : describeValue(part.statement.result, dataset),
-          secondResult: again === undefined || dataset === null
+          second: encodePredicate(second?.predicate ?? null),
+          result: dataset === null ? null : part.kind === "column-choice" ? null : describeValue(part.statement.result, dataset),
+          secondResult: again === undefined || secondData === null
             ? null
             : "problem" in again
             ? again.problem
-            : describeValue(again.value, dataset),
+            : describeValue(again.value, secondData),
           approximate: part.statement.approximate,
           model: input.seconds.model,
           promptVersion: input.seconds.promptVersion,

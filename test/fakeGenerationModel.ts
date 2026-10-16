@@ -289,12 +289,20 @@ export const generatedKeys: ReadonlyMap<string, string> = new Map([
   ...msrItem.questions.map((question, index) => [question.intro, msrKeys[index]!] as const)
 ])
 
-// Each statement's or blank's words, with its predicate.
-const predicates = new Map<string, Predicate>([
-  ...taItem.statements.map((each) => [each.text, each.predicate] as const),
-  ...giItem.blanks.map((each) => [each.text, each.predicate] as const),
+// Each statement's or blank's words, with its predicate, whether the blank
+// is approximate, and the tab it reads.
+interface Reading {
+  readonly predicate: Predicate
+  readonly approximate: boolean
+  readonly tab: number | null
+}
+const predicates = new Map<string, Reading>([
+  ...taItem.statements.map((each) => [each.text, { predicate: each.predicate, approximate: false, tab: null }] as const),
+  ...giItem.blanks.map((each) => [each.text, { predicate: each.predicate, approximate: each.approximate, tab: null }] as const),
   ...msrItem.questions.flatMap((question) =>
-    question.statements.flatMap((each) => (each.predicate === null ? [] : [[each.text, each.predicate] as const]))
+    question.statements.flatMap((each) =>
+      each.predicate === null ? [] : [[each.text, { predicate: each.predicate, approximate: false, tab: each.tab }] as const]
+    )
   )
 ])
 
@@ -354,8 +362,8 @@ export const makeFakeGenerationModel = (options: FakeGeneration = {}) => {
     if (system.includes("You check Data Insights questions")) {
       const words = /^The (?:statement to judge|sentence to complete): (.*)$/m.exec(asked(request))?.[1] ?? ""
       const given = predicates.get(words)
-      if (given === undefined) return reply({ predicate: predicate(count("n")) })
-      return reply({ predicate: options.disagree?.has(words) === true ? otherReading(given) : given })
+      if (given === undefined) return reply({ predicate: predicate(count("n")), approximate: false, tab: null })
+      return reply({ ...given, predicate: options.disagree?.has(words) === true ? otherReading(given.predicate) : given.predicate })
     }
     return enrichment(request)
   }
