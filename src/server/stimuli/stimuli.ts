@@ -44,7 +44,8 @@ type StimulusRow = typeof stimuli.$inferSelect
 const contentOf = (row: StimulusRow, sets: ReadonlyMap<string, Dataset>) => ({
   body: row.body,
   dataset: row.datasetId === null ? null : sets.get(row.datasetId) ?? null,
-  image: row.kind === "chart" || row.kind === "figure" ? stimulusImagePath(row.id) : null
+  // A figure has an image only once its page band was drawn.
+  image: row.kind === "chart" || (row.kind === "figure" && row.figure !== null) ? stimulusImagePath(row.id) : null
 })
 
 // Each Stimulus with its tabs, by id.
@@ -59,6 +60,7 @@ export const stimulusViews = (ids: ReadonlyArray<string>) =>
     return new Map(own.map((row) => [
       row.id,
       new StimulusView({
+        id: row.id,
         kind: row.kind as StimulusView["kind"],
         ...contentOf(row, sets),
         tabs: tabs.filter((tab) => tab.parentId === row.id).map((tab) =>

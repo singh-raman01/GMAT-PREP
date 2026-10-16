@@ -68,6 +68,10 @@ const parseNumber = (text: string): number | undefined => {
 
 const two = (digits: string) => digits.padStart(2, "0")
 
+// A month from 1 to 12 and a day from 1 to 31, as a date can have.
+const validDate = (month: string, day?: string) =>
+  Number(month) >= 1 && Number(month) <= 12 && (day === undefined || (Number(day) >= 1 && Number(day) <= 31))
+
 const MonthNumbers: Readonly<Record<string, number>> = {
   jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3, apr: 4, april: 4, may: 5, jun: 6, june: 6,
   jul: 7, july: 7, aug: 8, august: 8, sep: 9, sept: 9, september: 9, oct: 10, october: 10,
@@ -85,9 +89,10 @@ const parseDate = (text: string): string | undefined => {
   let match = /^(?:FY\s?)?(\d{4})$/i.exec(text)
   if (match !== null) return match[1]
   match = /^(\d{4})-(\d{2})(?:-(\d{2}))?$/.exec(text)
-  if (match !== null) return text
+  if (match !== null) return validDate(match[2]!, match[3]) ? text : undefined
+  // Month first, as American books print dates; a month past 12 is no date.
   match = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(text)
-  if (match !== null) return `${match[3]}-${two(match[1]!)}-${two(match[2]!)}`
+  if (match !== null) return validDate(match[1]!, match[2]) ? `${match[3]}-${two(match[1]!)}-${two(match[2]!)}` : undefined
   match = /^Q([1-4])\s+(\d{4})$/i.exec(text) ?? /^(\d{4})\s+Q([1-4])$/i.exec(text)
   if (match !== null) {
     const [year, quarter] = match[1]!.length === 4 ? [match[1]!, match[2]!] : [match[2]!, match[1]!]
@@ -126,12 +131,15 @@ export const parseCell = (type: ColumnType, printed: string): Parsed => {
       const value = parseNumber(text)
       return value === undefined ? { problem: `"${printed.trim()}" is not a number.` } : { value }
     }
+    // The sign may sit inside the brackets of a negative: (3.5%), ($1,200).
     case "percent": {
-      const value = parseNumber(text.replace(/\s*(?:%|percent)$/i, ""))
+      const value = parseNumber(text.replace(/\s*(?:%|percent)(?=\)?$)/i, ""))
       return value === undefined ? { problem: `"${printed.trim()}" is not a percent.` } : { value }
     }
     case "currency": {
-      const value = parseNumber(text.replace(/^([+-]?)\s*[$€£¥₹]\s*/, "$1").replace(/\s*[$€£¥₹]$/, ""))
+      const value = parseNumber(
+        text.replace(/^([+-]?\(?)\s*[$€£¥₹]\s*/, "$1").replace(/\s*[$€£¥₹](?=\)?$)/, "")
+      )
       return value === undefined ? { problem: `"${printed.trim()}" is not an amount of money.` } : { value }
     }
     case "date": {

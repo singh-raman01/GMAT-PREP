@@ -345,7 +345,20 @@ export interface ReadResult {
 const toReading = (role: MapRole, group: TypeGroup, value: unknown): PageReading =>
   ({ role, group, value }) as PageReading
 
-// The stored reading of a page, if there is one.
+// Whether a stored reading stands for a reading with the current prompt: it
+// came from the same prompt, or its reply still reads in the current shape.
+// One in another shape, as a mixed answer key read before keys had Parts, is
+// read again.
+export const readingUsable = (
+  row: { readonly role: string; readonly group: string; readonly items: string; readonly promptVersion: string },
+  taxonomy: TaxonomyView
+) => {
+  const prompt = promptFor(row.role as MapRole, row.group as TypeGroup, taxonomy)
+  return row.promptVersion === prompt.promptVersion ||
+    Option.isSome(Schema.decodeUnknownOption(Schema.fromJsonString(prompt.output))(row.items))
+}
+
+// The stored reading of a page, if there is one in the current prompt's shape.
 export const storedReading = (bookId: string, page: number, role: MapRole, group: TypeGroup) =>
   Effect.gen(function*() {
     const db = yield* Db
@@ -405,7 +418,8 @@ const askModel = (input: {
     }
   })
 
-// Reads a page in a role, or returns the reading stored before.
+// Reads a page in a role, or returns the reading stored before. A stored
+// reading in another shape is replaced.
 export const readPage = (input: {
   readonly jobId: string
   readonly bookId: string
@@ -428,7 +442,10 @@ export const readPage = (input: {
       model: reply.model,
       promptVersion: reply.promptVersion,
       createdAt: now
-    }).onConflictDoNothing().pipe(Effect.orDie)
+    }).onConflictDoUpdate({
+      target: [pageReadings.bookId, pageReadings.page, pageReadings.role, pageReadings.group],
+      set: { items, model: reply.model, promptVersion: reply.promptVersion, createdAt: now }
+    }).pipe(Effect.orDie)
     return {
       reading,
       tokens: reply.tokensIn + reply.tokensOut,

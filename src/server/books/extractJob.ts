@@ -29,7 +29,7 @@ import { FigureFiles } from "./FigureFiles.ts"
 import { drawBand } from "./figures.ts"
 import { type Candidate, contents, datasetOfDraft, linkSet, type Reason } from "./linking.ts"
 import { questionBand } from "./pdf.ts"
-import { type PageReading, readPage, readsGroup, storedReading } from "./readings.ts"
+import { type PageReading, readingUsable, readPage, readsGroup, storedReading } from "./readings.ts"
 
 // Extraction for one Book Map version: every page of the ranges it can read
 // is read once in its role, one page a step, then each question set is
@@ -129,9 +129,17 @@ const readStep = (jobId: string, params: typeof Params.Type, stepsDone: number) 
     for (const [page, detail] of loaded.unread) {
       if (!held.has(page)) yield* holdUnreadPage(params.bookId, page, detail)
     }
-    const done = yield* db.select({ page: pageReadings.page, role: pageReadings.role, group: pageReadings.group })
-      .from(pageReadings).where(eq(pageReadings.bookId, params.bookId)).pipe(Effect.orDie)
-    const read = new Set(done.map((row) => `${row.page}|${row.role}|${row.group}`))
+    const done = yield* db.select({
+      page: pageReadings.page,
+      role: pageReadings.role,
+      group: pageReadings.group,
+      items: pageReadings.items,
+      promptVersion: pageReadings.promptVersion
+    }).from(pageReadings).where(eq(pageReadings.bookId, params.bookId)).pipe(Effect.orDie)
+    const taxonomy = (yield* Taxonomy).view
+    const read = new Set(
+      done.filter((row) => readingUsable(row, taxonomy)).map((row) => `${row.page}|${row.role}|${row.group}`)
+    )
     const left = loaded.plan.filter((entry) => !read.has(`${entry.page}|${entry.role}|${entry.group}`))
     const stepsTotal = stepsDone + left.length + loaded.sets.length + 1
     const next = left[0]

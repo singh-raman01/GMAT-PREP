@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { asc, eq, inArray } from "drizzle-orm"
+import { and, asc, eq, inArray } from "drizzle-orm"
 import { Effect } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import type { BookId } from "../src/api/Books.ts"
 import { Db } from "../src/server/db/Database.ts"
-import { datasets, options, parts, questions, sources, stimuli } from "../src/server/db/schema.ts"
+import { datasets, options, pageReadings, parts, questions, sources, stimuli } from "../src/server/db/schema.ts"
 import { AllJobKinds } from "../src/server/jobs/kinds/index.ts"
-import { configure, confirmAndExtract, curatorBrowser, extractBook, proposedFrom, rangesOf, withModel } from "./bookFlow.ts"
+import { configure, confirmAndExtract, curatorBrowser, extractBook, proposedFrom, rangesOf, sentFor, withModel } from "./bookFlow.ts"
 import { bookOfPages, DiNumbers } from "./fixtures/book.ts"
 import { advanceUntil, runWithWorker } from "./harness.ts"
 
@@ -213,6 +213,241 @@ describe("Charts and older Books", () => {
       }),
       AllJobKinds
     ), 120_000)
+})
+
+describe("Keys for several Parts", () => {
+  // A Table Analysis Question whose printed answer for one statement is
+  // neither Yes nor No has no key for any Part.
+  const taBook = () =>
+    bookOfPages("Override Drills", [
+      [
+        "Table Analysis",
+        "1. The table shows the clubs' members.",
+        "Club | Members",
+        "Chess | 1,200",
+        "Golf | 980",
+        "For each statement, choose Yes if it is true, otherwise No.",
+        "Chess has more members than Golf.",
+        "Golf has fewer than 500 members.",
+        "The two clubs have 2,180 members in all."
+      ],
+      ["Data Insights Answer Key", "1. Yes, Maybe, Yes"]
+    ])
+
+  test("a Question stays held until a Key Override has given every Part a key", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        yield* withModel({ solve: (stem) => (/clubs' members/.test(stem) ? "A,B,A" : undefined) })
+        const curator = yield* curatorBrowser
+        const book = yield* extractBook(curator, yield* Effect.promise(taBook), "Override Drills")
+        const [held] = yield* curator.api.review.list()
+        expect(held!.reasons.map((reason) => reason.code)).toEqual(["no-key"])
+        const override = (part: number, key: string) =>
+          Effect.gen(function*() {
+            const [item] = yield* advanceUntil(
+              curator.api.review.list().pipe(Effect.map((items) => (items.length > 0 ? items : undefined))),
+              { step: "200 millis", maxSteps: 3000 }
+            )
+            yield* curator.api.review.overrideKey({
+              params: { id: item!.id },
+              payload: { part, key, reason: "The printed answer is a misprint." }
+            })
+            return yield* advanceUntil(
+              itemOf(book.book.id, 1).pipe(Effect.map((found) => (found.question.status === "draft" ? undefined : found))),
+              { step: "200 millis", maxSteps: 3000 }
+            )
+          })
+        // The unclear statement first: the other two still have no key.
+        const one = yield* override(1, "B")
+        expect(one.question.status).toBe("held")
+        expect(one.parts.map((part) => part.key)).toEqual([null, "B", null])
+        const [again] = yield* curator.api.review.list()
+        expect(again!.reasons).toEqual([{ code: "no-key", detail: "Parts 1 and 3 have no key yet." }])
+        yield* override(0, "A")
+        const all = yield* override(2, "A")
+        expect(all.question.status).toBe("published")
+        expect(all.parts.map((part) => part.key)).toEqual(["A", "B", "A"])
+      }),
+      AllJobKinds
+    ), 120_000)
+})
+
+// One Table Analysis question as a Book prints it, with the first club's
+// members and the answer key as given.
+const clubBook = (title: string, chess: string, key = "Yes, No, Yes") =>
+  bookOfPages(title, [
+    [
+      "Table Analysis",
+      "1. The table shows the clubs' members.",
+      "Club | Members",
+      `Chess | ${chess}`,
+      "Golf | 980",
+      "For each statement, choose Yes if it is true, otherwise No.",
+      "Chess has more members than Golf.",
+      "Golf has fewer than 500 members.",
+      "The two clubs have 2,180 members in all."
+    ],
+    ["Data Insights Answer Key", `1. ${key}`]
+  ])
+
+// The Data Insights Questions of a type, with how many Sources each has.
+const bankOf = (questionType: string) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const rows = yield* db.select().from(questions).where(eq(questions.questionType, questionType))
+      .orderBy(asc(questions.createdAt)).pipe(Effect.orDie)
+    return yield* Effect.forEach(rows, (question) =>
+      db.select({ id: sources.id }).from(sources).where(eq(sources.questionId, question.id)).pipe(
+        Effect.orDie,
+        Effect.map((found) => ({ question, sources: found.length, reasons: JSON.parse(question.linkReasons) as Array<{ code: string; detail: string }> }))
+      ))
+  })
+
+describe("The same Data Insights Question in two Books", () => {
+  test("a table read with a separator left out is the same table, and one with a number changed is a near one", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        yield* withModel({ solve: (stem) => (/clubs' members/.test(stem) ? "A,B,A" : undefined) })
+        const curator = yield* curatorBrowser
+        yield* extractBook(curator, yield* Effect.promise(() => clubBook("Club Drills", "1,200")), "Club Drills")
+        yield* extractBook(curator, yield* Effect.promise(() => clubBook("Club Drills, rescan", "1200")), "Club Drills, rescan")
+        const merged = yield* bankOf("di.ta")
+        expect(merged.map((each) => [each.question.status, each.sources])).toEqual([["published", 2]])
+        yield* extractBook(curator, yield* Effect.promise(() => clubBook("Club Drills, second edition", "1,210")), "Club Drills, second edition")
+        const [first, second] = yield* bankOf("di.ta")
+        expect(second!.question.status).toBe("held")
+        expect(second!.question.relatedQuestionId).toBe(first!.question.id)
+        // Its table is the first one's with a number changed.
+        expect(second!.reasons).toEqual([
+          { code: "near-match", detail: "It is another Question with different numbers: a Variant, or the same Question?" }
+        ])
+      }),
+      AllJobKinds
+    ), 180_000)
+
+  test("a Question about a figure is compared with the Questions about every figure", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const figureBook = (title: string) =>
+          bookOfPages(title, [
+            [
+              "Graphics Interpretation",
+              "1. The figure shows the floor plan of an office.",
+              "[A floor plan is printed here.]",
+              "The office has [blank] rooms. (three | four | five)"
+            ],
+            ["Data Insights Answer Key", "1. four"]
+          ])
+        yield* extractBook(curator, yield* Effect.promise(() => figureBook("Office Drills")), "Office Drills")
+        yield* extractBook(curator, yield* Effect.promise(() => figureBook("Office Drills, reprint")), "Office Drills, reprint")
+        const [first, second] = yield* bankOf("di.gi")
+        expect(first!.reasons.map((reason) => reason.code)).toEqual(["figure"])
+        expect(second!.question.stimulusId).not.toBe(first!.question.stimulusId)
+        expect(second!.question.relatedQuestionId).toBe(first!.question.id)
+        expect(second!.reasons).toEqual([
+          expect.objectContaining({ code: "figure" }),
+          {
+            code: "near-match",
+            detail:
+              "It is worded like another Question with a figure: check that the figures are the same, then merge it or keep it as a Variant."
+          }
+        ])
+      }),
+      AllJobKinds
+    ), 180_000)
+
+  test("a Key Override of one Part settles a Source's key for that Part only", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        yield* withModel({ solve: (stem) => (/clubs' members/.test(stem) ? "A,B,A" : undefined) })
+        const curator = yield* curatorBrowser
+        // The first Book's answer for the second statement is unclear, and
+        // the Curator gives it from the errata.
+        yield* extractBook(curator, yield* Effect.promise(() => clubBook("Club Drills", "1,200", "Yes, Maybe, Yes")), "Club Drills")
+        const [held] = yield* curator.api.review.list()
+        yield* curator.api.review.overrideKey({
+          params: { id: held!.id },
+          payload: { part: 1, key: "B", reason: "The errata say so." }
+        })
+        // A reprint gives Yes for it, where the override says No, and agrees
+        // on the others: the override settles the one it differs on.
+        const reprint = yield* extractBook(
+          curator,
+          yield* Effect.promise(() => clubBook("Club Drills, reprint", "1,200", "Yes, Yes, Yes")),
+          "Club Drills, reprint"
+        )
+        const merged = yield* advanceUntil(
+          bankOf("di.ta").pipe(Effect.map(([only]) => (only?.question.status === "published" ? only : undefined))),
+          { step: "200 millis", maxSteps: 3000 }
+        )
+        expect([merged.sources, merged.reasons]).toEqual([2, []])
+        // The reprint's answer key read again, now with No for the first
+        // statement, which no override covers.
+        const db = yield* Db
+        const [answerPage] = yield* db.select().from(pageReadings)
+          .where(and(eq(pageReadings.bookId, reprint.book.id), eq(pageReadings.role, "answer-key"))).pipe(Effect.orDie)
+        const stored = JSON.parse(answerPage!.items) as { answers: Array<Record<string, unknown>> }
+        const changed = {
+          answers: stored.answers.map((answer) => (answer.number === 1 ? { ...answer, parts: ["No", "Yes", "Yes"] } : answer))
+        }
+        yield* db.update(pageReadings).set({ items: JSON.stringify(changed) })
+          .where(and(
+            eq(pageReadings.bookId, reprint.book.id),
+            eq(pageReadings.page, answerPage!.page),
+            eq(pageReadings.role, "answer-key"),
+            eq(pageReadings.group, answerPage!.group)
+          )).pipe(Effect.orDie)
+        yield* confirmAndExtract(curator, reprint.book.id, rangesOf(reprint))
+        const [after] = yield* bankOf("di.ta")
+        expect(after!.reasons).toEqual([{
+          code: "source-key",
+          detail: "Club Drills, reprint, Data Insights, question 1 gives the key B,A,A; this Question's key is A,B,A."
+        }])
+      }),
+      AllJobKinds
+    ), 180_000)
+})
+
+describe("Readings stored in an older shape", () => {
+  test("a mixed answer key read before keys had Parts is read again, so its Questions keep their keys", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const proposed = yield* proposedFrom(curator, { edition: "First edition", di: true })
+        const id = proposed.book.id
+        yield* confirmAndExtract(curator, id, rangesOf(proposed))
+        // The MSR question with five choices, keyed C by the mixed answer key.
+        const choice = di.sources[0]
+        expect((yield* itemOf(id, choice)).parts.map((part) => part.key)).toEqual(["C"])
+        const db = yield* Db
+        const [row] = yield* db.select().from(pageReadings)
+          .where(and(eq(pageReadings.bookId, id), eq(pageReadings.role, "answer-key"), eq(pageReadings.group, "mixed")))
+          .pipe(Effect.orDie)
+        // As ticket 08 stored a mixed answer-key page: letters only.
+        yield* db.update(pageReadings)
+          .set({ items: JSON.stringify({ answers: [{ number: choice, answer: "C" }] }), promptVersion: "read-answer-key@1" })
+          .where(and(
+            eq(pageReadings.bookId, id),
+            eq(pageReadings.page, row!.page),
+            eq(pageReadings.role, "answer-key"),
+            eq(pageReadings.group, "mixed")
+          )).pipe(Effect.orDie)
+        const asked = sentFor("may have several parts").pipe(Effect.map((requests) => requests.length))
+        const before = yield* asked
+        yield* confirmAndExtract(curator, id, rangesOf(proposed))
+        expect(yield* asked).toBe(before + 1)
+        const after = yield* itemOf(id, choice)
+        expect(after.parts.map((part) => part.key)).toEqual(["C"])
+        expect(after.question.status).toBe("published")
+      }),
+      AllJobKinds
+    ), 180_000)
 })
 
 describe("The golden set with Data Insights Questions", () => {
