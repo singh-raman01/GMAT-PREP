@@ -32,6 +32,8 @@ const Checkpoint = Schema.Struct({
 
 export const GoldenExpected = Schema.Struct({
   questionType: Schema.String,
+  // The passage, for a Reading Comprehension Question.
+  passage: Schema.optional(Schema.NullOr(Schema.String)),
   stem: Schema.String,
   options: Schema.Array(Schema.Struct({ label: Schema.String, text: Schema.String })),
   key: Schema.NullOr(Schema.String),
@@ -91,8 +93,12 @@ const latestRanges = (bookId: string) =>
     return { ranges: map === undefined ? [] : decodeRanges(map.ranges), pageCount: book?.pageCount ?? 0 }
   })
 
-// The pages to read again: each golden Question's own page, and every page
-// of its set's answer key and explanations.
+// How many pages before its question a passage may start.
+const PassageReach = 3
+
+// The pages to read again: each golden Question's own page, the pages before
+// it where its passage may start, and every page of its set's answer key and
+// explanations.
 const plan = (questionIds: ReadonlyArray<string> | undefined) => Effect.gen(function*() {
   const rows = yield* goldenRows(questionIds)
   const bookId = rows[0]?.bookId
@@ -106,6 +112,12 @@ const plan = (questionIds: ReadonlyArray<string> | undefined) => Effect.gen(func
     const mine = ranges.filter((range) => setKey(range.set) === setKey(row.set))
     const own = mine.find((range) => range.role === "questions" && range.firstPage <= row.page && row.page <= range.lastPage)
     if (own !== undefined) add({ page: row.page, role: "questions", group: own.group })
+    // A passage starts on its question's page or up to a few pages before.
+    if (own !== undefined && own.group === "rc") {
+      for (let page = Math.max(own.firstPage, row.page - PassageReach); page < row.page; page++) {
+        add({ page, role: "questions", group: own.group })
+      }
+    }
     for (const range of mine.filter((each) => each.role === "answer-key" || each.role === "explanations")) {
       for (let page = range.firstPage; page <= Math.min(range.lastPage, pageCount); page++) {
         add({ page, role: range.role, group: range.group })
@@ -156,7 +168,11 @@ const tagStep = (jobId: string, params: typeof Params.Type, index: number) =>
     const taxonomy = (yield* Taxonomy).view
     // Tagged with the input production tagging has, the Book's explanation
     // included.
-    const tagged = yield* tagQuestion(jobId, taxonomy, { ...row.expected, explanation: row.explanation }).pipe(
+    const tagged = yield* tagQuestion(jobId, taxonomy, {
+      ...row.expected,
+      stimulus: row.expected.passage ?? null,
+      explanation: row.explanation
+    }).pipe(
       Effect.catchTag("LlmInvalidReply", () => Effect.succeed(undefined))
     )
     yield* db.insert(goldenRunTags).values({
@@ -179,9 +195,10 @@ const reportStep = (params: typeof Params.Type) =>
     const runId = params.runId
     const planned = yield* plan(params.questionIds)
     const stored = yield* db.select().from(goldenRunReadings).where(eq(goldenRunReadings.runId, runId)).pipe(Effect.orDie)
+    const taxonomy = (yield* Taxonomy).view
     const fresh = (page: number, role: MapRole): ReadonlyArray<PageReading> =>
       stored.filter((row) => row.page === page && row.role === role).flatMap((row) =>
-        Option.toArray(decodeReading(row.role as MapRole, row.group as TypeGroup, row.items))
+        Option.toArray(decodeReading(row.role as MapRole, row.group as TypeGroup, row.items, taxonomy))
       )
     const { ranges, pageCount } = planned.bookId === undefined ? { ranges: [], pageCount: 0 } : yield* latestRanges(planned.bookId)
     const pagesOf = (set: string, role: MapRole) =>
@@ -191,7 +208,11 @@ const reportStep = (params: typeof Params.Type) =>
     // Each set linked again from the fresh readings.
     const linked = new Map<string, ReadonlyArray<Candidate>>()
     for (const set of new Set(planned.rows.map((row) => setKey(row.set)))) {
-      const pages = [...new Set(planned.rows.filter((row) => setKey(row.set) === set).map((row) => row.page))].toSorted((a, b) => a - b)
+      const pages = [
+        ...new Set(stored.filter((row) => row.role === "questions").map((row) => row.page).filter((page) =>
+          planned.rows.some((row) => setKey(row.set) === set && page <= row.page && page >= row.page - PassageReach)
+        ))
+      ].toSorted((a, b) => a - b)
       const items = linkSet({
         questions: pages.flatMap((page) => fresh(page, "questions").map((reading) => ({ page, reading }))),
         answers: pagesOf(set, "answer-key").flatMap((page) => fresh(page, "answer-key")),
@@ -206,11 +227,22 @@ const reportStep = (params: typeof Params.Type) =>
       const tagged = tags.find((each) => each.questionId === row.questionId)
       const item: GoldenItem | null = found === undefined
         ? null
-        : { stem: found.stem, options: found.options, key: found.key }
+        : { passage: found.passage, stem: found.stem, options: found.options, key: found.key }
       const again: GoldenTags | null = tagged === undefined || tagged.primarySkill === null
         ? null
-        : { primarySkill: tagged.primarySkill, secondarySkills: JSON.parse(tagged.secondarySkills) as ReadonlyArray<string> }
-      return { questionId: row.questionId, set: row.set, number: row.number, expected: row.expected, item, tags: again }
+        : {
+          questionType: found?.questionType ?? "",
+          primarySkill: tagged.primarySkill,
+          secondarySkills: JSON.parse(tagged.secondarySkills) as ReadonlyArray<string>
+        }
+      return {
+        questionId: row.questionId,
+        set: row.set,
+        number: row.number,
+        expected: { ...row.expected, passage: row.expected.passage ?? null },
+        item,
+        tags: again
+      }
     })
     const now = yield* Clock.currentTimeMillis
     const report = goldenReport(entries, now)

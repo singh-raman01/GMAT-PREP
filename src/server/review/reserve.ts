@@ -1,9 +1,9 @@
-import { and, eq, isNull, notInArray, or } from "drizzle-orm"
+import { and, eq, inArray, isNull, notInArray, or } from "drizzle-orm"
 import { Clock, Effect } from "effect"
-import { fitsSlot } from "../../api/blueprint.ts"
+import { fitsSlot, groupOf } from "../../api/blueprint.ts"
 import { bandOf, type DifficultyBand } from "../../api/difficulty.ts"
 import { Db } from "../db/Database.ts"
-import { books, jobs, questions, sources } from "../db/schema.ts"
+import { books, jobs, questions, sources, stimuli } from "../db/schema.ts"
 
 // The Mock Reserve (ADR 0008): a quarter of each Section's Questions from
 // each Book, held back for Mocks. Membership is decided per unit, so an RC
@@ -16,6 +16,8 @@ import { books, jobs, questions, sources } from "../db/schema.ts"
 export interface ReserveUnit {
   readonly id: string
   readonly size: number
+  // The type of its Questions, or of one of them for a passage, whose
+  // Questions differ in type within one Blueprint group.
   readonly questionType: string
   readonly band: DifficultyBand
   // Orders units within a stratum, the same way every time.
@@ -25,6 +27,12 @@ export interface ReserveUnit {
 }
 
 const ReserveShare = 0.25
+
+// What a unit's share is counted by: a single Question's Question Type, or a
+// passage's or set's Blueprint group, since a passage's Questions differ in
+// type.
+const shareOf = (unit: { readonly size: number; readonly questionType: string }) =>
+  unit.size > 1 ? groupOf(unit.questionType)?.name ?? unit.questionType : unit.questionType
 
 // Shares of a total, in whole units, that add up to it: each part's exact
 // share rounded down, with what is left going to the largest remainders.
@@ -56,7 +64,7 @@ export const reserveDecisions = (units: ReadonlyArray<ReserveUnit>): ReadonlyMap
   for (const unit of units) {
     if (unit.reserve === null && !fitsSlot(unit.questionType, unit.size)) decisions.set(unit.id, false)
   }
-  const stratumOf = (unit: ReserveUnit) => `${unit.questionType}|${unit.band}`
+  const stratumOf = (unit: ReserveUnit) => `${shareOf(unit)}|${unit.band}`
   const sizes = new Map<string, number>()
   const held = new Map<string, number>()
   for (const unit of fitting) {
@@ -86,7 +94,8 @@ export const reserveDecisions = (units: ReadonlyArray<ReserveUnit>): ReadonlyMap
 
 // Decides the Reserve for a Book's published Questions not decided yet: the
 // Questions the Book itself brought, not those it only added a Source to.
-// Questions have no Stimulus yet, so each is a unit of its own.
+// A passage's published Questions are one unit, and one published after the
+// passage was decided takes its decision.
 export const assignReserve = (bookId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
@@ -103,30 +112,46 @@ const decideReserve = (bookId: string) =>
       questionType: questions.questionType,
       seed: questions.difficultySeed,
       hash: questions.normalizedHash,
-      reserve: questions.reserve
+      reserve: questions.reserve,
+      stimulusId: questions.stimulusId,
+      stimulusHash: stimuli.normalizedHash
     }).from(questions)
       .innerJoin(sources, and(eq(sources.questionId, questions.id), eq(sources.bookId, bookId), eq(sources.merged, false)))
+      .leftJoin(stimuli, eq(stimuli.id, questions.stimulusId))
       .where(eq(questions.status, "published"))
+    const members = Map.groupBy(rows, (row) => row.stimulusId ?? row.id)
     const sections = new Map<string, Array<ReserveUnit>>()
-    for (const row of rows) {
-      const units = sections.get(row.section) ?? []
-      units.push({
-        id: row.id,
-        size: 1,
-        questionType: row.questionType,
-        band: bandOf(row.seed ?? 0),
-        hash: row.hash,
-        reserve: row.reserve
-      })
-      sections.set(row.section, units)
-    }
     let joined = 0
-    for (const units of sections.values()) {
-      for (const [id, reserve] of reserveDecisions(units)) {
+    const decide = (ids: ReadonlyArray<string>, reserve: boolean) =>
+      Effect.gen(function*() {
         // A Question decided meanwhile keeps that decision.
         const decided = yield* db.update(questions).set({ reserve, reserveDecidedAt: now })
-          .where(and(eq(questions.id, id), isNull(questions.reserve))).returning({ id: questions.id })
-        if (reserve && decided.length > 0) joined += 1
+          .where(and(inArray(questions.id, [...ids]), isNull(questions.reserve))).returning({ id: questions.id })
+        if (reserve) joined += decided.length
+      })
+    for (const [id, unit] of members) {
+      const first = unit[0]!
+      const reserve = unit.find((row) => row.reserve !== null)?.reserve ?? null
+      // A passage decided before takes in the Questions published since.
+      if (reserve !== null) {
+        const undecided = unit.filter((row) => row.reserve === null).map((row) => row.id)
+        if (undecided.length > 0) yield* decide(undecided, reserve)
+      }
+      const seed = unit.reduce((total, row) => total + (row.seed ?? 0), 0) / unit.length
+      const units = sections.get(first.section) ?? []
+      units.push({
+        id,
+        size: unit.length,
+        questionType: first.questionType,
+        band: bandOf(seed),
+        hash: first.stimulusHash ?? first.hash,
+        reserve
+      })
+      sections.set(first.section, units)
+    }
+    for (const units of sections.values()) {
+      for (const [id, reserve] of reserveDecisions(units)) {
+        yield* decide(members.get(id)!.map((row) => row.id), reserve)
       }
     }
     return joined
@@ -152,34 +177,46 @@ export const assignUndecided = Effect.gen(function*() {
   return joined
 })
 
-// A held Reserve Question the Curator may release.
-export interface HeldQuestion {
+// A held Reserve unit the Curator may release: one Question, or a passage's
+// Questions together.
+export interface HeldUnit {
   readonly id: string
+  readonly size: number
   readonly questionType: string
   readonly band: DifficultyBand
   readonly hash: string
 }
 
-// Which held Questions to release, so that what stays held keeps its spread
-// across Question Types and Difficulty Bands: each comes from the stratum
-// holding the most, and within it, the last in hash order.
-export const releaseOrder = (held: ReadonlyArray<HeldQuestion>, count: number): ReadonlyArray<string> => {
-  const strata = new Map<string, Array<HeldQuestion>>()
-  for (const question of held) {
-    const key = `${question.questionType}|${question.band}`
-    strata.set(key, [...(strata.get(key) ?? []), question])
+// Which held units to release, up to count Questions, so that what stays
+// held keeps its spread across Question Types and Difficulty Bands: each
+// comes from the stratum holding the most Questions, and within it, the last
+// in hash order. A passage is released whole, so one with more Questions than
+// are left to release is passed over.
+export const releaseOrder = (held: ReadonlyArray<HeldUnit>, count: number): ReadonlyArray<string> => {
+  const strata = new Map<string, Array<HeldUnit>>()
+  for (const unit of held) {
+    const key = `${shareOf(unit)}|${unit.band}`
+    strata.set(key, [...(strata.get(key) ?? []), unit])
   }
   for (const members of strata.values()) members.sort((a, b) => b.hash.localeCompare(a.hash))
   const keys = [...strata.keys()].toSorted()
+  const questionsIn = (members: ReadonlyArray<HeldUnit>) => members.reduce((total, unit) => total + unit.size, 0)
   const picked: Array<string> = []
-  while (picked.length < count) {
-    let fullest: Array<HeldQuestion> | undefined
+  let left = count
+  while (left > 0) {
+    let fullest: string | undefined
     for (const key of keys) {
       const members = strata.get(key)!
-      if (members.length > (fullest?.length ?? 0)) fullest = members
+      if (members.some((unit) => unit.size <= left) && questionsIn(members) > questionsIn(strata.get(fullest ?? "") ?? [])) {
+        fullest = key
+      }
     }
     if (fullest === undefined) break
-    picked.push(fullest.shift()!.id)
+    const members = strata.get(fullest)!
+    const unit = members.find((each) => each.size <= left)!
+    strata.set(fullest, members.filter((each) => each !== unit))
+    picked.push(unit.id)
+    left -= unit.size
   }
   return picked
 }

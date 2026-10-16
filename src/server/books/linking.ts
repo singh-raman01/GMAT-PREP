@@ -1,6 +1,6 @@
 import type { ReasonCode } from "../../api/Review.ts"
 import { normalizeText, renderProblem } from "../../api/richText.ts"
-import type { PageReading, QuestionItem } from "./readings.ts"
+import type { PageReading } from "./readings.ts"
 
 // Pure rules for turning a question set's page readings into Questions: each
 // item linked to its key, explanation and difficulty label by number, then
@@ -20,6 +20,12 @@ export interface Candidate {
   readonly _tag: "Candidate"
   readonly number: number
   readonly page: number
+  // The Section and Question Type it is extracted as.
+  readonly section: string
+  readonly questionType: string
+  // The passage a Reading Comprehension question asks about; null for other
+  // questions, and for one whose passage the readings do not give.
+  readonly passage: string | null
   readonly stem: string
   readonly options: ReadonlyArray<{ readonly label: Letter; readonly text: string }>
   readonly figure: boolean
@@ -34,6 +40,47 @@ export interface Candidate {
   readonly explanationAnswers: ReadonlyArray<Letter>
   readonly explanation: string | null
   readonly label: BookLabel | null
+}
+
+// The five answer choices every Data Sufficiency question has.
+export const DsOptions: ReadonlyArray<{ readonly label: Letter; readonly text: string }> = [
+  { label: "A", text: "Statement (1) ALONE is sufficient, but statement (2) alone is not sufficient." },
+  { label: "B", text: "Statement (2) ALONE is sufficient, but statement (1) alone is not sufficient." },
+  { label: "C", text: "BOTH statements TOGETHER are sufficient, but NEITHER statement ALONE is sufficient." },
+  { label: "D", text: "EACH statement ALONE is sufficient." },
+  { label: "E", text: "Statements (1) and (2) TOGETHER are NOT sufficient." }
+]
+
+// A Data Sufficiency question's text: what it asks, then its statements.
+export const dsStem = (question: string, statements: ReadonlyArray<string>) =>
+  [question.trim(), ...statements.map((statement, index) => `(${index + 1}) ${statement.trim()}`)].join("\n\n")
+
+// The Taxonomy's rules for a verbal question's type, where the question's own
+// words settle it: a question about portions in boldface or about how an
+// argument proceeds is Argument structure; an EXCEPT question takes the task
+// its sentence names, so "each strengthens EXCEPT" is a strengthen question;
+// and a passage question about what, if true, would strengthen or weaken a
+// claim is Application. Otherwise the type the reading gave stands.
+export const settledType = (group: "cr" | "rc", stem: string, type: string) => {
+  // A Critical Reasoning stem is its argument, then the question asked.
+  const asked = stem.split(/\n\s*\n/).at(-1) ?? stem
+  if (group === "cr") {
+    if (/\bbold\s?faced?\b|\bmethods? of reasoning\b|\bproceeds by\b|\bargumentative (?:technique|strategy)\b/i.test(asked)) {
+      return "verbal.cr-structure"
+    }
+    const except = /[^.?!\n]*\bEXCEPT\b[^.?!\n]*/.exec(asked)?.[0]
+    if (except !== undefined && /\b(?:strengthen|support)/i.test(except)) return "verbal.cr-strengthen"
+    if (except !== undefined && /\b(?:weaken|undermine|casts? doubt|calls? into question)/i.test(except)) {
+      return "verbal.cr-weaken"
+    }
+  }
+  if (
+    group === "rc" && /\bif true\b/i.test(asked) &&
+    /\b(?:strengthen|weaken|undermine|support|casts? doubt|calls? into question)/i.test(asked)
+  ) {
+    return "verbal.rc-application"
+  }
+  return type
 }
 
 export interface Skip {
@@ -108,34 +155,94 @@ export const linkSet = (readings: SetReadings): ReadonlyArray<LinkedItem> => {
     if (!sameItem) linked.push({ _tag: "Skip", number, page, reason: "repeated-number" })
     return true
   }
+  // Each passage, by the numbers of the questions about it; a number two
+  // passages claim keeps the first.
+  const passages = new Map<number, string>()
+  for (const { reading } of readings.questions) {
+    if (reading.role !== "questions" || reading.group !== "rc") continue
+    for (const passage of reading.value.passages) {
+      for (const number of passage.questions) if (!passages.has(number)) passages.set(number, passage.text.trim())
+    }
+  }
+  const found = (number: number) => ({
+    keyAnswers: answers.get(number) ?? [],
+    explanation: explanations.get(number),
+    explanationAnswers: explanationAnswers.get(number) ?? [],
+    label: onlyValue(labels.get(number))
+  })
   for (const { page, reading } of readings.questions) {
     if (reading.role !== "questions") continue
-    if (reading.group === "sc") {
-      for (const number of reading.value.numbers) {
-        if (!repeated(number, page, null)) linked.push({ _tag: "Skip", number, page, reason: "sentence-correction" })
-      }
-      continue
-    }
-    for (const item of reading.value.questions) {
-      if (repeated(item.number, page, item.stem)) continue
-      if (item.retired !== null) {
-        linked.push({ _tag: "Skip", number: item.number, page, reason: item.retired })
-        continue
-      }
-      linked.push(candidateOf(item, page, {
-        keyAnswers: answers.get(item.number) ?? [],
-        explanation: explanations.get(item.number),
-        explanationAnswers: explanationAnswers.get(item.number) ?? [],
-        label: onlyValue(labels.get(item.number))
-      }))
+    switch (reading.group) {
+      case "sc":
+        for (const number of reading.value.numbers) {
+          if (!repeated(number, page, null)) linked.push({ _tag: "Skip", number, page, reason: "sentence-correction" })
+        }
+        break
+      case "ps":
+        for (const item of reading.value.questions) {
+          if (repeated(item.number, page, item.stem)) continue
+          if (item.retired !== null) {
+            linked.push({ _tag: "Skip", number: item.number, page, reason: item.retired })
+            continue
+          }
+          linked.push(candidateOf({ ...item, page, section: "quant", questionType: "quant.ps", passage: null }, found(item.number)))
+        }
+        break
+      case "ds":
+        for (const item of reading.value.questions) {
+          const stem = dsStem(item.question, item.statements)
+          if (repeated(item.number, page, stem)) continue
+          if (item.retired !== null) {
+            linked.push({ _tag: "Skip", number: item.number, page, reason: item.retired })
+            continue
+          }
+          linked.push(candidateOf({
+            number: item.number,
+            page,
+            section: "di",
+            questionType: "di.ds",
+            passage: null,
+            stem,
+            options: DsOptions,
+            figure: item.figure,
+            difficulty: item.difficulty
+          }, found(item.number)))
+        }
+        break
+      case "cr":
+      case "rc":
+        for (const item of reading.value.questions) {
+          if (repeated(item.number, page, item.stem)) continue
+          linked.push(candidateOf({
+            ...item,
+            page,
+            section: "verbal",
+            questionType: settledType(reading.group, item.stem, item.type),
+            passage: reading.group === "rc" ? passages.get(item.number) ?? null : null,
+            figure: false
+          }, found(item.number)))
+        }
+        break
     }
   }
   return linked
 }
 
+// What a page's reading gives for one question, whatever its group.
+interface ReadItem {
+  readonly number: number
+  readonly page: number
+  readonly section: string
+  readonly questionType: string
+  readonly passage: string | null
+  readonly stem: string
+  readonly options: ReadonlyArray<{ readonly label: Letter; readonly text: string }>
+  readonly figure: boolean
+  readonly difficulty: BookLabel | null
+}
+
 const candidateOf = (
-  item: QuestionItem,
-  page: number,
+  item: ReadItem,
   found: {
     readonly keyAnswers: ReadonlyArray<Letter>
     readonly explanation: { readonly text: string; readonly answer: Letter | null; readonly label: BookLabel | null } | undefined
@@ -148,7 +255,10 @@ const candidateOf = (
   return {
     _tag: "Candidate",
     number: item.number,
-    page,
+    page: item.page,
+    section: item.section,
+    questionType: item.questionType,
+    passage: item.passage,
     stem: item.stem.trim(),
     options: item.options.map((option) => ({ label: option.label, text: option.text.trim() })),
     figure: item.figure,
@@ -165,18 +275,21 @@ const candidateOf = (
 
 const Letters: ReadonlyArray<Letter> = ["A", "B", "C", "D", "E"]
 
-// Every problem a Problem Solving Question has on its own, before it is
-// compared with the Question Bank.
+// Every problem a Question has on its own, before it is compared with the
+// Question Bank. Each type read so far has five answer choices, A to E.
 export const candidateProblems = (candidate: Candidate): ReadonlyArray<Reason> => {
   const reasons: Array<Reason> = []
   const labels = candidate.options.map((option) => option.label)
   if (labels.length !== 5 || labels.some((label, index) => label !== Letters[index])) {
     reasons.push({
       code: "structure",
-      detail: `It has ${labels.length === 0 ? "no answer choices" : `the answer choices ${labels.join(", ")}`}; a Problem Solving Question has five, A to E.`
+      detail: `It has ${labels.length === 0 ? "no answer choices" : `the answer choices ${labels.join(", ")}`}; it should have five, A to E.`
     })
   }
   if (candidate.stem === "") reasons.push({ code: "structure", detail: "Its question text is empty." })
+  if (candidate.questionType.startsWith("verbal.rc-") && candidate.passage === null) {
+    reasons.push({ code: "structure", detail: "The readings do not say which passage it asks about." })
+  }
   if (candidate.keyAnswers.length > 1) {
     reasons.push({ code: "key-conflict", detail: `The answer key gives more than one answer for it: ${candidate.keyAnswers.join(", ")}.` })
   } else if (candidate.key === null) {
@@ -198,6 +311,7 @@ export const candidateProblems = (candidate: Candidate): ReadonlyArray<Reason> =
     })
   }
   const texts: ReadonlyArray<readonly [string, string]> = [
+    ...(candidate.passage === null ? [] : [["passage", candidate.passage] as const]),
     ["question", candidate.stem],
     ...candidate.options.map((option) => [`choice ${option.label}`, option.text] as const)
   ]

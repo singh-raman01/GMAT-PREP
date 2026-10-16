@@ -4,7 +4,7 @@ import { ReserveSection, SkillCount, ThinSkillThreshold, UnknownSection } from "
 import { bandOf } from "../../api/difficulty.ts"
 import { skillsFor } from "../../api/taxonomyRules.ts"
 import { Db } from "../db/Database.ts"
-import { books, difficulty, questions } from "../db/schema.ts"
+import { books, difficulty, questions, stimuli } from "../db/schema.ts"
 import { currentDifficulty } from "../practice/history.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { releaseOrder } from "./reserve.ts"
@@ -73,9 +73,12 @@ export class Bank extends Context.Service<Bank, {
             id: questions.id,
             questionType: questions.questionType,
             hash: questions.normalizedHash,
-            difficulty: currentDifficulty
+            difficulty: currentDifficulty,
+            stimulusId: questions.stimulusId,
+            stimulusHash: stimuli.normalizedHash
           }).from(questions)
             .leftJoin(difficulty, eq(difficulty.questionId, questions.id))
+            .leftJoin(stimuli, eq(stimuli.id, questions.stimulusId))
             .where(and(
               eq(questions.section, section),
               eq(questions.status, "published"),
@@ -83,13 +86,21 @@ export class Bank extends Context.Service<Bank, {
               isNull(questions.releasedAt)
             ))
             .pipe(Effect.orDie)
+          // A passage's Questions are released together.
+          const units = Map.groupBy(held, (question) => question.stimulusId ?? question.id)
           const chosen = releaseOrder(
-            held.map((question) => ({ ...question, band: bandOf(Number(question.difficulty)) })),
+            [...units].map(([id, members]) => ({
+              id,
+              size: members.length,
+              questionType: members[0]!.questionType,
+              band: bandOf(members.reduce((total, member) => total + Number(member.difficulty), 0) / members.length),
+              hash: members[0]!.stimulusHash ?? members[0]!.hash
+            })),
             count
-          )
+          ).flatMap((id) => units.get(id)!.map((member) => member.id))
           const now = yield* Clock.currentTimeMillis
           if (chosen.length > 0) {
-            yield* db.update(questions).set({ releasedAt: now }).where(inArray(questions.id, [...chosen]))
+            yield* db.update(questions).set({ releasedAt: now }).where(inArray(questions.id, chosen))
               .pipe(Effect.orDie)
           }
           return yield* reserve

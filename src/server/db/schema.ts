@@ -211,6 +211,24 @@ export const pageReadings = sqliteTable(
   (t) => [primaryKey({ columns: [t.bookId, t.page, t.role, t.group] })]
 )
 
+// A text several Questions are asked about, shown beside each of them: for
+// now a Reading Comprehension passage. Its Questions share one Mock Reserve
+// decision and are served one after another.
+export const stimuli = sqliteTable(
+  "stimuli",
+  {
+    id: text("id").primaryKey(),
+    // passage, for now
+    kind: text("kind").notNull(),
+    // Markdown with LaTeX math; see api/richText.ts.
+    body: text("body").notNull(),
+    // The body as compared when looking for the same passage in another Book.
+    normalizedHash: text("normalized_hash").notNull(),
+    createdAt: integer("created_at").notNull()
+  },
+  (t) => [index("stimuli_hash").on(t.normalizedHash)]
+)
+
 // The Question Bank. A Question keeps the model and prompt that extracted it.
 export const questions = sqliteTable(
   "questions",
@@ -219,6 +237,8 @@ export const questions = sqliteTable(
     section: text("section").notNull(),
     // A Question Type id from the Taxonomy, such as quant.ps.
     questionType: text("question_type").notNull(),
+    // The passage it asks about, for a Reading Comprehension Question.
+    stimulusId: text("stimulus_id").references(() => stimuli.id, { onDelete: "restrict" }),
     // Markdown with LaTeX math; see api/richText.ts.
     stem: text("stem").notNull(),
     // draft, held, published or withdrawn
@@ -266,6 +286,7 @@ export const questions = sqliteTable(
   },
   (t) => [
     index("questions_hash").on(t.normalizedHash),
+    index("questions_stimulus").on(t.stimulusId),
     index("questions_status").on(t.status),
     index("questions_enrichment").on(t.enrichment)
   ]

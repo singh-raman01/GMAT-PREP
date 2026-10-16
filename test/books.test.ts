@@ -341,32 +341,33 @@ describe("The cost preview", () => {
         })
         expect(map?.sampleCost).toBeCloseTo(0.0014, 12)
         expect(map?.projectedCost).toBeCloseTo(0.0014 / 10 * 24, 12)
-        // 9 of the 10 are Problem Solving pages; the tenth holds Data
-        // Sufficiency, which this version does not extract. 9 in 10 of the
-        // 24 pages with text is 22 such pages, 13 of them still to read.
+        // 9 of the 10 are Problem Solving pages and the tenth holds Data
+        // Sufficiency, all extracted, so the 24 pages with text are 24 such
+        // pages, 14 of them still to read.
         expect(extraction).toMatchObject({
           name: "Extraction",
-          sampledPages: 9,
-          sampleTokens: 9900,
-          projectedPages: 13,
-          projectedTokens: 14300
+          sampledPages: 10,
+          sampleTokens: 11000,
+          projectedPages: 14,
+          projectedTokens: 15400
         })
-        expect(extraction?.projectedCost).toBeCloseTo(9 * 0.0028 / 9 * 13, 12)
+        expect(extraction?.projectedCost).toBeCloseTo(10 * 0.0028 / 10 * 14, 12)
         // Two of the sample's Questions are enriched to cost enrichment: five
-        // calls each. The sample holds 13 Questions besides two Retired ones,
-        // so the Book's 24 pages with text hold about 31.
+        // calls each. The sample holds 13 Problem Solving Questions besides two
+        // Retired ones, and 2 Data Sufficiency ones, so the Book's 24 pages
+        // with text hold about 36.
         const enrichment = preview.steps[2]
         expect(enrichment).toMatchObject({
           name: "Enrichment",
           unit: "question",
           sampledPages: 2,
           sampleTokens: 11000,
-          projectedPages: 31,
-          projectedTokens: 170500
+          projectedPages: 36,
+          projectedTokens: 198000
         })
-        expect(enrichment?.projectedCost).toBeCloseTo(10 * 0.0028 / 2 * 31, 12)
-        expect(preview.sampleTokens).toBe(22000)
-        expect(preview.projectedTokens).toBe(2640 + 14300 + 170500)
+        expect(enrichment?.projectedCost).toBeCloseTo(10 * 0.0028 / 2 * 36, 12)
+        expect(preview.sampleTokens).toBe(23100)
+        expect(preview.projectedTokens).toBe(2640 + 15400 + 198000)
         const [sampleRequest] = yield* fake.requests
         expect(sampleRequest?.model).toBe("map-model")
         expect(quotedPages(sampleRequest!).map((page) => page.number)).toEqual([...preview.sampledPages])
@@ -374,7 +375,7 @@ describe("The cost preview", () => {
 
         // Nothing more runs until the Curator starts the full run.
         yield* advanceUntil(Effect.succeed(undefined), { step: "1 minute", maxSteps: 10 }).pipe(Effect.ignore)
-        expect(yield* fake.requests).toHaveLength(20)
+        expect(yield* fake.requests).toHaveLength(21)
         expect((yield* detailOf(curator.api, view.id)).book.status).toBe("previewed")
 
         const started = yield* curator.api.books.start({ params: { id: view.id }, payload: { spendCap: 0.05 } })
@@ -385,7 +386,7 @@ describe("The cost preview", () => {
         expect(again).toMatchObject({ _tag: "BookNotReady", status: "mapping" })
         yield* waitForStatus(curator.api, view.id, "map-proposed")
         // The full run surveyed all 24 pages with text in order, ten at a time.
-        const runRequests = (yield* fake.requests).slice(20)
+        const runRequests = (yield* fake.requests).slice(21)
         expect(runRequests.map((request) => quotedPages(request).length)).toEqual([10, 10, 4])
         expect(runRequests.flatMap((request) => quotedPages(request).map((page) => page.number))).toEqual(
           Array.from({ length: 25 }, (_, i) => i + 1).filter((number) => number !== 24)
@@ -415,10 +416,10 @@ describe("The cost preview", () => {
         const { book: view } = added(yield* upload(curator.cookie, book.bytes, { title: "Big Practice" }))
         const previewed = yield* waitForStatus(curator.api, view.id, "previewed")
         const enrichment = previewed.book.preview!.steps[2]!
-        expect(enrichment).toMatchObject({ costed: true, sampledPages: 2, projectedPages: 31 })
+        expect(enrichment).toMatchObject({ costed: true, sampledPages: 2, projectedPages: 36 })
         // Five calls a Question cost; the refused try cost nothing.
         expect(enrichment.sampleCost).toBeCloseTo(10 * 0.0028, 12)
-        expect(enrichment.projectedCost).toBeCloseTo(10 * 0.0028 / 2 * 31, 12)
+        expect(enrichment.projectedCost).toBeCloseTo(10 * 0.0028 / 2 * 36, 12)
       }),
       AllJobKinds
     ))
@@ -478,7 +479,7 @@ describe("The cost preview", () => {
         expect(previewed.book.preview?.steps[2]).toMatchObject({
           name: "Enrichment",
           sampledPages: 0,
-          projectedPages: 31,
+          projectedPages: 36,
           projectedCost: 0,
           costed: false
         })
@@ -489,7 +490,7 @@ describe("The cost preview", () => {
         yield* configure()
         yield* curator.api.books.readAgain({ params: { id: view.id } })
         const costed = yield* waitForStatus(curator.api, view.id, "previewed")
-        expect(costed.book.preview?.steps[2]).toMatchObject({ sampledPages: 2, projectedPages: 31, costed: true })
+        expect(costed.book.preview?.steps[2]).toMatchObject({ sampledPages: 2, projectedPages: 36, costed: true })
         expect((yield* fake.requests).length - sampleRequests).toBe(10)
         // A preview with every step costed is not taken again.
         const refused = yield* curator.api.books.readAgain({ params: { id: view.id } }).pipe(Effect.flip)

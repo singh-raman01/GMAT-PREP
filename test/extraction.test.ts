@@ -43,11 +43,12 @@ describe("Extracting Problem Solving Questions", () => {
         const proposed = yield* proposedBook(curator)
         const id = proposed.book.id
         const extracted = yield* confirmAndExtract(curator, id, rangesOf(proposed))
+        // The 8 Problem Solving Questions and the 2 Data Sufficiency ones.
         expect(extracted.book.report).toMatchObject({
-          extracted: 8,
+          extracted: 10,
           merged: 0,
           held: 3,
-          published: 5,
+          published: 7,
           withdrawn: 0,
           skippedGeometry: 1,
           skippedSentenceCorrection: 0,
@@ -56,7 +57,9 @@ describe("Extracting Problem Solving Questions", () => {
         expect(extracted.book.job).toMatchObject({
           kind: "book-extract",
           status: "done",
-          result: "5 Questions published, 3 held in the Review Queue; 1 joined the Mock Reserve."
+          // A quarter of each Section: one of the Problem Solving Questions,
+          // and one of the 2 Data Sufficiency ones, rounded up.
+          result: "7 Questions published, 3 held in the Review Queue; 2 joined the Mock Reserve."
         })
 
         // The first is published, with its tags, three solves, the Book's
@@ -71,7 +74,7 @@ describe("Extracting Problem Solving Questions", () => {
           difficultySeed: 0,
           difficultyBasis: "estimate",
           enrichment: "done",
-          tagsPromptVersion: "tag-question@1"
+          tagsPromptVersion: "tag-question@2"
         })
         expect(first.key).toBe("C")
         const db = yield* Db
@@ -121,7 +124,7 @@ describe("Extracting Problem Solving Questions", () => {
         const extracted = yield* confirmAndExtract(curator, second.book.id, rangesOf(second))
         // The question whose math the model garbles is held beside the first
         // edition's copy instead of joining it unseen.
-        expect(extracted.book.report).toMatchObject({ extracted: 8, merged: 7, held: 1, published: 0, skippedGeometry: 1 })
+        expect(extracted.book.report).toMatchObject({ extracted: 10, merged: 9, held: 1, published: 0, skippedGeometry: 1 })
         const db = yield* Db
         const firstOne = yield* bankItem(first.book.id, 1)
         const joined = yield* db.select().from(sources).where(eq(sources.questionId, firstOne.question.id))
@@ -147,7 +150,7 @@ describe("Extracting Problem Solving Questions", () => {
         // explanation still says C, and so do the solves.
         const second = yield* proposedBook(curator, "Second edition", undefined, { 3: "B" })
         const extracted = yield* confirmAndExtract(curator, second.book.id, rangesOf(second))
-        expect(extracted.book.report).toMatchObject({ extracted: 8, merged: 6, held: 2 })
+        expect(extracted.book.report).toMatchObject({ extracted: 10, merged: 8, held: 2 })
         const items = yield* curator.api.review.list()
         const repeat = items.find((item) => item.question?.sources[0]?.bookTitle === "Practice Questions, Second edition" &&
           item.question.sources[0].number === 3)!
@@ -185,7 +188,7 @@ describe("Extracting Problem Solving Questions", () => {
       Effect.gen(function*() {
         yield* configure
         // One solve of the second question goes astray.
-        yield* withModel({ solve: (stem, run) => (stem.startsWith("A shirt") && run === 2 ? "D" : "C") })
+        yield* withModel({ solve: (stem, run) => (stem.startsWith("A shirt") && run === 2 ? "D" : undefined) })
         const curator = yield* curatorBrowser
         const proposed = yield* proposedBook(curator)
         yield* confirmAndExtract(curator, proposed.book.id, rangesOf(proposed))
@@ -211,7 +214,7 @@ describe("Extracting Problem Solving Questions", () => {
 
         expect(yield* review.list()).toHaveLength(1)
         const report = (yield* curator.api.books.get({ params: { id: proposed.book.id } })).book.report
-        expect(report).toMatchObject({ extracted: 8, held: 1, published: 6, withdrawn: 1, merged: 0 })
+        expect(report).toMatchObject({ extracted: 10, held: 1, published: 8, withdrawn: 1, merged: 0 })
       }),
       AllJobKinds
     ))
@@ -236,7 +239,7 @@ describe("Extracting Problem Solving Questions", () => {
           .orderBy(asc(sources.number)).pipe(Effect.orDie)
         expect(joined.map((source) => source.number)).toEqual([1, 8])
         const report = (yield* curator.api.books.get({ params: { id: proposed.book.id } })).book.report
-        expect(report).toMatchObject({ extracted: 8, held: 2, published: 5, merged: 1 })
+        expect(report).toMatchObject({ extracted: 10, held: 2, published: 7, merged: 1 })
       }),
       AllJobKinds
     ))
@@ -303,10 +306,10 @@ describe("Extracting Problem Solving Questions", () => {
         const ok = yield* db.select().from(llmCalls)
           .where(and(eq(llmCalls.task, "extraction"), eq(llmCalls.outcome, "ok")))
           .pipe(Effect.orDie)
-        // Pages 2 to 22, each once: ten of questions, one key and ten of
-        // explanations, nine of them read with the sample.
-        expect(ok).toHaveLength(21)
-        expect(yield* db.select().from(pageReadings).pipe(Effect.orDie)).toHaveLength(21)
+        // Pages 2 to 23 and 25, each once: eleven of questions, two keys and
+        // ten of explanations, ten of them read with the sample.
+        expect(ok).toHaveLength(23)
+        expect(yield* db.select().from(pageReadings).pipe(Effect.orDie)).toHaveLength(23)
       }),
       AllJobKinds
     ), 20_000)
@@ -350,10 +353,10 @@ describe("Enriching after a stop", () => {
           db.select().from(llmCalls)
             .where(and(eq(llmCalls.task, task), eq(llmCalls.outcome, "ok"), eq(llmCalls.jobId, extraction[0]!.id)))
             .pipe(Effect.orDie)
-        // Seven Questions are enriched: each tagged once and solved three times.
-        expect(yield* okCalls("tagging")).toHaveLength(7)
-        expect(yield* okCalls("solving")).toHaveLength(21)
-        expect(yield* okCalls("approaches")).toHaveLength(7)
+        // Nine Questions are enriched: each tagged once and solved three times.
+        expect(yield* okCalls("tagging")).toHaveLength(9)
+        expect(yield* okCalls("solving")).toHaveLength(27)
+        expect(yield* okCalls("approaches")).toHaveLength(9)
       }),
       AllJobKinds
     ), 20_000)
@@ -379,10 +382,11 @@ describe("The Publish Gate", () => {
         const curator = yield* curatorBrowser
         const proposed = yield* proposedBook(curator)
         yield* confirmAndExtract(curator, proposed.book.id, rangesOf(proposed))
-        // Two for the cost preview's sample; then seven Questions were
-        // enriched, each written twice.
+        // Two for the cost preview's sample; then nine Questions were
+        // enriched, each written twice but for the Data Sufficiency one keyed
+        // A, whose first reply reaches it.
         const written = (yield* sentFor("You write teaching material")).slice(2)
-        expect(written).toHaveLength(14)
+        expect(written).toHaveLength(17)
         expect(written[1]?.messages.at(-1)?.content).toContain("Your last reply had these problems")
         const items = yield* curator.api.review.list()
         expect(codes(byNumber(items, 4))).toEqual(["approach-misses-key"])
@@ -471,7 +475,7 @@ describe("The Publish Gate", () => {
         yield* configure
         // The explanations state no letter, and the second argues for the
         // Book's C, an erratum: every solve says D.
-        const base = makeFakeBookModel({ solve: (stem) => (stem.startsWith("A shirt") ? "D" : "C") })
+        const base = makeFakeBookModel({ solve: (stem) => (stem.startsWith("A shirt") ? "D" : undefined) })
         yield* (yield* FakeLlm).respondWith((request) => {
           const reply = base(request)
           if (!("content" in reply) || !(request.messages[0]?.content ?? "").includes("worked explanations")) return reply
@@ -569,11 +573,11 @@ describe("Fixing a Book Map", () => {
         yield* confirmAndExtract(curator, proposed.book.id, full)
         const renamed = full.map((range) => (range.group === "ps" ? { ...range, set: "Problem Solving practice" } : range))
         const extracted = yield* confirmAndExtract(curator, proposed.book.id, renamed)
-        expect(extracted.book.report).toMatchObject({ extracted: 8, merged: 0, skippedGeometry: 1 })
+        expect(extracted.book.report).toMatchObject({ extracted: 10, merged: 0, skippedGeometry: 1 })
         const db = yield* Db
         const own = yield* db.select().from(sources).where(eq(sources.bookId, proposed.book.id)).pipe(Effect.orDie)
-        expect(own).toHaveLength(8)
-        expect(new Set(own.map((source) => source.set))).toEqual(new Set(["Problem Solving practice"]))
+        expect(own).toHaveLength(10)
+        expect(new Set(own.map((source) => source.set))).toEqual(new Set(["Problem Solving practice", "Data Sufficiency"]))
       }),
       AllJobKinds
     ))
@@ -736,10 +740,10 @@ describe("Fixing a Book Map", () => {
           range.role === "questions" && range.group === "ps" ? { ...range, lastPage: 3 } : range
         )
         const extracted = yield* confirmAndExtract(curator, proposed.book.id, shorter)
-        expect(extracted.book.report).toMatchObject({ extracted: 6, skippedGeometry: 0 })
+        expect(extracted.book.report).toMatchObject({ extracted: 8, skippedGeometry: 0 })
         const db = yield* Db
         const own = yield* db.select().from(sources).where(eq(sources.bookId, proposed.book.id)).pipe(Effect.orDie)
-        expect(own.map((source) => source.number).toSorted()).toEqual([1, 2, 3, 4, 5, 6])
+        expect(own.map((source) => source.number).toSorted((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 10, 11])
         expect((yield* curator.api.review.list()).some((item) => codes(item).includes("near-match"))).toBe(false)
       }),
       AllJobKinds
@@ -1232,7 +1236,7 @@ describe("The golden set", () => {
         let view = yield* golden.get()
         expect(view.book?.id).toBe(first.book.id)
         expect(view).toMatchObject({ limit: 100, approved: 0, report: null, job: null })
-        expect(view.candidates.map((candidate) => candidate.number)).toEqual([1, 2, 3, 4, 5, 6, 8, 9])
+        expect(view.candidates.map((candidate) => candidate.number)).toEqual([1, 2, 3, 4, 5, 6, 8, 9, 10, 11])
         const [one, two, three] = view.candidates
         const modelSkill = one!.primarySkill!
 
@@ -1361,17 +1365,18 @@ describe("The Question Bank", () => {
         const proposed = yield* proposedBook(curator)
         yield* confirmAndExtract(curator, proposed.book.id, rangesOf(proposed))
         const thin = yield* curator.api.bank.thinSkills()
-        // The fake tags every Question with the first Skill it is offered.
+        // The fake tags every Question with the first maths Skill it is
+        // offered, the 2 Data Sufficiency ones too.
         const first = (yield* bankItem(proposed.book.id, 1)).question.primarySkill!
-        expect(thin.find((skill) => skill.id === first)?.questions).toBe(5)
-        expect(thin.every((skill) => skill.id.startsWith("quant.") && skill.questions < 15)).toBe(true)
+        expect(thin.find((skill) => skill.id === first)?.questions).toBe(7)
+        expect(thin.every((skill) => /^(quant|di)\./.test(skill.id) && skill.questions < 15)).toBe(true)
         expect(thin.at(-1)?.id).toBe(first)
         expect(thin.length).toBeGreaterThan(10)
       }),
       AllJobKinds
     ))
 
-  test("a Learner practises an extracted Book in order, past its Reserve Question and held items", () =>
+  test("a Learner practises an extracted Book in order, past its Reserve Questions and held items", () =>
     runWithWorker(
       Effect.gen(function*() {
         yield* configure
@@ -1383,8 +1388,10 @@ describe("The Question Bank", () => {
         yield* learner.api.profiles.create({ payload: { name: "Asha" } })
         const choice = { kind: "book", bookId: id } as const
         const started = yield* learner.api.practice.start({ payload: { choice } })
-        expect(started.total).toBe(4)
-        expect(started.heldForMocks).toHaveLength(1)
+        // A Problem Solving and a Data Sufficiency Question are held for
+        // Mocks.
+        expect(started.total).toBe(5)
+        expect(started.heldForMocks).toHaveLength(2)
         expect(started.unavailable).toHaveLength(3)
         expect(started.current?.question.source).toMatchObject({ bookTitle: "Practice Questions, First edition", page: 2 })
 
@@ -1392,7 +1399,7 @@ describe("The Question Bank", () => {
         expect(reserve.find((section) => section.id === "quant")).toMatchObject({ questions: 5, held: 1, released: 0 })
         yield* curator.api.bank.releaseReserve({ payload: { section: "quant", count: 1 } })
         const after = yield* learner.api.practice.preview({ payload: { choice } })
-        expect(after).toMatchObject({ questions: 5, heldForMocks: 0, unavailable: 3 })
+        expect(after).toMatchObject({ questions: 6, heldForMocks: 1, unavailable: 3 })
       }),
       AllJobKinds
     ))

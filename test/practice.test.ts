@@ -571,11 +571,29 @@ describe("Responses are facts", () => {
 describe("Releasing the Mock Reserve", () => {
   test("release takes from the fullest Question Type and Band first, so the Reserve keeps its spread", () => {
     const held = [
-      ...["a", "b", "c", "d"].map((hash) => ({ id: `medium-${hash}`, questionType: "quant.ps", band: "medium" as const, hash })),
-      ...["a", "b"].map((hash) => ({ id: `hard-${hash}`, questionType: "quant.ps", band: "hard" as const, hash }))
+      ...["a", "b", "c", "d"].map((hash) => ({
+        id: `medium-${hash}`,
+        size: 1,
+        questionType: "quant.ps",
+        band: "medium" as const,
+        hash
+      })),
+      ...["a", "b"].map((hash) => ({ id: `hard-${hash}`, size: 1, questionType: "quant.ps", band: "hard" as const, hash }))
     ]
     expect(releaseOrder(held, 3)).toEqual(["medium-d", "medium-c", "hard-b"])
     expect(releaseOrder(held, 10)).toHaveLength(6)
+  })
+
+  test("a passage is released whole, and one larger than what is left to release is passed over", () => {
+    const passage = (id: string, size: number, hash: string) =>
+      ({ id, size, questionType: "verbal.rc-detail", band: "medium" as const, hash })
+    const single = { id: "cr", size: 1, questionType: "verbal.cr-weaken", band: "medium" as const, hash: "z" }
+    const held = [passage("p1", 4, "a"), passage("p2", 3, "b"), single]
+    // The passages hold the most, so the later one in hash order goes first;
+    // then only the single Question still fits.
+    expect(releaseOrder(held, 4)).toEqual(["p2", "cr"])
+    expect(releaseOrder(held, 2)).toEqual(["cr"])
+    expect(releaseOrder(held, 8)).toEqual(["p2", "p1", "cr"])
   })
 
   test("a Section the Taxonomy lacks is refused", () =>
