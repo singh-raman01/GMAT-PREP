@@ -6,6 +6,7 @@ import { HttpApiClient } from "effect/http-api"
 import { TestClock } from "effect/testing"
 import { Api } from "../src/api/Api.ts"
 import { type Blueprint, DefaultBlueprint } from "../src/api/blueprint.ts"
+import { QuestionId } from "../src/api/Review.ts"
 import type { SectionalView } from "../src/api/Sectionals.ts"
 import { Db } from "../src/server/db/Database.ts"
 import { difficulty, responses, scoreEstimates, servedQuestions } from "../src/server/db/schema.ts"
@@ -109,7 +110,7 @@ describe("Taking a Sectional", () => {
       // An answer is only for the Question on screen.
       const wrongOne = yield* asha.first.sectionals.answer({
         params: { id: started.id },
-        payload: { seq: started.nextSeq, questionId: seeded.ids.get(7)!, selection: [{ part: 0, choice: "C" }] }
+        payload: { seq: started.nextSeq, questionId: QuestionId.make(seeded.ids.get(7)!), selection: [{ part: 0, choice: "C" }] }
       }).pipe(Effect.flip)
       expect(wrongOne).toMatchObject({ _tag: "SectionalOutOfStep", reason: "not-current" })
       yield* TestClock.adjust("40 seconds")
