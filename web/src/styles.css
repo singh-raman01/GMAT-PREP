@@ -1848,6 +1848,20 @@ input.number-input {
   font-size: var(--step-0);
 }
 
+/* On a narrow screen the passage folds, under a title that opens it. */
+.passage summary {
+  cursor: pointer;
+}
+
+.passage summary .passage-title {
+  display: inline;
+  margin: 0;
+}
+
+.passage details[open] summary {
+  margin-bottom: 0.6rem;
+}
+
 @media (min-width: 64rem) {
   .with-passage {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

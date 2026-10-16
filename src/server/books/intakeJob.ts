@@ -11,7 +11,7 @@ import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { BookFiles } from "./BookFiles.ts"
 import { linkSet } from "./linking.ts"
 import { readPdfPages, unreadableNote } from "./pdf.ts"
-import { readPage, readsGroup } from "./readings.ts"
+import { type PageReading, readPage, readsGroup } from "./readings.ts"
 import { readSurvey, surveyPages } from "./survey.ts"
 import {
   type QuestionText,
@@ -184,14 +184,20 @@ const sampleStep = (jobId: string, bookId: string, at: typeof Checkpoint.Type) =
         ? [{ page: row.number, role: survey.role, group: survey.group }]
         : []
     })
-    // The sample's Questions, each page read on its own: a passage that
-    // starts on an earlier page is left out.
+    // The sample's Questions, its pages of each group linked together, so a
+    // passage on an earlier sample page is found. An RC Question whose
+    // passage starts before the sample is left out: enriching it without the
+    // passage would cost less than the run will.
     const sampledQuestions: Array<QuestionText> = []
+    const byGroup = new Map<string, Array<{ readonly page: number; readonly reading: PageReading }>>()
     for (const page of extractable) {
       const { reading } = yield* readPage({ jobId, bookId, page: page.page, role: page.role, group: page.group })
       if (reading.role !== "questions") continue
-      for (const item of linkSet({ questions: [{ page: page.page, reading }], answers: [], explanations: [], labels: [] })) {
-        if (item._tag !== "Candidate") continue
+      byGroup.set(page.group, [...(byGroup.get(page.group) ?? []), { page: page.page, reading }])
+    }
+    for (const readings of byGroup.values()) {
+      for (const item of linkSet({ questions: readings, answers: [], explanations: [], labels: [] })) {
+        if (item._tag !== "Candidate" || (item.questionType.startsWith("verbal.rc-") && item.passage === null)) continue
         sampledQuestions.push({
           questionType: item.questionType,
           stimulus: item.passage,

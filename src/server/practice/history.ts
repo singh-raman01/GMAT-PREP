@@ -2,7 +2,7 @@ import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm"
 import { Effect, Schema } from "effect"
 import { PartChoice, type Selection } from "../../api/Practice.ts"
 import { Db } from "../db/Database.ts"
-import { bookmarks, difficulty, parts, questions, responses, servedQuestions, sessions } from "../db/schema.ts"
+import { bookmarks, books, difficulty, parts, questions, responses, servedQuestions, sessions, sources } from "../db/schema.ts"
 import type { History, PoolQuestion } from "./selection.ts"
 
 // What Practice Sets read about Questions and about a Profile's history.
@@ -97,11 +97,13 @@ export const historyOf = (profileId: string) =>
   })
 
 // Every published Question as Practice Sets choose among them, in the order
-// the Bank took them in. The set screen shows one Part, so a Question with
-// several Parts waits for a later version.
+// its own Book prints it: by Book, as the Bank took them in, then page and
+// number. So a passage's Questions keep the Book's order, even when a Book
+// Map fix brought in an earlier page later. The set screen shows one Part,
+// so a Question with several Parts waits for a later version.
 export const publishedPool = Effect.gen(function*() {
   const db = yield* Db
-  const rows = yield* db.select({
+  const found = yield* db.select({
     id: questions.id,
     section: questions.section,
     questionType: questions.questionType,
@@ -113,8 +115,18 @@ export const publishedPool = Effect.gen(function*() {
     stimulusId: questions.stimulusId
   }).from(questions)
     .leftJoin(difficulty, eq(difficulty.questionId, questions.id))
+    .leftJoin(sources, and(eq(sources.questionId, questions.id), eq(sources.merged, false)))
+    .leftJoin(books, eq(books.id, sources.bookId))
     .where(and(eq(questions.status, "published"), singlePart))
-    .orderBy(asc(questions.createdAt), asc(sql`${questions}.rowid`))
+    .orderBy(
+      asc(books.createdAt),
+      asc(sources.page),
+      asc(sources.number),
+      asc(questions.createdAt),
+      asc(sql`${questions}.rowid`)
+    )
+  // One row each, should a Question have two Sources of its own.
+  const rows = [...new Map(found.map((row) => [row.id, row] as const)).values()]
   return rows.map((row): PoolQuestion => ({
     id: row.id,
     section: row.section,

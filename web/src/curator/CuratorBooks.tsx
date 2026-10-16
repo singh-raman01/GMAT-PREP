@@ -161,10 +161,19 @@ const MockReserve = (
       const after = result.success.find((each) => each.id === section)
       const released = (after?.released ?? before) - before
       onChanged(result.success)
-      setMessage({
-        text: `Released ${released} ${after?.name ?? ""} ${released === 1 ? "Question" : "Questions"} into Practice Sets.`,
-        problem: false
-      })
+      setMessage(
+        released === 0 && (after?.held ?? 0) > 0
+          ? {
+            text: `Nothing released: each passage held for ${after?.name ?? "the Section"} Mocks has more Questions than ${
+              Number(count)
+            }, and a passage is released whole. Ask for more.`,
+            problem: true
+          }
+          : {
+            text: `Released ${released} ${after?.name ?? ""} ${released === 1 ? "Question" : "Questions"} into Practice Sets.`,
+            problem: false
+          }
+      )
       // With nothing left to release, the form goes, and focus moves to what
       // was done.
       if (!result.success.some((each) => each.held > 0)) requestAnimationFrame(() => messageRef.current?.focus())
@@ -225,7 +234,8 @@ const MockReserve = (
           </div>
           <p id={ids.hint} className="hint">
             Release cannot be undone: once a Learner may have seen a Question, it cannot be held back again. The
-            Questions released are spread over Question Types and Difficulty Bands.
+            Questions released are spread over Question Types and Difficulty Bands, and a passage's Questions are
+            released together, so fewer may be released than you ask for.
           </p>
           <div className="actions">
             <button type="submit" className="button button-quiet">Release into Practice Sets</button>

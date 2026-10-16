@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm"
 import { Clock, Effect, Option, Schema } from "effect"
-import type { MapRole, TypeGroup } from "../../api/Books.ts"
+import { ExtractedGroups, type MapRole, type TypeGroup } from "../../api/Books.ts"
 import type { TaxonomyView } from "../../api/Taxonomy.ts"
 import { Db } from "../db/Database.ts"
 import { bookPages, pageReadings } from "../db/schema.ts"
@@ -93,12 +93,12 @@ export type PageReading =
   | { readonly role: "explanations"; readonly value: typeof ExplanationsReading.Type }
   | { readonly role: "difficulty-labels"; readonly value: typeof LabelsReading.Type }
 
-// The groups extraction reads so far. Sentence Correction is retired, so only
-// its question numbers are read, to count them; the Data Insights groups
-// other than Data Sufficiency wait for a later version.
-const ReadGroups: ReadonlySet<TypeGroup> = new Set(["ps", "cr", "rc", "ds"])
+// The pages extraction reads: those of the groups it extracts, and Sentence
+// Correction's question numbers, to count them. Answer keys, explanations
+// and difficulty labels read the same whatever their group, so a mixed page
+// of them is read too.
 export const readsGroup = (role: MapRole, group: TypeGroup) =>
-  ReadGroups.has(group) || (group === "sc" && role === "questions")
+  ExtractedGroups.has(group) || (group === "sc" && role === "questions") || (group === "mixed" && role !== "questions")
 
 // The Question Types of a Taxonomy Section whose ids start with a prefix.
 const typesOf = (taxonomy: TaxonomyView, prefix: string) =>
@@ -129,7 +129,8 @@ const exceptRule =
 
 const verbalPrompts = (taxonomy: TaxonomyView) => ({
   crQuestions: {
-    promptVersion: "read-cr-questions@1",
+    // The prompt lists the Taxonomy's Question Types.
+    promptVersion: `read-cr-questions@1 taxonomy@${taxonomy.version}`,
     needsNextPage: true,
     output: crReading(typesOf(taxonomy, "verbal.cr-").map((type) => type.id)),
     system: `You transcribe GMAT Critical Reasoning questions from a page of a prep book, exactly as printed, so they can be shown on screen.
@@ -151,7 +152,7 @@ ${typeListing(taxonomy, "verbal.cr-")}
 Do not answer the questions, and do not add, fix or reword anything.`
   } satisfies Prompt<CrReading>,
   rcPage: {
-    promptVersion: "read-rc-page@1",
+    promptVersion: `read-rc-page@1 taxonomy@${taxonomy.version}`,
     needsNextPage: true,
     output: rcReading(typesOf(taxonomy, "verbal.rc-").map((type) => type.id)),
     system: `You transcribe GMAT Reading Comprehension passages and their questions from a page of a prep book, exactly as printed, so they can be shown on screen.

@@ -486,7 +486,7 @@ const QuestionScreen = (
       </p>
       {question.stimulus === null ? work : (
         <div className="with-passage">
-          <Passage source={question.stimulus} />
+          <Passage source={question.stimulus} position={current.position} />
           <div className="beside-passage">{work}</div>
         </div>
       )}
@@ -494,15 +494,52 @@ const QuestionScreen = (
   )
 }
 
-// A Reading Comprehension passage, beside its Question on a wide screen and
-// above it on a narrow one. It scrolls on its own, so it takes focus for the
-// keyboard to scroll it.
-const Passage = ({ source }: { readonly source: string }) => {
+// Whether the screen is wide enough to show a passage beside its Question,
+// as the styles do from 64rem.
+const WideQuery = "(min-width: 64rem)"
+const useWide = () => {
+  const [wide, setWide] = useState(() => window.matchMedia(WideQuery).matches)
+  useEffect(() => {
+    const query = window.matchMedia(WideQuery)
+    const change = () => setWide(query.matches)
+    change()
+    query.addEventListener("change", change)
+    return () => query.removeEventListener("change", change)
+  }, [])
+  return wide
+}
+
+// A Reading Comprehension passage. On a wide screen it stands beside its
+// Question and scrolls on its own, so it takes focus for the keyboard to
+// scroll it. On a narrow screen it stands above the Question, and folds away
+// for the passage's later Questions, so their choices are not far below.
+const Passage = ({ source, position }: { readonly source: string; readonly position: number }) => {
   const title = useId()
+  const wide = useWide()
+  // Open for the first Question of a passage; folded for the next ones.
+  const [open, setOpen] = useState(true)
+  const shown = useRef({ source, position })
+  useEffect(() => {
+    if (shown.current.position === position) return
+    setOpen(shown.current.source !== source)
+    shown.current = { source, position }
+  }, [source, position])
+  if (wide) {
+    return (
+      <section className="passage" aria-labelledby={title} tabIndex={0}>
+        <h2 id={title} className="passage-title">The passage</h2>
+        <RichText source={source} />
+      </section>
+    )
+  }
   return (
-    <section className="passage" aria-labelledby={title} tabIndex={0}>
-      <h2 id={title} className="passage-title">The passage</h2>
-      <RichText source={source} />
+    <section className="passage" aria-labelledby={title}>
+      <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+        <summary>
+          <h2 id={title} className="passage-title">The passage</h2>
+        </summary>
+        <RichText source={source} />
+      </details>
     </section>
   )
 }

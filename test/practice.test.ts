@@ -22,8 +22,8 @@ import { JobStore } from "../src/server/jobs/JobStore.ts"
 import { AllJobKinds } from "../src/server/jobs/kinds/index.ts"
 import { FakeLlm } from "../src/server/llm/LlmTransport.ts"
 import { ratedResponses } from "../src/server/ratings/rated.ts"
-import { releaseOrder } from "../src/server/review/reserve.ts"
-import { numbered, OtherPsSkill, PsSkill, seedBook } from "./fixtures/bank.ts"
+import { assignReserve, releaseOrder } from "../src/server/review/reserve.ts"
+import { numbered, OtherPsSkill, PsSkill, seedBook, type SeedQuestion } from "./fixtures/bank.ts"
 import { openBrowser, openInspectableBrowser, runWithWorkers } from "./harness.ts"
 
 const learner = (name: string) =>
@@ -312,6 +312,26 @@ describe("Reading Comprehension passages", () => {
       }
       const started = yield* asha.api.practice.start({ payload: { choice: filters({ section: "verbal", size: 3 }) } })
       expect(started.current?.question.stimulus).toMatch(/^Passage \d/)
+    })))
+
+  test("Practise 3 similar serves the Questions it picks about one passage one after another", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const seeded = yield* seedBook("Verbal Review", [
+        rc(1, 1), rc(2, 1), rc(3, 1), rc(4, 2), rc(5, 2), rc(6, 2), rc(7, 3), rc(8, 3), rc(9, 3)
+      ])
+      const passageOf = new Map([...seeded.ids].map(([number, id]) => [id, Math.ceil(number / 3)] as const))
+      const asha = yield* learner("Asha")
+      const db = yield* Db
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const started = yield* asha.api.practice.similar({ payload: { questionId: seeded.ids.get(1)! as QuestionId } })
+        const [row] = yield* db.select({ config: sessions.config }).from(sessions).where(eq(sessions.id, started.id))
+          .pipe(Effect.orDie)
+        const order = (JSON.parse(row!.config) as { readonly planned: ReadonlyArray<string> }).planned
+          .map((id) => passageOf.get(id)!)
+        const runs = order.filter((n, index) => index === 0 || order[index - 1] !== n)
+        expect(new Set(runs).size).toBe(runs.length)
+        yield* asha.api.practice.finish({ params: { id: started.id } })
+      }
     })))
 })
 
@@ -628,6 +648,65 @@ describe("Releasing the Mock Reserve", () => {
       const admin = yield* curator
       const error = yield* admin.bank.releaseReserve({ payload: { section: "physics", count: 1 } }).pipe(Effect.flip)
       expect(error).toMatchObject({ _tag: "UnknownSection", section: "physics" })
+    })))
+
+  const passage = "The council met twice before it chose a site for the library."
+  const rc = (number: number, settings: Partial<SeedQuestion> = {}): SeedQuestion =>
+    ({ number, questionType: "verbal.rc-detail", primarySkill: "verbal.reading.stated-info", passage, ...settings })
+  const shown = (who: Learner) =>
+    preview(who, filters({ section: "verbal" })).pipe(Effect.map((each) => each.questions))
+  const releasedOf = (ids: ReadonlyArray<string>) =>
+    Effect.gen(function*() {
+      const db = yield* Db
+      const rows = yield* db.select({ releasedAt: questions.releasedAt }).from(questions)
+        .where(inArray(questions.id, [...ids])).pipe(Effect.orDie)
+      return rows.filter((row) => row.releasedAt !== null).length
+    })
+
+  test("a passage is released with a Question of it being checked again at the time", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const seeded = yield* seedBook("Verbal Review", [1, 2, 3].map((n) => rc(n, { reserve: true })))
+      const db = yield* Db
+      const third = seeded.ids.get(3)!
+      yield* db.update(questions).set({ status: "held" }).where(eq(questions.id, third)).pipe(Effect.orDie)
+      const admin = yield* curator
+      yield* admin.bank.releaseReserve({ payload: { section: "verbal", count: 3 } })
+      expect(yield* releasedOf([...seeded.ids.values()])).toBe(3)
+      yield* db.update(questions).set({ status: "published" }).where(eq(questions.id, third)).pipe(Effect.orDie)
+      expect(yield* shown(yield* learner("Asha"))).toBe(3)
+    })))
+
+  test("a passage in the Reserve that a later Question takes past every slot is released", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const seeded = yield* seedBook("Verbal Review", [1, 2, 3, 4, 5].map((n) => rc(n, { reserve: true })))
+      const db = yield* Db
+      // Held at the run's end, so undecided, and published later.
+      yield* db.update(questions).set({ reserve: null, reserveDecidedAt: null }).where(eq(questions.id, seeded.ids.get(5)!))
+        .pipe(Effect.orDie)
+      yield* assignReserve(seeded.bookId).pipe(Effect.orDie)
+      expect(yield* releasedOf([...seeded.ids.values()])).toBe(5)
+      expect(yield* shown(yield* learner("Asha"))).toBe(5)
+    })))
+
+  test("a passage in the Reserve left too small by a withdrawal is released", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const seeded = yield* seedBook("Verbal Review", [1, 2, 3].map((n) => rc(n, { reserve: true })))
+      const db = yield* Db
+      const now = yield* Clock.currentTimeMillis
+      const third = seeded.ids.get(3)!
+      yield* db.update(questions).set({ status: "held" }).where(eq(questions.id, third)).pipe(Effect.orDie)
+      const itemId = crypto.randomUUID()
+      yield* db.insert(reviewItems).values({
+        id: itemId,
+        questionId: third,
+        reasons: JSON.stringify([{ code: "solver-disagreement", detail: "Solves disagree." }]),
+        status: "open",
+        createdAt: now
+      }).pipe(Effect.orDie)
+      const admin = yield* curator
+      yield* admin.review.withdraw({ params: { id: itemId as never } })
+      expect(yield* releasedOf([seeded.ids.get(1)!, seeded.ids.get(2)!])).toBe(2)
+      expect(yield* shown(yield* learner("Asha"))).toBe(2)
     })))
 })
 

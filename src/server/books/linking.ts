@@ -26,6 +26,8 @@ export interface Candidate {
   // The passage a Reading Comprehension question asks about; null for other
   // questions, and for one whose passage the readings do not give.
   readonly passage: string | null
+  // Another passage on the same page that also names it, when there is one.
+  readonly rivalPassage: string | null
   readonly stem: string
   readonly options: ReadonlyArray<{ readonly label: Letter; readonly text: string }>
   readonly figure: boolean
@@ -55,28 +57,48 @@ export const DsOptions: ReadonlyArray<{ readonly label: Letter; readonly text: s
 export const dsStem = (question: string, statements: ReadonlyArray<string>) =>
   [question.trim(), ...statements.map((statement, index) => `(${index + 1}) ${statement.trim()}`)].join("\n\n")
 
+// The question a verbal stem asks: its last paragraph, and of that the last
+// sentence that asks something, so the words of an argument do not count.
+const askedIn = (stem: string) => {
+  const paragraph = stem.trim().split(/\n\s*\n/).at(-1) ?? stem
+  const sentences = paragraph.split(/(?<=[.!?:])\s+(?=[A-Z(])/)
+  return sentences.findLast((sentence) => /[?:]\s*$|\bEXCEPT\b/.test(sentence)) ?? sentences.at(-1) ?? paragraph
+}
+
+// Words that name support for a claim without asking to add any, as in "the
+// evidence offered in support of the conclusion".
+const SupportFor = /\b(?:in support of|the support for|support for|supported by)\b/gi
+const Strengthens = /\b(?:strengthen|support)/i
+const Weakens = /\b(?:weaken|undermin|casts? doubt|calls? into question)/i
+const Flaw = /\bflaw|\bcriticism\b|\bcriticize|\bvulnerable\b|\bquestionable\b/i
+
 // The Taxonomy's rules for a verbal question's type, where the question's own
-// words settle it: a question about portions in boldface or about how an
-// argument proceeds is Argument structure; an EXCEPT question takes the task
-// its sentence names, so "each strengthens EXCEPT" is a strengthen question;
-// and a passage question about what, if true, would strengthen or weaken a
-// claim is Application. Otherwise the type the reading gave stands.
+// words settle it: a question about portions in boldface is Argument
+// structure, and so is one about an argument's method of reasoning or how it
+// proceeds, unless it asks for a flaw; an EXCEPT question that the reading
+// typed as the opposite of the task its sentence names, strengthen for
+// weaken or weaken for strengthen, takes that task; and a passage question
+// about what, if true, would strengthen or weaken a claim is Application.
+// Otherwise the type the reading gave stands.
 export const settledType = (group: "cr" | "rc", stem: string, type: string) => {
-  // A Critical Reasoning stem is its argument, then the question asked.
-  const asked = stem.split(/\n\s*\n/).at(-1) ?? stem
+  const asked = askedIn(stem)
+  const named = asked.replace(SupportFor, "")
   if (group === "cr") {
-    if (/\bbold\s?faced?\b|\bmethods? of reasoning\b|\bproceeds by\b|\bargumentative (?:technique|strategy)\b/i.test(asked)) {
+    if (/\bbold/i.test(asked)) return "verbal.cr-structure"
+    if (/\bmethods? of reasoning\b|\bproceeds by\b|\bargumentative (?:technique|strategy)\b/i.test(asked) && !Flaw.test(asked)) {
       return "verbal.cr-structure"
     }
-    const except = /[^.?!\n]*\bEXCEPT\b[^.?!\n]*/.exec(asked)?.[0]
-    if (except !== undefined && /\b(?:strengthen|support)/i.test(except)) return "verbal.cr-strengthen"
-    if (except !== undefined && /\b(?:weaken|undermine|casts? doubt|calls? into question)/i.test(except)) {
-      return "verbal.cr-weaken"
+    const except = /[^.?!\n]*\bEXCEPT\b[^.?!\n]*/.exec(named)?.[0]
+    if (except !== undefined) {
+      const strengthens = Strengthens.test(except)
+      const weakens = Weakens.test(except)
+      if (type === "verbal.cr-weaken" && strengthens && !weakens) return "verbal.cr-strengthen"
+      if (type === "verbal.cr-strengthen" && weakens && !strengthens) return "verbal.cr-weaken"
     }
   }
   if (
-    group === "rc" && /\bif true\b/i.test(asked) &&
-    /\b(?:strengthen|weaken|undermine|support|casts? doubt|calls? into question)/i.test(asked)
+    group === "rc" && /\bif (?:true|it were true|accurate|correct|valid)\b/i.test(asked) &&
+    (Strengthens.test(named) || Weakens.test(named))
   ) {
     return "verbal.rc-application"
   }
@@ -140,29 +162,44 @@ export const linkSet = (readings: SetReadings): ReadonlyArray<LinkedItem> => {
   }
 
   // A number seen before in the set is a second item with that number, which
-  // is skipped and counted rather than linked to the first item's key; the
-  // same item read again, as when a question runs onto the next page, is not.
-  const seen = new Map<number, string | null>()
+  // is skipped and counted rather than linked to the first item's key. Only
+  // the same item read again on the next page, as when a question runs onto
+  // it, is not: its text and choices read alike, about the same passage.
+  interface Seen {
+    readonly page: number
+    readonly text: string | null
+    readonly passage: string | null
+  }
+  const seen = new Map<number, Seen>()
   const linked: Array<LinkedItem> = []
-  const repeated = (number: number, page: number, stem: string | null) => {
-    if (!seen.has(number)) {
-      seen.set(number, stem)
+  const repeated = (number: number, item: Seen) => {
+    const first = seen.get(number)
+    if (first === undefined) {
+      seen.set(number, item)
       return false
     }
-    const first = seen.get(number) ?? null
-    const sameItem = first === null || stem === null ||
-      similarity(trigrams(normalizeText(first)), trigrams(normalizeText(stem))) >= SameItem
-    if (!sameItem) linked.push({ _tag: "Skip", number, page, reason: "repeated-number" })
+    const readAgain = item.page === first.page + 1 && item.passage === first.passage &&
+      (first.text === null || item.text === null || similarity(trigrams(first.text), trigrams(item.text)) >= SameItem)
+    if (!readAgain) linked.push({ _tag: "Skip", number, page: item.page, reason: "repeated-number" })
     return true
   }
-  // Each passage, by the numbers of the questions about it; a number two
-  // passages claim keeps the first.
-  const passages = new Map<number, string>()
-  for (const { reading } of readings.questions) {
+  // The passages that name each number, by the page they start on. A
+  // question takes the passage that names it on the nearest page at or
+  // before its own, so a chapter that numbers each passage's questions from 1
+  // gives each its own; a passage read with no text names nothing.
+  const claims: Array<{ readonly page: number; readonly text: string; readonly numbers: ReadonlySet<number> }> = []
+  for (const { page, reading } of readings.questions) {
     if (reading.role !== "questions" || reading.group !== "rc") continue
     for (const passage of reading.value.passages) {
-      for (const number of passage.questions) if (!passages.has(number)) passages.set(number, passage.text.trim())
+      const text = passage.text.trim()
+      if (text !== "") claims.push({ page, text, numbers: new Set(passage.questions) })
     }
+  }
+  const passageOf = (number: number, page: number) => {
+    const naming = claims.filter((claim) => claim.page <= page && claim.numbers.has(number))
+    const nearest = Math.max(...naming.map((claim) => claim.page))
+    const texts = [...new Set(naming.filter((claim) => claim.page === nearest).map((claim) => claim.text))]
+    return { passage: texts[0] ?? null, rivalPassage: texts[1] ?? null }
   }
   const found = (number: number) => ({
     keyAnswers: answers.get(number) ?? [],
@@ -175,23 +212,28 @@ export const linkSet = (readings: SetReadings): ReadonlyArray<LinkedItem> => {
     switch (reading.group) {
       case "sc":
         for (const number of reading.value.numbers) {
-          if (!repeated(number, page, null)) linked.push({ _tag: "Skip", number, page, reason: "sentence-correction" })
+          if (!repeated(number, { page, text: null, passage: null })) {
+            linked.push({ _tag: "Skip", number, page, reason: "sentence-correction" })
+          }
         }
         break
       case "ps":
         for (const item of reading.value.questions) {
-          if (repeated(item.number, page, item.stem)) continue
+          if (repeated(item.number, { page, text: comparableText(item.stem, item.options), passage: null })) continue
           if (item.retired !== null) {
             linked.push({ _tag: "Skip", number: item.number, page, reason: item.retired })
             continue
           }
-          linked.push(candidateOf({ ...item, page, section: "quant", questionType: "quant.ps", passage: null }, found(item.number)))
+          linked.push(candidateOf(
+            { ...item, page, section: "quant", questionType: "quant.ps", passage: null, rivalPassage: null },
+            found(item.number)
+          ))
         }
         break
       case "ds":
         for (const item of reading.value.questions) {
           const stem = dsStem(item.question, item.statements)
-          if (repeated(item.number, page, stem)) continue
+          if (repeated(item.number, { page, text: comparableText(stem, []), passage: null })) continue
           if (item.retired !== null) {
             linked.push({ _tag: "Skip", number: item.number, page, reason: item.retired })
             continue
@@ -202,6 +244,7 @@ export const linkSet = (readings: SetReadings): ReadonlyArray<LinkedItem> => {
             section: "di",
             questionType: "di.ds",
             passage: null,
+            rivalPassage: null,
             stem,
             options: DsOptions,
             figure: item.figure,
@@ -212,13 +255,15 @@ export const linkSet = (readings: SetReadings): ReadonlyArray<LinkedItem> => {
       case "cr":
       case "rc":
         for (const item of reading.value.questions) {
-          if (repeated(item.number, page, item.stem)) continue
+          const passages = reading.group === "rc" ? passageOf(item.number, page) : { passage: null, rivalPassage: null }
+          const text = comparableText(item.stem, item.options)
+          if (repeated(item.number, { page, text, passage: passages.passage })) continue
           linked.push(candidateOf({
             ...item,
             page,
             section: "verbal",
             questionType: settledType(reading.group, item.stem, item.type),
-            passage: reading.group === "rc" ? passages.get(item.number) ?? null : null,
+            ...passages,
             figure: false
           }, found(item.number)))
         }
@@ -235,6 +280,7 @@ interface ReadItem {
   readonly section: string
   readonly questionType: string
   readonly passage: string | null
+  readonly rivalPassage: string | null
   readonly stem: string
   readonly options: ReadonlyArray<{ readonly label: Letter; readonly text: string }>
   readonly figure: boolean
@@ -259,6 +305,7 @@ const candidateOf = (
     section: item.section,
     questionType: item.questionType,
     passage: item.passage,
+    rivalPassage: item.rivalPassage,
     stem: item.stem.trim(),
     options: item.options.map((option) => ({ label: option.label, text: option.text.trim() })),
     figure: item.figure,
@@ -275,9 +322,28 @@ const candidateOf = (
 
 const Letters: ReadonlyArray<Letter> = ["A", "B", "C", "D", "E"]
 
+// An RC question whose passage no reading names.
+export const NoPassage: Reason = { code: "structure", detail: "The readings do not say which passage it asks about." }
+
+// Whether a reason is that the passage does not render, which another
+// reading of the same passage can settle.
+export const isPassageRender = (reason: Reason) =>
+  reason.code === "render" && reason.detail.startsWith("The passage does not render")
+
+// A passage's first words, for naming it.
+const opening = (text: string) => {
+  const words = text.split(/\s+/)
+  return words.length <= 8 ? text : `${words.slice(0, 8).join(" ")}…`
+}
+
 // Every problem a Question has on its own, before it is compared with the
 // Question Bank. Each type read so far has five answer choices, A to E.
-export const candidateProblems = (candidate: Candidate): ReadonlyArray<Reason> => {
+export const candidateProblems = (
+  candidate: Candidate,
+  // The passage text Learners will see, when it is another Book's reading of
+  // the same passage.
+  shown: { readonly passage: string | null } = candidate
+): ReadonlyArray<Reason> => {
   const reasons: Array<Reason> = []
   const labels = candidate.options.map((option) => option.label)
   if (labels.length !== 5 || labels.some((label, index) => label !== Letters[index])) {
@@ -287,8 +353,12 @@ export const candidateProblems = (candidate: Candidate): ReadonlyArray<Reason> =
     })
   }
   if (candidate.stem === "") reasons.push({ code: "structure", detail: "Its question text is empty." })
-  if (candidate.questionType.startsWith("verbal.rc-") && candidate.passage === null) {
-    reasons.push({ code: "structure", detail: "The readings do not say which passage it asks about." })
+  if (candidate.questionType.startsWith("verbal.rc-") && candidate.passage === null) reasons.push(NoPassage)
+  if (candidate.rivalPassage !== null && candidate.passage !== null) {
+    reasons.push({
+      code: "structure",
+      detail: `Two passages on its page name it: "${opening(candidate.passage)}" and "${opening(candidate.rivalPassage)}".`
+    })
   }
   if (candidate.keyAnswers.length > 1) {
     reasons.push({ code: "key-conflict", detail: `The answer key gives more than one answer for it: ${candidate.keyAnswers.join(", ")}.` })
@@ -311,7 +381,7 @@ export const candidateProblems = (candidate: Candidate): ReadonlyArray<Reason> =
     })
   }
   const texts: ReadonlyArray<readonly [string, string]> = [
-    ...(candidate.passage === null ? [] : [["passage", candidate.passage] as const]),
+    ...(shown.passage === null ? [] : [["passage", shown.passage] as const]),
     ["question", candidate.stem],
     ...candidate.options.map((option) => [`choice ${option.label}`, option.text] as const)
   ]
@@ -331,6 +401,12 @@ export const candidateProblems = (candidate: Candidate): ReadonlyArray<Reason> =
 // The text compared when looking for the same Question in the Bank.
 export const comparableText = (stem: string, options: ReadonlyArray<{ readonly text: string }>) =>
   normalizeText([stem, ...options.map((option) => option.text)].join(" | "))
+
+// The text compared when looking for near matches: a Data Sufficiency
+// Question's question and statements alone, since every one has the same
+// five choices, which would make different ones look alike.
+export const nearText = (questionType: string, stem: string, options: ReadonlyArray<{ readonly text: string }>) =>
+  comparableText(stem, questionType === "di.ds" ? [] : options)
 
 // Three-character pieces of the text with every number as #, for finding
 // near matches. A Variant is a copy with changed numbers or wording, so

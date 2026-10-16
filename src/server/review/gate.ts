@@ -5,7 +5,7 @@ import { bandOf, type DifficultyBand, labelDifficulty } from "../../api/difficul
 import { tagProblems } from "../../api/taxonomyRules.ts"
 import { holdForReview, readLinkReasons, UnsureCodes } from "../books/bankWrites.ts"
 import { ApproachSeconds, shownTextProblem, SolverRuns } from "../books/enrichment.ts"
-import type { Reason } from "../books/linking.ts"
+import { NoPassage, type Reason } from "../books/linking.ts"
 import { Db } from "../db/Database.ts"
 import { approaches, optionNotes, options, parts, questions, reviewItems, solverRuns } from "../db/schema.ts"
 
@@ -15,6 +15,8 @@ import { approaches, optionNotes, options, parts, questions, reviewItems, solver
 
 export interface GateInput {
   readonly questionType: string
+  // Whether it has a Stimulus, such as the passage an RC Question asks about.
+  readonly hasStimulus: boolean
   // What extraction and linking found.
   readonly linkReasons: ReadonlyArray<Reason>
   // False when linking found the text or a figure in doubt, so the Question
@@ -50,6 +52,13 @@ const listed = (items: ReadonlyArray<string>) =>
 
 export const gateReasons = (taxonomy: TaxonomyView, input: GateInput): ReadonlyArray<Reason> => {
   const reasons: Array<Reason> = [...input.linkReasons]
+  // Learners could not answer it without its passage.
+  if (
+    input.questionType.startsWith("verbal.rc-") && !input.hasStimulus &&
+    !reasons.some((reason) => reason.detail === NoPassage.detail)
+  ) {
+    reasons.push(NoPassage)
+  }
   if (!input.enriched) {
     // Text in doubt is not enriched on purpose, and its reasons hold it.
     if (!reasons.some((reason) => UnsureCodes.has(reason.code))) {
@@ -164,6 +173,7 @@ export const gateInputOf = (questionId: string) =>
       : yield* db.select().from(optionNotes).where(eq(optionNotes.partId, part.id)).orderBy(asc(optionNotes.position))
     const input: GateInput = {
       questionType: question.questionType,
+      hasStimulus: question.stimulusId !== null,
       linkReasons: readLinkReasons(question.linkReasons),
       enriched: question.enrichment !== "pending",
       key: part?.key ?? null,

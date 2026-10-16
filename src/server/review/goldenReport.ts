@@ -1,10 +1,13 @@
 import { GoldenMiss, GoldenReport, TagAgreementNeeded } from "../../api/Golden.ts"
 import { QuestionId } from "../../api/Review.ts"
+import { normalizeText } from "../../api/richText.ts"
 
 // Comparing a check of the golden set with what the Curator approved.
 
 export interface GoldenItem {
-  // The passage a Reading Comprehension Question asks about.
+  // The passage a Reading Comprehension Question asks about. It is compared
+  // as normalized text, since the stored passage may be another Book's
+  // reading of it.
   readonly passage: string | null
   readonly stem: string
   readonly options: ReadonlyArray<{ readonly label: string; readonly text: string }>
@@ -38,20 +41,22 @@ const sameTags = (a: GoldenTags, b: GoldenTags) =>
 export const goldenReport = (entries: ReadonlyArray<GoldenEntry>, finishedAt: number): GoldenReport => {
   const results = entries.map((entry) => {
     const { expected, item, tags } = entry
-    const text = item !== null && item.passage === expected.passage && item.stem === expected.stem &&
-      item.options.length === expected.options.length &&
+    const passage = (each: GoldenItem) => (each.passage === null ? null : normalizeText(each.passage))
+    const samePassage = item !== null && passage(item) === passage(expected)
+    const sameChoices = item !== null && item.options.length === expected.options.length &&
       item.options.every((option, index) => option.text === expected.options[index]?.text)
+    const text = item !== null && samePassage && item.stem === expected.stem && sameChoices
     const parts = item !== null && item.options.map((option) => option.label).join() ===
         expected.options.map((option) => option.label).join()
     const key = item !== null && item.key === expected.key
     const agrees = tags !== null && sameTags(tags, expected)
     const detail = [
       item === null ? "Not found when its page was read again." : undefined,
-      item !== null && item.passage !== expected.passage ? "The passage text differs." : undefined,
+      item !== null && !samePassage ? "The passage text differs." : undefined,
       item !== null && item.stem !== expected.stem
         ? `Text: "${clip(item.stem)}", not "${clip(expected.stem)}".`
         : undefined,
-      item !== null && item.stem === expected.stem && !text ? "Answer choice text differs." : undefined,
+      item !== null && !sameChoices ? "Answer choice text differs." : undefined,
       item !== null && !parts
         ? `Choices ${item.options.map((option) => option.label).join(", ") || "none"}, not ${
           expected.options.map((option) => option.label).join(", ")

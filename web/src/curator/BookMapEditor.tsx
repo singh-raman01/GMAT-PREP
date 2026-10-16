@@ -3,6 +3,7 @@ import { mapProblems, setsWithoutKeys } from "../../../src/api/bookMapRules.ts"
 import {
   type BookDetail,
   bookFilePath,
+  ExtractedGroups,
   type MapRangeInput,
   type MapRole,
   MapRoleLabels,
@@ -125,6 +126,11 @@ export const BookMapEditor = (
   ))
   const uncovered = Array.from({ length: pageCount }, (_, i) => i + 1).filter((number) => !covered.has(number))
   const setNames = [...new Set(rows.map((row) => row.set.trim()).filter((name) => name !== ""))]
+  // Question pages of groups extraction does not read yet.
+  const notExtracted = [
+    ...new Set(ranges.filter((range) => range.role === "questions" && range.group !== "sc" && !ExtractedGroups.has(range.group))
+      .map((range) => TypeGroupLabels[range.group]))
+  ]
 
   const setInputId = (key: number) => `${ids.title}-set-${key}`
 
@@ -405,9 +411,17 @@ export const BookMapEditor = (
             </ul>
           </div>
         )}
+        {notExtracted.length > 0 && (
+          <p className="hint map-hint">
+            Questions in {notExtracted.join(", ")} ranges are not extracted yet; their answer keys and explanations are
+            still read.{notExtracted.includes(TypeGroupLabels.mixed)
+              ? " Give each run of mixed pages the type of the questions it holds to extract them."
+              : ""}
+          </p>
+        )}
         <p className="map-hint">
-          Confirming starts extracting the Problem Solving Questions into the Review Queue. A page read before is not
-          read again, so fixing the Book Map later costs little.
+          Confirming starts extracting the Questions: each is checked and published, or held in the Review Queue. A
+          page read before is not read again, so fixing the Book Map later costs little.
         </p>
         {needsCap && (
           <div className="field cap-field confirm-cap">
