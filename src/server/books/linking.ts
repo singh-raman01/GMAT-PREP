@@ -78,6 +78,9 @@ export interface Candidate {
   readonly explanationAnswers: ReadonlyArray<string>
   // Answers the answer key prints that match no option.
   readonly unmatched: ReadonlyArray<string>
+  // Answers the answer key prints with another number of parts than the
+  // Question has.
+  readonly miscounted?: ReadonlyArray<{ readonly answer: string; readonly given: number }>
   readonly explanation: string | null
   readonly label: BookLabel | null
 }
@@ -208,20 +211,61 @@ export const optionNamed = (
 // otherwise read as a path into the data.
 const field = (name: string) => name.replace(/[.[\]]/g, (char) => `\\${char}`)
 
+// A column's name from a field reference.
+const fieldName = (reference: string) => reference.replace(/\\([.[\]])/g, "$1")
+
 const encodingType = (columns: ReadonlyArray<DatasetColumn>, name: string) => {
   const type = columns.find((column) => column.name === name)?.type
   return type === "text" ? "nominal" : type === "date" ? "ordinal" : "quantitative"
 }
 
+// The reading's names, trimmed as its table's are.
+const trimmedChart = (chart: ChartReading): ChartReading => ({
+  ...chart,
+  title: chart.title.trim(),
+  x: chart.x.trim(),
+  y: chart.y.trim(),
+  series: chart.series.trim(),
+  sets: chart.sets.map((set) => set.trim()),
+  data: {
+    ...chart.data,
+    columns: chart.data.columns.map((column) => ({ ...column, name: column.name.trim(), unit: column.unit.trim() }))
+  }
+})
+
 // A chart's spec, built by code from what the reading says it draws, so the
-// spec says only what the data can back (ADR 0006).
-export const chartSpec = (chart: ChartReading): unknown => {
+// spec says only what the data can back (ADR 0006). Axes carry their
+// column's unit, and percents and amounts of money are labelled as such.
+export const chartSpec = (reading: ChartReading): unknown => {
+  const chart = trimmedChart(reading)
   if (chart.kind === "venn") return { venn: { sets: chart.sets, region: chart.x, value: chart.y } }
   const columns = chart.data.columns
+  const columnOf = (name: string) => columns.findIndex((column) => column.name === name)
+  // The sign a column's amounts print, such as $.
+  const currencySign = (index: number) =>
+    chart.data.rows.map((row) => /[$€£¥₹]/.exec(row[index] ?? "")?.[0]).find((sign) => sign !== undefined)
+  const labels = (name: string) => {
+    const index = columnOf(name)
+    const type = columns[index]?.type
+    if (type === "percent") return { labelExpr: "datum.label + '%'" }
+    const sign = type === "currency" && !/[$€£¥₹]/.test(columns[index]?.unit ?? "") ? currencySign(index) : undefined
+    return sign === undefined ? undefined : { labelExpr: `'${sign}' + datum.label` }
+  }
+  const titled = (name: string) => {
+    const unit = columns[columnOf(name)]?.unit ?? ""
+    return unit === "" ? name : `${name} (${unit})`
+  }
   const axis = (name: string) => {
     const type = encodingType(columns, name)
+    const shown = labels(name)
     // Words and dates keep the Book's order rather than an alphabetical one.
-    return { field: field(name), type, ...(type === "quantitative" ? {} : { sort: null }), title: name }
+    return {
+      field: field(name),
+      type,
+      ...(type === "quantitative" ? {} : { sort: null }),
+      title: titled(name),
+      ...(shown === undefined ? {} : { axis: shown })
+    }
   }
   const series = chart.series === "" ? {} : { color: { field: field(chart.series), type: "nominal", title: chart.series } }
   // A fixed size, so a chart of a few bars is not drawn narrow; a pie is
@@ -239,7 +283,7 @@ export const chartSpec = (chart: ChartReading): unknown => {
         mark: "arc",
         encoding: {
           theta: { field: field(chart.y), type: "quantitative" },
-          color: { field: field(chart.x), type: "nominal", sort: null, title: chart.x }
+          color: { field: field(chart.x), type: "nominal", sort: null, title: titled(chart.x) }
         }
       }
     case "line":
@@ -247,9 +291,29 @@ export const chartSpec = (chart: ChartReading): unknown => {
     case "scatter":
       return { ...base, mark: "point", encoding: { x: axis(chart.x), y: axis(chart.y), ...series } }
     case "bar":
+      // A series sets its bars side by side; only a stacked bar chart stacks.
+      return {
+        ...base,
+        mark: "bar",
+        encoding: {
+          x: axis(chart.x),
+          y: { ...axis(chart.y), stack: null },
+          ...series,
+          ...(chart.series === "" ? {} : { xOffset: { field: field(chart.series), type: "nominal" } })
+        }
+      }
     case "stacked-bar":
       return { ...base, mark: "bar", encoding: { x: axis(chart.x), y: axis(chart.y), ...series } }
   }
+}
+
+// The columns a chart's spec draws from, for checking that its data has them.
+export const chartColumns = (spec: unknown): ReadonlyArray<string> => {
+  if (typeof spec !== "object" || spec === null) return []
+  const venn = (spec as { readonly venn?: { readonly region?: unknown; readonly value?: unknown } }).venn
+  if (venn !== undefined) return [venn.region, venn.value].filter((name): name is string => typeof name === "string")
+  const encoding = (spec as { readonly encoding?: Readonly<Record<string, { readonly field?: unknown }>> }).encoding ?? {}
+  return Object.values(encoding).flatMap((channel) => (typeof channel?.field === "string" ? [fieldName(channel.field)] : []))
 }
 
 // A figure the text does not hold is kept as the band of its page it sits
@@ -334,19 +398,34 @@ const msrItem = (
   parts: item.options.length > 0
     ? [{ kind: "single-choice" as const, prompt: null, options: item.options.map((option) => ({ ...option, text: option.text.trim() })) }]
     : statementParts(item.statements, item.pair),
-  figure: false,
+  // A source the words do not give holds the set's Questions for its figure.
+  figure: claim.stimulus?.kind === "tabs" && claim.stimulus.tabs.some((tab) => tab.kind === "figure"),
   difficulty: item.difficulty
 })
 
 // Each MSR set's tabs, with the page its first source is on and the numbers
-// of the questions about it, from every question page of the set.
+// of the questions about it, from every question page of the set. Sources
+// that name the same questions on the same or the next page are one set;
+// further on, they are another set that numbers its questions the same way.
+// A source read twice, as from the page before and its own, counts once.
 const msrSets = (sources: ReadonlyArray<{ readonly page: number; readonly source: MsrSource }>) => {
-  const sets = new Map<string, Array<{ readonly page: number; readonly source: MsrSource }>>()
-  for (const entry of sources) {
+  const sets: Array<{ members: Array<{ readonly page: number; readonly source: MsrSource }>; last: number }> = []
+  const open = new Map<string, (typeof sets)[number]>()
+  for (const entry of sources.toSorted((a, b) => a.page - b.page)) {
     const key = [...entry.source.questions].toSorted((a, b) => a - b).join(",")
-    sets.set(key, [...(sets.get(key) ?? []), entry])
+    const set = open.get(key)
+    if (set !== undefined && entry.page - set.last <= 1) {
+      set.last = entry.page
+      if (!set.members.some((member) => comparable(member.source.title) === comparable(entry.source.title))) {
+        set.members.push(entry)
+      }
+      continue
+    }
+    const fresh = { members: [entry], last: entry.page }
+    sets.push(fresh)
+    open.set(key, fresh)
   }
-  return [...sets.values()].map((members): Claim => ({
+  return sets.map(({ members }): Claim => ({
     page: Math.min(...members.map((member) => member.page)),
     numbers: new Set(members[0]!.source.questions),
     name: members.map((member) => member.source.title.trim()).join(", "),
@@ -355,7 +434,7 @@ const msrSets = (sources: ReadonlyArray<{ readonly page: number; readonly source
       tabs: members.map(({ source }) =>
         source.kind === "table" && source.table !== null
           ? { kind: "table" as const, title: source.title.trim(), body: source.text.trim(), table: tableDraft(source.table) }
-          : { kind: "passage" as const, title: source.title.trim(), body: source.text.trim() }
+          : { kind: source.kind === "figure" ? "figure" as const : "passage" as const, title: source.title.trim(), body: source.text.trim() }
       )
     }
   }))
@@ -562,7 +641,10 @@ export const linkSet = (readings: SetReadings): ReadonlyArray<LinkedItem> => {
 // the printed answers that name no option.
 const answerFor = (parts: ReadonlyArray<Omit<CandidatePart, "key">>, printedAnswer: string) => {
   const pieces = printedAnswer.split("\u0000")
-  if (pieces.length !== parts.length) return { labels: undefined, unmatched: [printedAnswer.replaceAll("\u0000", ", ")] }
+  if (pieces.length !== parts.length) {
+    const answer = printedAnswer.replaceAll("\u0000", ", ")
+    return { labels: undefined, unmatched: [answer], miscount: { answer, given: pieces.length } }
+  }
   const labels = parts.map((part, index) => optionNamed(part.options, pieces[index]!))
   const unmatched = pieces.filter((_, index) => labels[index] === undefined)
   return { labels: unmatched.length === 0 ? labels as ReadonlyArray<string> : undefined, unmatched }
@@ -580,6 +662,7 @@ const candidateOf = (
   const answers = found.printed.map((answer) => answerFor(item.parts, answer))
   const mapped = [...new Set(answers.flatMap((answer) => (answer.labels === undefined ? [] : [answer.labels.join(",")])))]
   const unmatched = answers.flatMap((answer) => answer.unmatched)
+  const miscounted = answers.flatMap((answer) => ("miscount" in answer && answer.miscount !== undefined ? [answer.miscount] : []))
   // Two answers in the key give no key, rather than the explanation's.
   const conflict = mapped.length > 1 || (found.printed.length > 1 && unmatched.length > 0)
   const answerKey = !conflict && unmatched.length === 0 && mapped.length === 1 ? mapped[0]! : null
@@ -610,6 +693,7 @@ const candidateOf = (
     keyAnswers: !conflict ? [] : mapped.length > 1 ? mapped : found.printed.map((answer) => answer.replaceAll("\u0000", ", ")),
     explanationAnswers: single && found.explanationAnswers.length > 1 ? found.explanationAnswers : [],
     unmatched,
+    ...(miscounted.length === 0 ? {} : { miscounted }),
     explanation: found.explanation?.text.trim() || null,
     label: found.label ?? found.explanation?.label ?? item.difficulty ?? null
   }
@@ -734,6 +818,21 @@ export const candidateProblems = (
   if (candidate.stem === "") reasons.push({ code: "structure", detail: "Its question text is empty." })
   if (candidate.questionType.startsWith("verbal.rc-") && candidate.stimulus === null) reasons.push(NoPassage)
   if (candidate.questionType === "di.msr" && candidate.stimulus === null) reasons.push(NoSources)
+  // An MSR set is two or three sources, each with something to read.
+  if (candidate.stimulus?.kind === "tabs") {
+    const tabs = candidate.stimulus.tabs
+    if (tabs.length < 2 || tabs.length > 3) {
+      reasons.push({
+        code: "structure",
+        detail: `Its set has ${tabs.length} ${tabs.length === 1 ? "source" : "sources"}; an MSR set has two or three.`
+      })
+    }
+    for (const tab of tabs) {
+      if (tab.kind === "passage" && tab.body.trim() === "") {
+        reasons.push({ code: "structure", detail: `Its source "${tab.title}" has no words.` })
+      }
+    }
+  }
   if (candidate.rival !== null && candidate.stimulus !== null) {
     reasons.push({
       code: "structure",
@@ -751,6 +850,18 @@ export const candidateProblems = (
       const where = content.title === undefined ? `Its ${content.kind === "table" ? "table" : "chart's data"}` : content.title
       reasons.push({ code: "structure", detail: `${where}: ${problem}` })
     }
+    // A chart drawn from a column its data lacks draws nothing.
+    if (content.kind === "chart") {
+      const missing = chartColumns(content.spec).filter((name) => !content.table.columns.some((column) => column.name === name))
+      if (missing.length > 0) {
+        reasons.push({
+          code: "structure",
+          detail: `Its chart draws ${missing.map((name) => `"${name}"`).join(" and ")}, which ${
+            missing.length === 1 ? "is not a column" : "are not columns"
+          } of its data.`
+        })
+      }
+    }
   }
   const labelsOf = (index: number) => candidate.parts[index]?.options.map((option) => option.label) ?? []
   if (candidate.keyAnswers.length > 1) {
@@ -765,7 +876,11 @@ export const candidateProblems = (
   } else if (candidate.key === null) {
     reasons.push({
       code: "no-key",
-      detail: candidate.unmatched.length > 0
+      detail: candidate.miscounted !== undefined && candidate.miscounted.length > 0
+        ? `The answer key gives ${candidate.miscounted[0]!.given} ${
+          candidate.miscounted[0]!.given === 1 ? "answer" : "answers"
+        } for its ${candidate.parts.length} parts: ${candidate.miscounted[0]!.answer}.`
+        : candidate.unmatched.length > 0
         ? `The answer key's ${candidate.unmatched.join(", ")} matches none of its options.`
         : "The Book's answer key and explanations give no answer for it."
     })
@@ -790,13 +905,18 @@ export const candidateProblems = (
   }
   // A passage's problem and the question's own are kept apart, so another
   // Book's reading of the passage can settle the first without the second.
+  // An MSR set's sources are named by their titles.
+  const tabbed = shown?.kind === "tabs"
   for (const content of contents(shown)) {
-    const problem = content.kind === "passage" && content.body !== "" ? renderProblem(content.body) : undefined
+    if (tabbed || content.kind !== "passage" || content.body === "") continue
+    const problem = renderProblem(content.body)
     if (problem !== undefined) reasons.push({ code: "render", detail: `The passage does not render: ${problem}` })
   }
   const texts: ReadonlyArray<readonly [string, string]> = [
     ...contents(shown).flatMap((content) =>
-      content.kind === "passage" || content.body === "" ? [] : [["text with its figure", content.body] as const]
+      content.body === "" || (!tabbed && content.kind === "passage")
+        ? []
+        : [[content.title !== undefined ? `source "${content.title}"` : "text with its figure", content.body] as const]
     ),
     ["question", candidate.stem],
     ...candidate.parts.flatMap((part, index) => [

@@ -25,8 +25,9 @@ export interface GateInput {
   readonly enriched: boolean
   // Each Part's key, joined, such as C or A,B,A; null while a Part has none.
   readonly key: string | null
-  // Each Part's options, in order.
-  readonly parts: ReadonlyArray<{ readonly labels: ReadonlyArray<string> }>
+  // Each Part's options, in order, and its key when known; a Part given
+  // without a key takes the joined key's.
+  readonly parts: ReadonlyArray<{ readonly labels: ReadonlyArray<string>; readonly key?: string | null }>
   readonly primarySkill: string | null
   readonly secondarySkills: ReadonlyArray<string>
   readonly difficultyEstimate: number | null
@@ -97,10 +98,23 @@ export const gateReasons = (taxonomy: TaxonomyView, input: GateInput): ReadonlyA
     }
   }
 
-  // The rest checks work against the key; without one, linking's no-key
-  // reason holds the Question.
+  // The rest checks work against the key. Every Part needs one before a
+  // Learner can answer right, whatever settled the reasons about the key, as
+  // a Key Override of one Part of several does.
   const key = input.key
-  if (key === null) return reasons
+  if (key === null) {
+    if (!reasons.some((reason) => reason.code === "no-key" || reason.code === "key-conflict")) {
+      const keys = partKeys(key, input.parts.length)
+      const missing = input.parts.flatMap((part, index) => ((part.key ?? keys[index]) === null ? [String(index + 1)] : []))
+      reasons.push({
+        code: "no-key",
+        detail: input.parts.length === 1
+          ? "It has no key."
+          : `${missing.length === 1 ? "Part" : "Parts"} ${listed(missing)} ${missing.length === 1 ? "has" : "have"} no key yet.`
+      })
+    }
+    return reasons
+  }
 
   if (input.solverAnswers.length < SolverRuns) {
     reasons.push({
@@ -200,7 +214,7 @@ export const gateInputOf = (questionId: string) =>
       linkReasons: readLinkReasons(question.linkReasons),
       enriched: question.enrichment !== "pending",
       key: joinedKey(partRows.map((part) => part.key)),
-      parts: partRows.map((part) => ({ labels: labelsOf(part.id) })),
+      parts: partRows.map((part) => ({ labels: labelsOf(part.id), key: part.key })),
       primarySkill: question.primarySkill,
       secondarySkills: JSON.parse(question.secondarySkills) as ReadonlyArray<string>,
       difficultyEstimate: question.difficultyEstimate,

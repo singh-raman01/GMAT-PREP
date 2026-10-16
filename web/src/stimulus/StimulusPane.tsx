@@ -42,7 +42,9 @@ const ContentOf = ({ content, label }: { readonly content: Content; readonly lab
 
 // The tabs of a set: one shows at a time; arrow keys move between them.
 const Tabs = ({ tabs }: { readonly tabs: ReadonlyArray<StimulusTab> }) => {
-  const [shown, setShown] = useState(0)
+  const [chosen, setShown] = useState(0)
+  // A tab past the end of these tabs is the last one.
+  const shown = Math.min(chosen, tabs.length - 1)
   const base = useId()
   const buttons = useRef<Array<HTMLButtonElement | null>>([])
   const move = (to: number) => {

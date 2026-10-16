@@ -53,6 +53,17 @@ describe("The calculator", () => {
     expect(run("MC MR", stored).display).toBe("0")
   })
 
+  test("reads the keys people type: a comma is a thousands separator, c clears and x times", () => {
+    const typed = [..."1,200x2="].reduce((state, char) => {
+      const key = keyOf(char)
+      return key === undefined ? state : press(state, key)
+    }, initialState)
+    expect(typed.display).toBe("2400")
+    expect(keyOf(",")).toBeUndefined()
+    expect(keyOf("c")).toEqual({ _tag: "Clear" })
+    expect(keyOf("Enter")).toEqual({ _tag: "Equals" })
+  })
+
   test("says when a step cannot be done, and starts again on the next key", () => {
     const divided = run("5 / 0 =")
     expect(divided).toMatchObject({ display: "Cannot divide by zero", error: true })

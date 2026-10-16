@@ -2,9 +2,10 @@ import { useId, useState } from "react"
 import { type CalculatorState, initialState, type Key, keyOf, press } from "./calculator.ts"
 
 // The on-screen calculator, offered with Data Insights Questions only, as on
-// the exam. Typing works while focus is inside it: digits, + - * /, Enter or
-// = for the result, % for percent, Backspace, Delete to clear the entry and
-// Escape to clear all.
+// the exam. Typing works while focus is inside it: digits, + - * / (or x),
+// Enter or = for the result, % for percent, Backspace, Delete to clear the
+// entry and Escape or C to clear all. No key typed in it reaches the set
+// screen, whose letters pick answers.
 
 interface Button {
   readonly text: string
@@ -57,13 +58,12 @@ export const Calculator = ({ onClose }: { readonly onClose: () => void }) => {
       aria-labelledby={title}
       onKeyDown={(event) => {
         if (event.altKey || event.ctrlKey || event.metaKey) return
-        // Enter on a button presses that button.
-        if (event.key === "Enter" && event.target instanceof HTMLButtonElement) {
-          event.stopPropagation()
+        // Enter gives the result, whichever key has focus; Space presses it.
+        const key = keyOf(event.key)
+        if (key === undefined) {
+          if (event.key.length === 1) event.stopPropagation()
           return
         }
-        const key = keyOf(event.key)
-        if (key === undefined) return
         event.preventDefault()
         event.stopPropagation()
         hit(key)

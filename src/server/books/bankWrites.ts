@@ -1,8 +1,9 @@
-import { and, asc, eq, isNotNull, isNull, lt, max, ne, sql } from "drizzle-orm"
+import { and, asc, eq, inArray, isNotNull, isNull, lt, max, ne, sql } from "drizzle-orm"
 import { Clock, Effect, Option, Schema } from "effect"
 import { sha256 } from "../access/tokens.ts"
 import { Db } from "../db/Database.ts"
-import { joinedKey } from "../../api/keys.ts"
+import type { Dataset } from "../../api/dataset.ts"
+import { joinedKey, partKeys } from "../../api/keys.ts"
 import { normalizeText, renderProblem } from "../../api/richText.ts"
 import {
   books,
@@ -18,7 +19,7 @@ import {
   stimuli,
   taxonomyVersions
 } from "../db/schema.ts"
-import { encodeColumns, encodeFigure, encodeRows, type FigureSource } from "../stimuli/stimuli.ts"
+import { datasetsById, encodeColumns, encodeFigure, encodeRows, type FigureSource } from "../stimuli/stimuli.ts"
 import {
   type Candidate,
   candidateProblems,
@@ -54,6 +55,9 @@ export interface BankEntry {
   readonly trigrams: ReadonlySet<string>
   readonly key: string | null
   readonly stimulusId: string | null
+  // The kind of its Stimulus, so a figure's Questions are compared with
+  // other figures' Questions.
+  readonly stimulusKind?: string | null
 }
 
 // The Questions of a Section, other than withdrawn ones, for comparing.
@@ -66,8 +70,10 @@ export const loadBank = (section: string) =>
       questionType: questions.questionType,
       stem: questions.stem,
       text: questions.normalizedText,
-      stimulusId: questions.stimulusId
+      stimulusId: questions.stimulusId,
+      stimulusKind: stimuli.kind
     }).from(questions)
+      .leftJoin(stimuli, eq(stimuli.id, questions.stimulusId))
       .where(and(eq(questions.section, section), ne(questions.status, "withdrawn")))
       .pipe(Effect.orDie)
     const keyRows = yield* db.select({ questionId: parts.questionId, key: parts.key }).from(parts)
@@ -81,7 +87,8 @@ export const loadBank = (section: string) =>
       hash: row.hash,
       trigrams: trigrams(row.questionType === "di.ds" ? nearText(row.questionType, row.stem, []) : row.text),
       key: joinedKey((keys.get(row.id) ?? []).map((part) => part.key)),
-      stimulusId: row.stimulusId
+      stimulusId: row.stimulusId,
+      stimulusKind: row.stimulusKind
     }))
   })
 
@@ -99,10 +106,15 @@ export const keyOf = (questionId: string) =>
     }
   })
 
-const tableText = (table: TableDraft) =>
-  [table.columns.map((column) => `${column.name} ${column.type} ${column.unit}`).join(" | "), ...table.rows.map((row) =>
-    row.join(" | ")
-  )].join("\n")
+// A table as compared: its headings and words as plain text, and each typed
+// cell by its value, so 1,200 and 1200 are the same cell.
+const datasetKey = (dataset: Dataset) =>
+  [
+    dataset.columns.map((column) => `${normalizeText(column.name)} ${column.type} ${normalizeText(column.unit)}`).join(" | "),
+    ...dataset.rows.map((row) => row.map((cell) => (cell.value === null ? normalizeText(cell.text) : String(cell.value))).join(" | "))
+  ].join("\n")
+
+const tableText = (table: TableDraft) => datasetKey(datasetOfDraft(table))
 
 // What a Stimulus is compared by, so the same passage, table or chart from
 // two Books is one Stimulus. A figure kept as an image is its own, and one
@@ -122,9 +134,16 @@ const contentHash = (content: ContentDraft, figure: FigureSource | undefined, it
   }
 }
 
+// A tab is its set's, whatever item it is read for: a figure tab, which is
+// not drawn, is known by its title and words.
+const tabHash = (tab: ContentDraft & { readonly title: string }, figure: FigureSource | undefined, item: string) =>
+  tab.kind === "figure"
+    ? sha256(`figure|tab|${normalizeText(tab.title)}|${normalizeText(tab.body)}`)
+    : contentHash(tab, figure, item)
+
 const stimulusHash = (draft: StimulusDraft, figure: FigureSource | undefined, item: string) =>
   draft.kind === "tabs"
-    ? sha256(`tabs|${draft.tabs.map((tab) => `${normalizeText(tab.title)}:${contentHash(tab, figure, item)}`).join("|")}`)
+    ? sha256(`tabs|${draft.tabs.map((tab) => `${normalizeText(tab.title)}:${tabHash(tab, figure, item)}`).join("|")}`)
     : contentHash(draft, figure, item)
 
 const insertContent = (
@@ -168,17 +187,25 @@ const insertContent = (
 // A stored passage as compared with a new one.
 export interface PassageEntry {
   readonly id: string
+  // passage, table or chart: each is compared with its own kind.
+  readonly kind: string
   readonly trigrams: ReadonlySet<string>
 }
 
-// Every stored passage, other than an MSR set's tabs, for finding one a new
-// passage nearly copies.
+// Every stored passage, table and chart, other than an MSR set's tabs, for
+// finding one a new one nearly copies.
 export const loadPassages = Effect.gen(function*() {
   const db = yield* Db
-  const rows = yield* db.select({ id: stimuli.id, body: stimuli.body }).from(stimuli)
-    .where(and(eq(stimuli.kind, "passage"), isNull(stimuli.parentId)))
+  const rows = yield* db.select({ id: stimuli.id, kind: stimuli.kind, body: stimuli.body, datasetId: stimuli.datasetId })
+    .from(stimuli)
+    .where(and(inArray(stimuli.kind, ["passage", "table", "chart"]), isNull(stimuli.parentId)))
     .pipe(Effect.orDie)
-  return rows.map((row): PassageEntry => ({ id: row.id, trigrams: trigrams(normalizeText(row.body)) }))
+  const sets = yield* datasetsById(rows.flatMap((row) => (row.datasetId === null ? [] : [row.datasetId]))).pipe(Effect.orDie)
+  return rows.flatMap((row): ReadonlyArray<PassageEntry> => {
+    if (row.kind === "passage") return [{ id: row.id, kind: row.kind, trigrams: trigrams(normalizeText(row.body)) }]
+    const dataset = row.datasetId === null ? undefined : sets.get(row.datasetId)
+    return dataset === undefined ? [] : [{ id: row.id, kind: row.kind, trigrams: trigrams(datasetKey(dataset)) }]
+  })
 })
 
 // The stored Stimulus with this content, or a new one. The same passage from
@@ -207,22 +234,35 @@ const stimulusFor = (
     }
     if (draft.kind !== "tabs") {
       const id = yield* insertContent(draft, hash, now, figure)
-      if (draft.kind === "passage") passages.push({ id, trigrams: trigrams(normalizeText(draft.body)) })
+      const compared = comparedText(draft)
+      if (compared !== undefined) passages.push({ id, kind: draft.kind, trigrams: trigrams(compared) })
       return { id, hash, shown: draft, repaired: false }
     }
     const id = crypto.randomUUID()
     yield* db.insert(stimuli).values({ id, kind: "tabs", body: "", normalizedHash: hash, createdAt: now })
     for (const [position, tab] of draft.tabs.entries()) {
-      yield* insertContent(tab, contentHash(tab, figure, item), now, figure, { parentId: id, position, title: tab.title })
+      yield* insertContent(tab, tabHash(tab, figure, item), now, figure, { parentId: id, position, title: tab.title })
     }
     return { id, hash, shown: draft, repaired: false }
   })
 
-// Stored passages a passage nearly copies, the closest first, as another
-// edition's or a rescan's reading of it with a word changed would.
-const nearPassages = (stimulusId: string, body: string, passages: ReadonlyArray<PassageEntry>) => {
-  const pieces = trigrams(normalizeText(body))
-  return passages.filter((entry) => entry.id !== stimulusId)
+// What a passage, table or chart is compared by when looking for one it
+// nearly copies.
+const comparedText = (draft: StimulusDraft): string | undefined =>
+  draft.kind === "passage"
+    ? normalizeText(draft.body)
+    : draft.kind === "table" || draft.kind === "chart"
+    ? tableText(draft.table)
+    : undefined
+
+// Stored Stimuli of its kind a passage, table or chart nearly copies, the
+// closest first, as another edition's or a rescan's reading of it with a word
+// or a number changed would.
+const nearStimuli = (stimulusId: string, draft: StimulusDraft, passages: ReadonlyArray<PassageEntry>) => {
+  const compared = comparedText(draft)
+  if (compared === undefined) return []
+  const pieces = trigrams(compared)
+  return passages.filter((entry) => entry.id !== stimulusId && entry.kind === draft.kind)
     .map((entry) => ({ id: entry.id, score: similarity(pieces, entry.trigrams) }))
     .filter((entry) => entry.score >= NearMatch)
     .toSorted((a, b) => b.score - a.score)
@@ -293,14 +333,13 @@ export const holdForReview = (questionId: string, reasons: ReadonlyArray<Reason>
     })
   })
 
-// Sources whose Book gives another key than the Question's. A key the
-// Curator overrode settles them.
+// Sources whose Book gives another key than the Question's, for a Part the
+// Curator has not overridden: an overridden Part's key settles them.
 const sourceKeyReasons = (questionId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
     const own = yield* keyOf(questionId)
-    if (own.parts.length === 0 || own.overridden) return []
-    const part = { key: own.key }
+    if (own.parts.length === 0) return []
     const given = yield* db.select({
       title: books.title,
       set: sources.set,
@@ -309,10 +348,13 @@ const sourceKeyReasons = (questionId: string) =>
     }).from(sources).innerJoin(books, eq(books.id, sources.bookId))
       .where(and(eq(sources.questionId, questionId), isNotNull(sources.bookKey)))
       .orderBy(asc(sources.createdAt))
-    return given.filter((source) => source.bookKey !== part.key).map((source): Reason => ({
+    return given.filter((source) => {
+      const theirs = partKeys(source.bookKey, own.parts.length)
+      return own.parts.some((part, index) => part.keyBasis !== "override" && theirs[index] !== part.key)
+    }).map((source): Reason => ({
       code: "source-key",
       detail: `${source.title}, ${source.set}, question ${source.number} gives the key ${source.bookKey}; this Question's key is ${
-        part.key ?? "not known"
+        own.key ?? "not known"
       }.`
     }))
   })
@@ -525,7 +567,7 @@ export const linkCandidate = (
         const movesFrom = (current: string | null) =>
           current !== (stimulus?.id ?? null) &&
           !(current !== null && stimulus !== null && stimulus.shown.kind === "passage" &&
-            nearPassages(stimulus.id, stimulus.shown.body, passages).some((each) => each.id === current))
+            nearStimuli(stimulus.id, stimulus.shown, passages).some((each) => each.id === current))
         // A Book Map fix can find another Stimulus for the Question's own
         // item. Other items that share the Question keep it about its
         // Stimulus, and this one becomes a Question of its own.
@@ -707,36 +749,44 @@ export const linkCandidate = (
         } else {
           // Questions about the same Stimulus, or about a stored passage this
           // one nearly copies, each with how alike the passages are.
-          const near = stimulus === null || stimulus.shown.kind !== "passage"
-            ? []
-            : nearPassages(stimulus.id, stimulus.shown.body, passages)
+          const near = stimulus === null ? [] : nearStimuli(stimulus.id, stimulus.shown, passages)
           const about = new Map<string | null, number>([
             [stimulus?.id ?? null, 1],
             ...near.map((each) => [each.id, each.score] as const)
           ])
-          let best: { readonly id: string; readonly score: number; readonly passage: number } | undefined
+          // A figure's Questions are compared with every figure's: each
+          // item's figure is kept on its own, and the same question may print
+          // the same figure in two Books.
+          const figure = stimulus?.shown.kind === "figure"
+          let best: { readonly id: string; readonly score: number; readonly passage: number; readonly figure: boolean } | undefined
           for (const entry of bank) {
-            const passage = about.get(entry.stimulusId)
+            const onFigure = figure && entry.stimulusKind === "figure" && entry.stimulusId !== stimulus?.id
+            const passage = about.get(entry.stimulusId) ?? (onFigure ? 1 : undefined)
             if (passage === undefined) continue
             const score = similarity(pieces, entry.trigrams)
-            if (score >= NearMatch && (best === undefined || score > best.score)) best = { id: entry.id, score, passage }
+            if (score >= NearMatch && (best === undefined || score > best.score)) {
+              best = { id: entry.id, score, passage, figure: onFigure }
+            }
           }
+          // What the item's Stimulus is called in reasons.
+          const what = stimulus?.shown.kind === "table" ? "table" : stimulus?.shown.kind === "chart" ? "chart's data" : "passage"
+          const worded = (score: number) => (score > 0.999 ? "worded like" : `${percent(score)} like`)
           if (best !== undefined) {
             reasons.push({
               code: "near-match",
-              detail: best.passage < 1
-                ? `It is ${best.score > 0.999 ? "worded like" : `${percent(best.score)} like`} another Question, whose passage is ${
-                  percent(best.passage)
-                } like its own: a Variant, or the same Question?`
+              detail: best.figure
+                ? `It is ${worded(best.score)} another Question with a figure: check that the figures are the same, then merge it or keep it as a Variant.`
+                : best.passage < 1
+                ? `It is ${worded(best.score)} another Question, whose ${what} is ${percent(best.passage)} like its own: a Variant, or the same Question?`
                 : best.score > 0.999
                 ? "It is another Question with different numbers: a Variant, or the same Question?"
                 : `It is ${percent(best.score)} like another Question: a Variant, or the same Question?`
             })
             related = best.id
           } else {
-            // No Question like it, but its passage nearly copies one that
+            // No Question like it, but its Stimulus nearly copies one that
             // Questions in the Question Bank ask about: the Curator says
-            // whether it is the same passage.
+            // whether it is the same one.
             const closest = near.find((each) => bank.some((entry) => entry.stimulusId === each.id))
             const other = closest === undefined ? undefined : bank.filter((entry) => entry.stimulusId === closest.id)
               .map((entry) => ({ id: entry.id, score: similarity(pieces, entry.trigrams) }))
@@ -744,7 +794,7 @@ export const linkCandidate = (
             if (closest !== undefined && other !== undefined) {
               reasons.push({
                 code: "near-match",
-                detail: `Its passage is ${percent(closest.score)} like the passage of another Question: the same passage, or another?`
+                detail: `Its ${what} is ${percent(closest.score)} like the ${what} of another Question: the same one, or another?`
               })
               related = other.id
             }

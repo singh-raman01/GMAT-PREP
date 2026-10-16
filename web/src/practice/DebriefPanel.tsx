@@ -7,7 +7,15 @@ import { RichText } from "../RichText.tsx"
 // What a Learner reads after a Question: whether the answer was right, why
 // a wrong option tempted, and the stored ways to solve it, fastest first.
 
-const keyText = (debrief: Debrief) => debrief.keys.map((key) => key.key ?? "unknown").join(", ")
+// The answer as the screen shows it: a letter for a choice of five, else the
+// option's words, as a single menu or statement row shows only words.
+const keyText = (debrief: Debrief, parts: ReadonlyArray<PracticePart> | undefined) =>
+  debrief.keys.map((key) => {
+    const part = parts?.find((each) => each.position === key.part)
+    if (key.key === null) return "unknown"
+    if (part === undefined || part.kind === "single-choice") return key.key
+    return part.options.find((option) => option.label === key.key)?.text ?? key.key
+  }).join(", ")
 
 // How a Question of several Parts went: the Parts themselves show each key.
 const partsHeading = (debrief: Debrief, response: ResponseView | null) => {
@@ -64,12 +72,12 @@ export const DebriefPanel = (
         {several
           ? partsHeading(debrief, response)
           : response === null
-          ? `Not answered. The answer is ${keyText(debrief)}.`
+          ? `Not answered. The answer is ${keyText(debrief, parts)}.`
           : response.timedOut
-          ? `Time ran out. The answer is ${keyText(debrief)}.`
+          ? `Time ran out. The answer is ${keyText(debrief, parts)}.`
           : debrief.correct
-          ? `Right, the answer is ${keyText(debrief)}.`
-          : `Not this time. The answer is ${keyText(debrief)}.`}
+          ? `Right, the answer is ${keyText(debrief, parts)}.`
+          : `Not this time. The answer is ${keyText(debrief, parts)}.`}
       </h2>
       <p className="debrief-facts">
         {response !== null && !response.timedOut && (
