@@ -18,6 +18,7 @@ import { JobKindsLive } from "./jobs/kinds/index.ts"
 import { Practice } from "./practice/Practice.ts"
 import { Sectionals } from "./sections/Sectionals.ts"
 import { Profiles } from "./profiles/Profiles.ts"
+import { OfficialScores } from "./ratings/OfficialScores.ts"
 import { Bank } from "./review/Bank.ts"
 import { Golden } from "./review/Golden.ts"
 import { ReviewQueue } from "./review/ReviewQueue.ts"
@@ -48,6 +49,7 @@ export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Layer.mergeAll(
   Generation.layer,
   Practice.layer,
   Sectionals.layer,
+  OfficialScores.layer,
   RemoveUploadLeftovers
 ).pipe(
   Layer.provideMerge(Layer.mergeAll(Settings.layer, ApiKeyStore.layer, BookFiles.layer, FigureFiles.layer, Taxonomy.layer)),
