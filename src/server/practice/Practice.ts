@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm"
-import { Clock, Context, Effect, Layer, Schema, Semaphore } from "effect"
+import { Cause, Clock, Context, Effect, Latch, Layer, Schema, Semaphore } from "effect"
 import { setKey } from "../../api/bookMapRules.ts"
 import { BookId, BookNotFound } from "../../api/Books.ts"
 import { bandNames } from "../../api/difficulty.ts"
@@ -7,9 +7,12 @@ import {
   type BookChoice,
   FiltersInvalid,
   type FilterChoice,
+  HeldElsewhere,
   ItemRef,
+  Named,
   NoQuestionsMatch,
   PracticeChoice,
+  PracticeClock,
   PracticeNotFound,
   PracticeOptions,
   PracticeOutOfStep,
@@ -19,6 +22,7 @@ import {
   PracticeView,
   QuestionNotFound,
   ResponseView,
+  ScoreEstimateView,
   type Selection,
   SelectionInvalid,
   ServedView,
@@ -26,10 +30,26 @@ import {
   SimilarCount
 } from "../../api/Practice.ts"
 import { QuestionId } from "../../api/Review.ts"
+import { targetSecondsFor } from "../../api/targetTimes.ts"
 import { Db } from "../db/Database.ts"
-import { bookmarks, books, questions, responses, servedQuestions, sessions, sources } from "../db/schema.ts"
+import {
+  bookmarks,
+  books,
+  difficulty,
+  profiles,
+  questions,
+  responses,
+  scoreEstimates,
+  servedQuestions,
+  sessions,
+  sources
+} from "../db/schema.ts"
+import { ratedCounts, ratedHistory, sectionFit, type StudyClock } from "../ratings/history.ts"
+import { nextDifficulty, scoreEstimate } from "../ratings/model.ts"
 import { ratedAmong } from "../ratings/rated.ts"
+import { Settings } from "../settings/Settings.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
+import { type ClockState, fromSave, tick, TickMs } from "./clock.ts"
 import { debriefOf, namesOf, practiceQuestion, type StoredQuestion, storedQuestions } from "./content.ts"
 import {
   difficultyOf,
@@ -43,10 +63,16 @@ import {
 } from "./history.ts"
 import { bookOrder, type BookItem, openToPractice, pickByFilters, pickSimilar } from "./selection.ts"
 
-// Untimed Practice Sets. A set's Questions are chosen when it starts and
-// served one at a time; serving a Question makes it Seen. Responses are
-// facts: recorded once per sequence number and never edited (ADR 0005).
-// Untimed Responses are never Rated, so nothing here moves Difficulty.
+// Practice Sets. A set's Questions are chosen when it starts and served one
+// at a time; serving a Question makes it Seen. Responses are facts:
+// recorded once per sequence number and never edited (ADR 0005). One device
+// holds a set at a time.
+//
+// A timed set runs on the server's clock (ADR 0009) for the sum of its
+// Target Times: each answer serves the next Question at once, the Debriefs
+// wait for the end, and when time runs out the Question on screen gets a
+// time-out Response. Its Rated Responses move Difficulty and the Section's
+// Score Estimate; untimed Responses are never Rated.
 
 const Ref = Schema.Struct({ set: Schema.String, number: Schema.Int })
 
@@ -70,6 +96,13 @@ const decodeConfig = Schema.decodeUnknownSync(Schema.fromJsonString(PracticeConf
 
 type SessionRow = typeof sessions.$inferSelect
 type ResponseRow = typeof responses.$inferSelect
+
+// Who acts: the Profile, from its unlock, and the device, from the
+// x-gp-device header; a client that sends none acts as any device.
+export interface Caller {
+  readonly profileId: string
+  readonly device: string | undefined
+}
 
 export interface Submit {
   readonly seq: number
@@ -107,37 +140,47 @@ export const selectionProblems = (question: StoredQuestion, selection: Selection
 
 const statusWords = { any: undefined, unseen: "unseen", missed: "missed before", bookmarked: "Bookmarked" } as const
 
+const stateOf = (session: { readonly status: string }) =>
+  session.status === "finished" ? "finished" as const : session.status === "paused" ? "paused" as const : "active" as const
+
 export class Practice extends Context.Service<Practice, {
   options(profileId: string): Effect.Effect<PracticeOptions>
   preview(profileId: string, choice: PracticeChoice): Effect.Effect<PracticePreview, FiltersInvalid | BookNotFound>
-  start(
-    profileId: string,
-    choice: PracticeChoice
-  ): Effect.Effect<PracticeView, FiltersInvalid | BookNotFound | NoQuestionsMatch>
+  start(caller: Caller, choice: PracticeChoice): Effect.Effect<PracticeView, FiltersInvalid | BookNotFound | NoQuestionsMatch>
   list(profileId: string): Effect.Effect<ReadonlyArray<PracticeSummary>>
-  get(profileId: string, id: SessionId): Effect.Effect<PracticeView, PracticeNotFound>
+  get(caller: Caller, id: SessionId): Effect.Effect<PracticeView, PracticeNotFound>
   answer(
-    profileId: string,
+    caller: Caller,
     id: SessionId,
     submit: Submit
-  ): Effect.Effect<PracticeView, PracticeNotFound | PracticeOutOfStep | SelectionInvalid>
-  next(profileId: string, id: SessionId, position: number): Effect.Effect<PracticeView, PracticeNotFound | PracticeOutOfStep>
+  ): Effect.Effect<PracticeView, PracticeNotFound | PracticeOutOfStep | SelectionInvalid | HeldElsewhere>
+  next(
+    caller: Caller,
+    id: SessionId,
+    position: number
+  ): Effect.Effect<PracticeView, PracticeNotFound | PracticeOutOfStep | HeldElsewhere>
   bookmark(
-    profileId: string,
+    caller: Caller,
     id: SessionId,
     questionId: QuestionId,
     bookmarked: boolean
-  ): Effect.Effect<PracticeView, PracticeNotFound | PracticeOutOfStep>
-  finish(profileId: string, id: SessionId): Effect.Effect<PracticeView, PracticeNotFound>
-  review(profileId: string, id: SessionId, position: number): Effect.Effect<ServedView, PracticeNotFound | PracticeOutOfStep>
-  similar(profileId: string, questionId: QuestionId): Effect.Effect<PracticeView, QuestionNotFound | NoQuestionsMatch>
+  ): Effect.Effect<PracticeView, PracticeNotFound | PracticeOutOfStep | HeldElsewhere>
+  finish(caller: Caller, id: SessionId): Effect.Effect<PracticeView, PracticeNotFound | HeldElsewhere>
+  pause(caller: Caller, id: SessionId): Effect.Effect<PracticeView, PracticeNotFound | PracticeOutOfStep | HeldElsewhere>
+  resume(caller: Caller, id: SessionId): Effect.Effect<PracticeView, PracticeNotFound | PracticeOutOfStep | HeldElsewhere>
+  claim(caller: Caller, id: SessionId): Effect.Effect<PracticeView, PracticeNotFound>
+  review(caller: Caller, id: SessionId, position: number): Effect.Effect<ServedView, PracticeNotFound | PracticeOutOfStep>
+  similar(caller: Caller, questionId: QuestionId): Effect.Effect<PracticeView, QuestionNotFound | NoQuestionsMatch>
+  scores(profileId: string): Effect.Effect<ReadonlyArray<ScoreEstimateView>>
 }>()("gmat-prep/server/Practice") {
   static readonly layer = Layer.effect(
     Practice,
     Effect.gen(function*() {
       const db = yield* Db
+      const settings = yield* Settings
       const taxonomy = (yield* Taxonomy).view
       const names = namesOf(taxonomy)
+      // Requests and the clock's ticks take turns.
       const oneAtATime = (yield* Semaphore.make(1)).withPermits(1)
       // Reads shared with other modules; a failed query is a defect.
       const run = <A, E>(effect: Effect.Effect<A, E, Db>) => effect.pipe(Effect.provideService(Db, db), Effect.orDie)
@@ -278,11 +321,30 @@ export class Practice extends Context.Service<Practice, {
       const finalFor = (answers: ReadonlyArray<ResponseRow>, questionId: string) =>
         answers.findLast((answer) => answer.questionId === questionId)
 
-      const serve = (sessionId: string, position: number, questionId: string) =>
+      // In a timed set, a Question is served at a moment of its clock.
+      const serve = (sessionId: string, position: number, questionId: string, servedElapsedMs: number | null) =>
         Effect.gen(function*() {
           const now = yield* Clock.currentTimeMillis
-          yield* db.insert(servedQuestions).values({ sessionId, position, questionId, servedAt: now }).pipe(Effect.orDie)
+          yield* db.insert(servedQuestions).values({ sessionId, position, questionId, servedAt: now, servedElapsedMs })
+            .pipe(Effect.orDie)
         })
+
+      // The clocks of timed sets now running, as last ticked.
+      const clocks = new Map<string, ClockState>()
+      // Open while a timed set may be running. It starts open, so the first
+      // tick picks up sets left running when the app last stopped.
+      const wake = yield* Latch.make(true)
+
+      // A timed set's elapsed time now: what its clock counted, and the time
+      // since the last tick unless that was a gap.
+      const elapsedNow = (session: SessionRow, now: number) => {
+        if (session.timeLimitMs === null || session.status !== "active") return session.elapsedMs
+        const state = clocks.get(session.id) ?? fromSave(session.elapsedMs, session.clockSavedAt ?? now)
+        return tick(state, now, session.timeLimitMs).next.elapsedMs
+      }
+
+      const holdsIt = (session: SessionRow, device: string | undefined) =>
+        session.holder === null || device === undefined || session.holder === device
 
       const servedView = (
         session: SessionRow,
@@ -300,18 +362,23 @@ export class Practice extends Context.Service<Practice, {
           const response = finalFor(context.answers, row.questionId)
           const selection = response === undefined ? [] : readSelection(response.selection)
           const keys = stored.parts.map((part) => ({ position: part.position, key: part.key }))
+          // A timed set keeps its Debriefs, and whether answers were right,
+          // for the end.
+          const over = session.status === "finished"
+          const shown = over || (!session.timed && response !== undefined)
           return new ServedView({
             position: row.position,
             question: practiceQuestion(stored, names, config.bookId),
             bookmarked: context.marked.has(row.questionId),
-            response: response === undefined ? null : new ResponseView({
+            response: response === undefined || (session.timed && !over) ? null : new ResponseView({
               selection,
               guessed: response.guessed,
               timeSpentMs: response.timeSpentMs,
               correct: isCorrect(selection, keys),
-              rated: context.rated.has(response.id)
+              rated: context.rated.has(response.id),
+              timedOut: response.kind === "time-out"
             }),
-            debrief: response !== undefined || session.status === "finished" ? debriefOf(stored, selection, names) : null
+            debrief: shown ? debriefOf(stored, selection, names) : null
           })
         })
 
@@ -326,9 +393,11 @@ export class Practice extends Context.Service<Practice, {
           return { served, answers, marked: new Set(marks.map((mark) => mark.questionId)), rated }
         })
 
-      const viewOf = (session: SessionRow) =>
+      const viewOf = (session: SessionRow, device: string | undefined) =>
         Effect.gen(function*() {
           const config = decodeConfig(session.config)
+          const now = yield* Clock.currentTimeMillis
+          const hidden = session.timed && session.status !== "finished"
           const context = yield* contextOf(session)
           const ids = context.served.map((row) => row.questionId)
           const keys = yield* run(keysOf(ids))
@@ -343,53 +412,94 @@ export class Practice extends Context.Service<Practice, {
               position: row.position,
               questionId: QuestionId.make(row.questionId),
               questionType: names.named(types.find((type) => type.id === row.questionId)?.questionType ?? ""),
-              correct: response === undefined
+              correct: response === undefined || hidden
                 ? null
                 : isCorrect(readSelection(response.selection), keys.get(row.questionId) ?? []),
               guessed: response?.guessed ?? false,
+              timedOut: response?.kind === "time-out",
               timeSpentMs: first?.timeSpentMs ?? null,
               bookmarked: context.marked.has(row.questionId)
             })
           })
           const last = context.served.at(-1)
+          const elapsedMs = elapsedNow(session, now)
           return new PracticeView({
             id: SessionId.make(session.id),
             title: config.title,
             timed: session.timed,
-            status: session.status === "finished" ? "finished" : "active",
+            status: stateOf(session),
             total: config.planned.length,
             requested: config.requested,
             heldForMocks: config.heldForMocks.map((ref) => new ItemRef(ref)),
             unavailable: config.unavailable.map((ref) => new ItemRef(ref)),
             results,
+            // A paused set hides its Question.
             current: session.status === "active" && last !== undefined
               ? yield* servedView(session, config, last, context)
               : null,
             nextSeq: (context.answers.at(-1)?.seq ?? 0) + 1,
+            clock: session.timeLimitMs === null ? null : new PracticeClock({
+              limitMs: session.timeLimitMs,
+              elapsedMs,
+              remainingMs: Math.max(0, session.timeLimitMs - elapsedMs),
+              interrupted: session.interrupted
+            }),
+            heldHere: holdsIt(session, device),
+            endedBy: session.endedBy === "time" ? "time" : session.endedBy === "finished" ? "finished" : null,
             createdAt: session.createdAt,
             finishedAt: session.finishedAt
           })
         })
 
-      const outOfStep = (session: SessionRow, reason: PracticeOutOfStep["reason"]) =>
-        viewOf(session).pipe(Effect.flatMap((view) => Effect.fail(new PracticeOutOfStep({ reason, view }))))
+      const outOfStep = (session: SessionRow, device: string | undefined, reason: PracticeOutOfStep["reason"]) =>
+        viewOf(session, device).pipe(Effect.flatMap((view) => Effect.fail(new PracticeOutOfStep({ reason, view }))))
 
-      // Creates the Session and serves its first Question.
-      const begin = (profileId: string, config: PracticeConfig, id: string) =>
-        inTransaction(Effect.gen(function*() {
-          const now = yield* Clock.currentTimeMillis
-          yield* db.insert(sessions).values({
-            id,
-            profileId,
-            kind: "practice",
-            timed: false,
-            config: encodeConfig(config),
-            status: "active",
-            createdAt: now
-          }).pipe(Effect.orDie)
-          yield* serve(id, 0, config.planned[0]!)
-          return yield* own(profileId, id).pipe(Effect.orDie)
-        })).pipe(Effect.flatMap(viewOf))
+      // A set this device may change: its own, held here.
+      const held = (caller: Caller, id: string) =>
+        Effect.gen(function*() {
+          const session = yield* own(caller.profileId, id)
+          if (!holdsIt(session, caller.device)) {
+            return yield* new HeldElsewhere({ view: yield* viewOf(session, caller.device) })
+          }
+          return session
+        })
+
+      // The time limit of a timed set: its Questions' Target Times added up.
+      const limitFor = (planned: ReadonlyArray<string>) =>
+        Effect.gen(function*() {
+          const overrides = yield* settings.targetTimes
+          const rows = yield* db.select({ id: questions.id, questionType: questions.questionType }).from(questions)
+            .where(inArray(questions.id, [...planned])).pipe(Effect.orDie)
+          const typeOf = new Map(rows.map((row) => [row.id, row.questionType] as const))
+          return planned.reduce((sum, id) => sum + targetSecondsFor(typeOf.get(id) ?? "", overrides) * 1000, 0)
+        })
+
+      // Creates the Session, held by the caller's device, and serves its
+      // first Question.
+      const begin = (caller: Caller, config: PracticeConfig, id: string, timed: boolean) =>
+        Effect.gen(function*() {
+          const limitMs = timed ? yield* limitFor(config.planned) : null
+          const created = yield* inTransaction(Effect.gen(function*() {
+            const now = yield* Clock.currentTimeMillis
+            yield* db.insert(sessions).values({
+              id,
+              profileId: caller.profileId,
+              kind: "practice",
+              timed,
+              config: encodeConfig(config),
+              status: "active",
+              timeLimitMs: limitMs,
+              elapsedMs: 0,
+              clockSavedAt: timed ? now : null,
+              holder: caller.device ?? null,
+              createdAt: now
+            }).pipe(Effect.orDie)
+            yield* serve(id, 0, config.planned[0]!, timed ? 0 : null)
+            return yield* own(caller.profileId, id).pipe(Effect.orDie)
+          }))
+          if (timed) yield* wake.open
+          return yield* viewOf(created, caller.device)
+        })
 
       const options = (profileId: string) =>
         Effect.gen(function*() {
@@ -467,18 +577,18 @@ export class Practice extends Context.Service<Practice, {
           })
         ))
 
-      const start = (profileId: string, choice: PracticeChoice) =>
+      const start = (caller: Caller, choice: PracticeChoice) =>
         Effect.gen(function*() {
           const id = crypto.randomUUID()
-          const chosen = yield* plan(profileId, choice, id)
+          const chosen = yield* plan(caller.profileId, choice, id)
           if (chosen.plan.questionIds.length === 0) {
             return yield* new NoQuestionsMatch({
               heldForMocks: chosen.plan.heldForMocks.length,
               unavailable: chosen.plan.unavailable.length
             })
           }
-          return yield* begin(profileId, {
-            title: chosen.title,
+          return yield* begin(caller, {
+            title: choice.timed === true ? `${chosen.title}, timed` : chosen.title,
             choice,
             similarTo: null,
             requested: null,
@@ -486,14 +596,14 @@ export class Practice extends Context.Service<Practice, {
             planned: chosen.plan.questionIds,
             heldForMocks: chosen.plan.heldForMocks,
             unavailable: chosen.plan.unavailable
-          }, id)
+          }, id, choice.timed === true)
         }).pipe(oneAtATime)
 
       const list = (profileId: string) =>
         Effect.gen(function*() {
           const rows = yield* db.select().from(sessions)
             .where(and(eq(sessions.profileId, profileId), eq(sessions.kind, "practice")))
-            .orderBy(sql`${sessions.status} = 'active' desc`, desc(sessions.createdAt), desc(sql`${sessions}.rowid`))
+            .orderBy(sql`${sessions.status} = 'finished'`, desc(sessions.createdAt), desc(sql`${sessions}.rowid`))
             .limit(20)
             .pipe(Effect.orDie)
           const ids = rows.map((row) => row.id)
@@ -509,78 +619,185 @@ export class Practice extends Context.Service<Practice, {
               id: SessionId.make(row.id),
               title: decodeConfig(row.config).title,
               timed: row.timed,
-              status: row.status === "finished" ? "finished" : "active",
+              status: stateOf(row),
               total: decodeConfig(row.config).planned.length,
               answered: finals.length,
-              correct: finals.filter((answer) =>
-                isCorrect(readSelection(answer.selection), keys.get(answer.questionId) ?? [])
-              ).length,
+              // A timed set keeps its results for the end.
+              correct: row.timed && row.status !== "finished"
+                ? 0
+                : finals.filter((answer) => isCorrect(readSelection(answer.selection), keys.get(answer.questionId) ?? []))
+                  .length,
+              endedBy: row.endedBy === "time" ? "time" : row.endedBy === "finished" ? "finished" : null,
               createdAt: row.createdAt,
               finishedAt: row.finishedAt
             })
           })
         })
 
-      const get = (profileId: string, id: SessionId) => own(profileId, id).pipe(Effect.flatMap(viewOf))
+      const get = (caller: Caller, id: SessionId) =>
+        own(caller.profileId, id).pipe(Effect.flatMap((session) => viewOf(session, caller.device)))
 
-      const answer = (profileId: string, id: SessionId, submit: Submit) =>
+      // Reads a set again after a change, for the caller.
+      const after = (caller: Caller, id: string) =>
+        own(caller.profileId, id).pipe(Effect.orDie, Effect.flatMap((session) => viewOf(session, caller.device)))
+
+      // A Rated Response moves its Question's Difficulty by the Profile's
+      // Section Ability before it, and gives the Section a new Score
+      // Estimate.
+      const rate = (profileId: string, responseId: string) =>
+        Effect.gen(function*() {
+          const [profile] = yield* db.select({ timeZone: profiles.timeZone, rolloverHour: profiles.rolloverHour })
+            .from(profiles).where(eq(profiles.id, profileId)).pipe(Effect.orDie)
+          if (profile === undefined) return
+          const now = yield* Clock.currentTimeMillis
+          const clock: StudyClock = { now, timeZone: profile.timeZone, rolloverHour: profile.rolloverHour }
+          const history = yield* run(ratedHistory(profileId))
+          const rated = history.find((each) => each.responseId === responseId)
+          if (rated === undefined) return
+          const before = sectionFit(history.filter((each) => each.responseId !== responseId), rated.section, clock)
+          const [row] = yield* db.select().from(difficulty).where(eq(difficulty.questionId, rated.questionId))
+            .pipe(Effect.orDie)
+          const earlier = row?.ratedResponses ?? 0
+          const value = nextDifficulty(rated.difficulty, earlier, before.ability, rated.correct)
+          yield* db.insert(difficulty).values({ questionId: rated.questionId, value, ratedResponses: earlier + 1 })
+            .onConflictDoUpdate({ target: difficulty.questionId, set: { value, ratedResponses: earlier + 1 } })
+            .pipe(Effect.orDie)
+          const moved = history.map((each) => (each.questionId === rated.questionId ? { ...each, difficulty: value } : each))
+          const fit = sectionFit(moved, rated.section, clock)
+          const estimate = scoreEstimate(fit)
+          yield* db.insert(scoreEstimates).values({
+            id: crypto.randomUUID(),
+            profileId,
+            section: rated.section,
+            at: now,
+            ability: fit.ability,
+            standardError: fit.standardError,
+            score: estimate.score,
+            low: estimate.low,
+            high: estimate.high,
+            calibrated: estimate.calibrated,
+            ratedResponses: ratedCounts(moved).get(rated.section) ?? 0
+          }).pipe(Effect.orDie)
+        })
+
+      // Ends a set: the Learner finished it, or its time ran out. A timed
+      // set's clock is saved where it stopped.
+      const end = (session: SessionRow, endedBy: "finished" | "time", elapsedMs: number) =>
+        Effect.gen(function*() {
+          const now = yield* Clock.currentTimeMillis
+          clocks.delete(session.id)
+          yield* db.update(sessions).set({
+            status: "finished",
+            endedBy,
+            finishedAt: now,
+            ...(session.timed ? { elapsedMs, clockSavedAt: now } : {})
+          }).where(eq(sessions.id, session.id)).pipe(Effect.orDie)
+        })
+
+      // When time runs out, the Question on screen gets a time-out Response:
+      // wrong, and never Rated. Runs inside the caller's transaction.
+      const expire = (session: SessionRow) =>
+        Effect.gen(function*() {
+          const limitMs = session.timeLimitMs ?? 0
+          const served = yield* servedOf(session.id)
+          const answers = yield* responsesOf(session.id)
+          const current = served.at(-1)
+          if (current !== undefined && !answers.some((each) => each.questionId === current.questionId)) {
+            yield* db.insert(responses).values({
+              id: crypto.randomUUID(),
+              profileId: session.profileId,
+              sessionId: session.id,
+              questionId: current.questionId,
+              seq: Math.max(0, ...answers.map((each) => each.seq)) + 1,
+              selection: encodeSelection([]),
+              timeSpentMs: Math.max(0, limitMs - (current.servedElapsedMs ?? 0)),
+              guessed: false,
+              kind: "time-out",
+              supersedes: null,
+              createdAt: yield* Clock.currentTimeMillis
+            }).pipe(Effect.orDie)
+          }
+          yield* end(session, "time", limitMs)
+        })
+
+      const answer = (caller: Caller, id: SessionId, submit: Submit) =>
         inTransaction(Effect.gen(function*() {
-          const session = yield* own(profileId, id)
+          const session = yield* held(caller, id)
           // The same submit sent again: recorded the first time.
           const [repeat] = yield* db.select({ id: responses.id }).from(responses)
             .where(and(eq(responses.sessionId, id), eq(responses.seq, submit.seq))).pipe(Effect.orDie)
-          if (repeat !== undefined) return session
-          if (session.status !== "active") return yield* outOfStep(session, "finished")
+          if (repeat !== undefined) return
+          if (session.status === "paused") return yield* outOfStep(session, caller.device, "paused")
+          if (session.status !== "active") return yield* outOfStep(session, caller.device, "finished")
           const served = yield* servedOf(id)
           const current = served.at(-1)
           if (current === undefined || current.questionId !== submit.questionId) {
-            return yield* outOfStep(session, "not-current")
+            return yield* outOfStep(session, caller.device, "not-current")
           }
           const [given] = yield* db.select({ id: responses.id }).from(responses)
             .where(and(eq(responses.sessionId, id), eq(responses.questionId, current.questionId))).pipe(Effect.orDie)
-          if (given !== undefined) return yield* outOfStep(session, "answered")
+          if (given !== undefined) return yield* outOfStep(session, caller.device, "answered")
           const stored = (yield* run(storedQuestions([current.questionId]))).get(current.questionId)!
           const problems = selectionProblems(stored, submit.selection)
           if (problems.length > 0) return yield* new SelectionInvalid({ problems })
           const now = yield* Clock.currentTimeMillis
+          const elapsedMs = elapsedNow(session, now)
+          // Time ran out before the clock's next tick: the answer is too late.
+          if (session.timed && elapsedMs >= (session.timeLimitMs ?? 0)) {
+            yield* expire(session)
+            return yield* outOfStep(yield* own(caller.profileId, id).pipe(Effect.orDie), caller.device, "finished")
+          }
+          const responseId = crypto.randomUUID()
           yield* db.insert(responses).values({
-            id: crypto.randomUUID(),
-            profileId,
+            id: responseId,
+            profileId: caller.profileId,
             sessionId: id,
             questionId: current.questionId,
             seq: submit.seq,
             selection: encodeSelection(submit.selection.toSorted((a, b) => a.part - b.part)),
-            timeSpentMs: Math.max(0, now - current.servedAt),
+            timeSpentMs: session.timed
+              ? Math.max(0, elapsedMs - (current.servedElapsedMs ?? 0))
+              : Math.max(0, now - current.servedAt),
             guessed: submit.guessed,
             kind: "first",
             supersedes: null,
             createdAt: now
           }).pipe(Effect.orDie)
-          return session
-        })).pipe(Effect.flatMap(viewOf), oneAtATime)
+          if (!session.timed) return
+          if ((yield* run(ratedAmong(caller.profileId, [current.questionId]))).has(responseId)) {
+            yield* rate(caller.profileId, responseId)
+          }
+          // The next Question at once, or the end of the set.
+          const planned = decodeConfig(session.config).planned
+          const position = current.position + 1
+          if (position < planned.length) yield* serve(id, position, planned[position]!, elapsedMs)
+          else yield* end(session, "finished", elapsedMs)
+        })).pipe(Effect.flatMap(() => after(caller, id)), oneAtATime)
 
-      const next = (profileId: string, id: SessionId, position: number) =>
+      const next = (caller: Caller, id: SessionId, position: number) =>
         inTransaction(Effect.gen(function*() {
-          const session = yield* own(profileId, id)
+          const session = yield* held(caller, id)
           const served = yield* servedOf(id)
           // Served already, as when the request is sent again.
-          if (position < served.length) return session
-          if (session.status !== "active") return yield* outOfStep(session, "finished")
-          if (position > served.length) return yield* outOfStep(session, "not-current")
+          if (position < served.length) return
+          if (session.status === "paused") return yield* outOfStep(session, caller.device, "paused")
+          if (session.status !== "active") return yield* outOfStep(session, caller.device, "finished")
+          if (position > served.length) return yield* outOfStep(session, caller.device, "not-current")
           const current = served.at(-1)!
           const answered = (yield* responsesOf(id)).some((each) => each.questionId === current.questionId)
-          if (!answered) return yield* outOfStep(session, "not-answered")
+          if (!answered) return yield* outOfStep(session, caller.device, "not-answered")
           const planned = decodeConfig(session.config).planned
-          if (position >= planned.length) return yield* outOfStep(session, "no-more")
-          yield* serve(id, position, planned[position]!)
-          return session
-        })).pipe(Effect.flatMap(viewOf), oneAtATime)
+          if (position >= planned.length) return yield* outOfStep(session, caller.device, "no-more")
+          yield* serve(id, position, planned[position]!, session.timed ? elapsedNow(session, yield* Clock.currentTimeMillis) : null)
+        })).pipe(Effect.flatMap(() => after(caller, id)), oneAtATime)
 
-      const bookmark = (profileId: string, id: SessionId, questionId: QuestionId, bookmarked: boolean) =>
+      const bookmark = (caller: Caller, id: SessionId, questionId: QuestionId, bookmarked: boolean) =>
         inTransaction(Effect.gen(function*() {
-          const session = yield* own(profileId, id)
+          const session = yield* held(caller, id)
           const served = yield* servedOf(id)
-          if (!served.some((row) => row.questionId === questionId)) return yield* outOfStep(session, "not-current")
+          if (!served.some((row) => row.questionId === questionId)) {
+            return yield* outOfStep(session, caller.device, "not-current")
+          }
           const now = yield* Clock.currentTimeMillis
           if (bookmarked) {
             yield* db.insert(bookmarks).values({ sessionId: id, questionId, createdAt: now }).onConflictDoNothing()
@@ -589,29 +806,92 @@ export class Practice extends Context.Service<Practice, {
             yield* db.delete(bookmarks).where(and(eq(bookmarks.sessionId, id), eq(bookmarks.questionId, questionId)))
               .pipe(Effect.orDie)
           }
-          return session
-        })).pipe(Effect.flatMap(viewOf), oneAtATime)
+        })).pipe(Effect.flatMap(() => after(caller, id)), oneAtATime)
 
-      const finish = (profileId: string, id: SessionId) =>
-        Effect.gen(function*() {
-          const session = yield* own(profileId, id)
-          if (session.status === "finished") return yield* viewOf(session)
+      const finish = (caller: Caller, id: SessionId) =>
+        inTransaction(Effect.gen(function*() {
+          const session = yield* held(caller, id)
+          if (session.status === "finished") return
+          yield* end(session, "finished", elapsedNow(session, yield* Clock.currentTimeMillis))
+        })).pipe(Effect.flatMap(() => after(caller, id)), oneAtATime)
+
+      // A timed set's clock stops while it is paused; an untimed set has none
+      // to stop.
+      const pause = (caller: Caller, id: SessionId) =>
+        inTransaction(Effect.gen(function*() {
+          const session = yield* held(caller, id)
+          if (session.status === "paused") return
+          if (session.status === "finished") return yield* outOfStep(session, caller.device, "finished")
+          if (!session.timed) return yield* outOfStep(session, caller.device, "untimed")
           const now = yield* Clock.currentTimeMillis
-          const [finished] = yield* db.update(sessions).set({ status: "finished", finishedAt: now })
-            .where(eq(sessions.id, id)).returning().pipe(Effect.orDie)
-          return yield* viewOf(finished!)
+          const elapsedMs = elapsedNow(session, now)
+          clocks.delete(session.id)
+          yield* db.update(sessions).set({ status: "paused", elapsedMs, clockSavedAt: now }).where(eq(sessions.id, id))
+            .pipe(Effect.orDie)
+        })).pipe(Effect.flatMap(() => after(caller, id)), oneAtATime)
+
+      // The clock goes on from where it stopped: the pause is not a gap.
+      const resume = (caller: Caller, id: SessionId) =>
+        inTransaction(Effect.gen(function*() {
+          const session = yield* held(caller, id)
+          if (session.status === "active") return
+          if (session.status === "finished") return yield* outOfStep(session, caller.device, "finished")
+          const now = yield* Clock.currentTimeMillis
+          clocks.delete(session.id)
+          yield* db.update(sessions).set({ status: "active", clockSavedAt: now }).where(eq(sessions.id, id))
+            .pipe(Effect.orDie)
+        })).pipe(Effect.tap(() => wake.open), Effect.flatMap(() => after(caller, id)), oneAtATime)
+
+      // This device takes the set over.
+      const claim = (caller: Caller, id: SessionId) =>
+        Effect.gen(function*() {
+          const session = yield* own(caller.profileId, id)
+          if (caller.device !== undefined && session.holder !== caller.device) {
+            yield* db.update(sessions).set({ holder: caller.device }).where(eq(sessions.id, id)).pipe(Effect.orDie)
+          }
+          return yield* after(caller, id)
         }).pipe(oneAtATime)
 
-      const review = (profileId: string, id: SessionId, position: number) =>
+      const review = (caller: Caller, id: SessionId, position: number) =>
         Effect.gen(function*() {
-          const session = yield* own(profileId, id)
+          const session = yield* own(caller.profileId, id)
           const context = yield* contextOf(session)
           const row = context.served.find((each) => each.position === position)
-          if (row === undefined) return yield* outOfStep(session, "not-current")
+          if (row === undefined) return yield* outOfStep(session, caller.device, "not-current")
           return yield* servedView(session, decodeConfig(session.config), row, context)
         })
 
-      const similar = (profileId: string, questionId: QuestionId) =>
+      // The Profile's Section Score Estimates as they stand now, from its
+      // Rated Responses.
+      const scores = (profileId: string) =>
+        Effect.gen(function*() {
+          const [profile] = yield* db.select({ timeZone: profiles.timeZone, rolloverHour: profiles.rolloverHour })
+            .from(profiles).where(eq(profiles.id, profileId)).pipe(Effect.orDie)
+          if (profile === undefined) return []
+          const history = yield* run(ratedHistory(profileId))
+          const counts = ratedCounts(history)
+          const clock: StudyClock = {
+            now: yield* Clock.currentTimeMillis,
+            timeZone: profile.timeZone,
+            rolloverHour: profile.rolloverHour
+          }
+          return taxonomy.sections.filter((section) => counts.has(section.id)).map((section) => {
+            const fit = sectionFit(history, section.id, clock)
+            const estimate = scoreEstimate(fit)
+            return new ScoreEstimateView({
+              section: new Named({ id: section.id, name: section.name }),
+              ratedResponses: counts.get(section.id)!,
+              ability: fit.ability,
+              standardError: fit.standardError,
+              score: estimate.score,
+              low: estimate.low,
+              high: estimate.high,
+              calibrated: estimate.calibrated
+            })
+          })
+        })
+
+      const similar = (caller: Caller, questionId: QuestionId) =>
         Effect.gen(function*() {
           const [target] = yield* db.select({
             id: questions.id,
@@ -621,12 +901,12 @@ export class Practice extends Context.Service<Practice, {
           if (target === undefined) return yield* new QuestionNotFound()
           const level = (yield* run(difficultyOf(questionId))) ?? 0
           const pool = yield* run(publishedPool)
-          const seen = yield* run(seenBy(profileId))
+          const seen = yield* run(seenBy(caller.profileId))
           const id = crypto.randomUUID()
           const picked = pickSimilar(pool, seen, { ...target, difficulty: level }, SimilarCount, id)
           if (picked.length === 0) return yield* new NoQuestionsMatch({ heldForMocks: 0, unavailable: 0 })
           const about = target.primarySkill === null ? [] : [names.named(target.primarySkill).name]
-          return yield* begin(profileId, {
+          return yield* begin(caller, {
             title: `Similar: ${[...about, names.named(target.questionType).name].join(", ")}`,
             choice: null,
             similarTo: target.id,
@@ -635,10 +915,57 @@ export class Practice extends Context.Service<Practice, {
             planned: picked,
             heldForMocks: [],
             unavailable: []
-          }, id)
+          }, id, false)
         }).pipe(oneAtATime)
 
-      return Practice.of({ options, preview, start, list, get, answer, next, bookmark, finish, review, similar })
+      // One tick of every running timed set's clock. With none running, the
+      // clock stops until a timed set starts or resumes.
+      const tickAll = Effect.gen(function*() {
+        const now = yield* Clock.currentTimeMillis
+        const running = yield* db.select().from(sessions)
+          .where(and(eq(sessions.timed, true), eq(sessions.status, "active"))).pipe(Effect.orDie)
+        if (running.length === 0) yield* wake.close
+        const ids = new Set(running.map((session) => session.id))
+        for (const id of [...clocks.keys()]) if (!ids.has(id)) clocks.delete(id)
+        for (const session of running) {
+          const limitMs = session.timeLimitMs ?? 0
+          const ticked = tick(clocks.get(session.id) ?? fromSave(session.elapsedMs, session.clockSavedAt ?? now), now, limitMs)
+          clocks.set(session.id, ticked.next)
+          if (ticked.save) {
+            yield* db.update(sessions).set({
+              elapsedMs: ticked.next.elapsedMs,
+              clockSavedAt: now,
+              ...(ticked.lost ? { interrupted: true } : {})
+            }).where(eq(sessions.id, session.id)).pipe(Effect.orDie)
+          }
+          if (ticked.expired) yield* inTransaction(expire(session))
+        }
+      }).pipe(
+        oneAtATime,
+        Effect.catchCause((cause) => Effect.logError(`The Session clock could not tick: ${Cause.pretty(cause)}`))
+      )
+
+      yield* Effect.forkScoped(
+        Effect.forever(wake.await.pipe(Effect.andThen(Effect.sleep(TickMs)), Effect.andThen(tickAll)))
+      )
+
+      return Practice.of({
+        options,
+        preview,
+        start,
+        list,
+        get,
+        answer,
+        next,
+        bookmark,
+        finish,
+        pause,
+        resume,
+        claim,
+        review,
+        similar,
+        scores
+      })
     })
   )
 }
