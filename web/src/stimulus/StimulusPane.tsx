@@ -122,14 +122,15 @@ export const StimulusPane = (
   const title = useId()
   const wide = useWide()
   const same = JSON.stringify(stimulus)
-  // Open for the first Question about it; folded for the next ones.
+  // Open for the first Question about it; folded for the next ones. The fold
+  // changes while rendering the next Question, so the pane never shows open
+  // first.
   const [open, setOpen] = useState(true)
-  const shown = useRef({ same, position })
-  useEffect(() => {
-    if (shown.current.position === position) return
-    setOpen(shown.current.same !== same)
-    shown.current = { same, position }
-  }, [same, position])
+  const [shown, setShown] = useState({ same, position })
+  if (shown.position !== position) {
+    setShown({ same, position })
+    setOpen(shown.same !== same)
+  }
   const heading = <h2 id={title} className="stimulus-title">{titles[stimulus.kind]}</h2>
   const content = stimulus.kind === "tabs"
     ? <Tabs tabs={stimulus.tabs} />

@@ -75,6 +75,7 @@ export const ReviewHandlers = HttpApiBuilder.group(
       publish: ({ params }) => queue.publish(params.id),
       withdraw: ({ params }) => queue.withdraw(params.id),
       keepAsVariant: ({ params }) => queue.keepAsVariant(params.id),
+      usePassage: ({ params }) => queue.usePassage(params.id),
       merge: ({ params }) => queue.merge(params.id),
       dismiss: ({ params }) => queue.dismiss(params.id),
       overrideKey: ({ params, payload }) => queue.overrideKey(params.id, payload.part ?? 0, payload.key, payload.reason),

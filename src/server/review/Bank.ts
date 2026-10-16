@@ -96,7 +96,8 @@ export class Bank extends Context.Service<Bank, {
           const chosen = releaseOrder(
             [...units].map(([id, members]) => ({
               id,
-              size: members.length,
+              // Counted as the Reserve table counts it: published Questions.
+              size: members.filter((member) => member.status === "published").length,
               questionType: members[0]!.questionType,
               band: bandOf(members.reduce((total, member) => total + Number(member.difficulty), 0) / members.length),
               hash: members[0]!.stimulusHash ?? members[0]!.hash

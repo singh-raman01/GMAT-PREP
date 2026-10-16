@@ -178,29 +178,44 @@ const sampleStep = (jobId: string, bookId: string, at: typeof Checkpoint.Type) =
     }
     const surveys = yield* db.select({ number: bookPages.number, survey: bookPages.survey }).from(bookPages)
       .where(and(eq(bookPages.bookId, bookId), inArray(bookPages.number, [...sample])))
+      .orderBy(bookPages.number)
       .pipe(Effect.orDie)
+    // A page with no chapter carries on the chapter before it, as in the Book Map.
+    let chapter = ""
     const extractable = surveys.flatMap((row) => {
       const survey = readSurvey(row.survey)
-      return survey !== null && survey.role !== "other" && survey.group !== null && readsGroup(survey.role, survey.group)
-        ? [{ page: row.number, role: survey.role, group: survey.group }]
+      if (survey === null) return []
+      chapter = survey.chapter?.trim() || chapter
+      return survey.role !== "other" && survey.group !== null && readsGroup(survey.role, survey.group)
+        ? [{ page: row.number, role: survey.role, group: survey.group, chapter }]
         : []
     })
-    // The sample's Questions, its pages of each group linked together, so a
-    // passage or an MSR set's sources on an earlier sample page are found.
-    // A Question whose passage or sources start before the sample is left
-    // out: enriching it without them would cost less than the run will.
+    // The sample's Questions, linked a question set at a time, as the survey
+    // gives them: the pages of one chapter and group together, so a passage
+    // or an MSR set's sources on an earlier sample page are found and a set
+    // that numbers from 1 again keeps its own. Every one counts toward the
+    // projection, as does a number a set repeats, which is a second Question
+    // once the Book Map gives it a set of its own. One whose passage or
+    // sources start before the sample is not enriched, since without them it
+    // would cost less than the run will.
     const sampledQuestions: Array<QuestionText> = []
-    const byGroup = new Map<string, Array<{ readonly page: number; readonly reading: PageReading }>>()
+    let sampledCount = 0
+    const bySet = new Map<string, Array<{ readonly page: number; readonly reading: PageReading }>>()
     for (const page of extractable) {
       const { reading } = yield* readPage({ jobId, bookId, page: page.page, role: page.role, group: page.group })
       if (reading.role !== "questions") continue
-      byGroup.set(page.group, [...(byGroup.get(page.group) ?? []), { page: page.page, reading }])
+      const set = `${page.group}|${page.chapter}`
+      bySet.set(set, [...(bySet.get(set) ?? []), { page: page.page, reading }])
     }
-    for (const readings of byGroup.values()) {
+    for (const readings of bySet.values()) {
       for (const item of linkSet({ questions: readings, answers: [], explanations: [], labels: [] })) {
-        const needsStimulus = item._tag === "Candidate" &&
-          (item.questionType.startsWith("verbal.rc-") || item.questionType === "di.msr")
-        if (item._tag !== "Candidate" || (needsStimulus && item.stimulus === null)) continue
+        if (item._tag === "Skip") {
+          if (item.reason === "repeated-number") sampledCount += 1
+          continue
+        }
+        sampledCount += 1
+        const needsStimulus = item.questionType.startsWith("verbal.rc-") || item.questionType === "di.msr"
+        if (needsStimulus && item.stimulus === null) continue
         sampledQuestions.push({
           questionType: item.questionType,
           stimulus: item.stimulus === null ? null : draftText(item.stimulus),
@@ -245,7 +260,7 @@ const sampleStep = (jobId: string, bookId: string, at: typeof Checkpoint.Type) =
     // Pages like the sampled extractable ones, in the same share.
     const extractablePages = sample.length === 0 ? 0 : Math.round(extractable.length / sample.length * textPages.length)
     // Questions in the same share of the Book as in the sample.
-    const projectedQuestions = sample.length === 0 ? 0 : Math.round(sampledQuestions.length / sample.length * textPages.length)
+    const projectedQuestions = sample.length === 0 ? 0 : Math.round(sampledCount / sample.length * textPages.length)
     const enrichmentCosted = projectedQuestions === 0 || enriched > 0
     const steps = [
       // The full run surveys every page with text, the sampled ones again.

@@ -103,12 +103,16 @@ const askedIn = (stem: string) => {
   return sentences.findLast((sentence) => /[?:]\s*$|\bEXCEPT\b/.test(sentence)) ?? sentences.at(-1) ?? paragraph
 }
 
-// Words that name support for a claim without asking to add any, as in "the
-// evidence offered in support of the conclusion".
-const SupportFor = /\b(?:in support of|the support for|support for|supported by)\b/gi
+// Words that name support a claim has without asking to add any, as in "the
+// evidence offered in support of the conclusion" or "judging the support for
+// it"; "the most support for" still asks to add some.
+const SupportFor = /\b(?:in support of|the support for|supported by)\b/gi
 const Strengthens = /\b(?:strengthen|support)/i
 const Weakens = /\b(?:weaken|undermin|casts? doubt|calls? into question)/i
 const Flaw = /\bflaw|\bcriticism\b|\bcriticize|\bvulnerable\b|\bquestionable\b/i
+// Portions printed in boldface, however the question words it; a bold claim
+// is not one.
+const Boldface = /\bbold(?:faced?|[- ]faced|ed)\b|\bin bold\b|\bbold type\b/i
 
 // The Taxonomy's rules for a verbal question's type, where the question's own
 // words settle it: a question about portions in boldface is Argument
@@ -122,7 +126,7 @@ export const settledType = (group: "cr" | "rc", stem: string, type: string) => {
   const asked = askedIn(stem)
   const named = asked.replace(SupportFor, "")
   if (group === "cr") {
-    if (/\bbold/i.test(asked)) return "verbal.cr-structure"
+    if (Boldface.test(asked)) return "verbal.cr-structure"
     if (/\bmethods? of reasoning\b|\bproceeds by\b|\bargumentative (?:technique|strategy)\b/i.test(asked) && !Flaw.test(asked)) {
       return "verbal.cr-structure"
     }
@@ -784,9 +788,15 @@ export const candidateProblems = (
       detail: `The answer key says ${candidate.answerKey}, but the explanation says ${candidate.explanationAnswer}.`
     })
   }
+  // A passage's problem and the question's own are kept apart, so another
+  // Book's reading of the passage can settle the first without the second.
+  for (const content of contents(shown)) {
+    const problem = content.kind === "passage" && content.body !== "" ? renderProblem(content.body) : undefined
+    if (problem !== undefined) reasons.push({ code: "render", detail: `The passage does not render: ${problem}` })
+  }
   const texts: ReadonlyArray<readonly [string, string]> = [
     ...contents(shown).flatMap((content) =>
-      content.body === "" ? [] : [[content.kind === "passage" ? "passage" : "text with its figure", content.body] as const]
+      content.kind === "passage" || content.body === "" ? [] : [["text with its figure", content.body] as const]
     ),
     ["question", candidate.stem],
     ...candidate.parts.flatMap((part, index) => [

@@ -413,9 +413,8 @@ export const BookMapEditor = (
         )}
         {notExtracted.length > 0 && (
           <p className="hint map-hint">
-            Questions in {notExtracted.join(", ")} ranges are not extracted yet; their answer keys and explanations are
-            still read.{notExtracted.includes(TypeGroupLabels.mixed)
-              ? " Give each run of mixed pages the type of the questions it holds to extract them."
+            Questions in {notExtracted.join(", ")} ranges are not extracted yet.{notExtracted.includes(TypeGroupLabels.mixed)
+              ? " Answer keys and explanations on mixed pages are still read. Give each run of mixed pages of questions the type of the questions it holds to extract them."
               : ""}
           </p>
         )}

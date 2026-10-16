@@ -9,6 +9,7 @@ import {
   KeysDiffer,
   KeyOverrideView,
   MergeTargetChecking,
+  NoOtherPassage,
   OptionNoteView,
   PublishableReasons,
   QuestionId,
@@ -24,7 +25,16 @@ import {
 } from "../../api/Review.ts"
 import { joinedKey } from "../../api/keys.ts"
 import type { PartKind } from "../../api/parts.ts"
-import { KeyCodes, readLinkReasons, recheckSources, RepeatCodes, UnsureCodes } from "../books/bankWrites.ts"
+import {
+  KeyCodes,
+  loadBank,
+  moveQuestion,
+  readLinkReasons,
+  recheckSources,
+  RepeatCodes,
+  repeatOf,
+  UnsureCodes
+} from "../books/bankWrites.ts"
 import { Db } from "../db/Database.ts"
 import {
   approaches,
@@ -38,7 +48,8 @@ import {
   questions,
   reviewItems,
   solverRuns,
-  sources
+  sources,
+  stimuli
 } from "../db/schema.ts"
 import { SolverRuns } from "../books/enrichment.ts"
 import { JobStore } from "../jobs/JobStore.ts"
@@ -92,6 +103,7 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
   publish(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | CannotPublish>
   withdraw(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen>
   keepAsVariant(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen>
+  usePassage(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | NoOtherPassage>
   merge(
     id: ReviewItemId
   ): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | KeysDiffer | MergeTargetChecking>
@@ -389,6 +401,50 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
           return updated!
         })).pipe(Effect.flatMap(viewOf), oneAtATime)
 
+      // The same passage as the related Question's, which this one's nearly
+      // copies: the Question keeps its words and moves to that passage, and
+      // goes back through enrichment and the Publish Gate in a job. It is
+      // then compared with that passage's Questions, as linking would.
+      const usePassage = (id: ReviewItemId) =>
+        Effect.gen(function*() {
+          const row = yield* inTransaction(Effect.gen(function*() {
+            const row = yield* openItem(id, repeats)
+            const questionId = row.questionId!
+            const [question] = yield* db.select().from(questions).where(eq(questions.id, questionId)).pipe(Effect.orDie)
+            const [other] = yield* db.select({ stimulusId: questions.stimulusId }).from(questions)
+              .where(eq(questions.id, row.relatedQuestionId!)).pipe(Effect.orDie)
+            const [passage] = other?.stimulusId === null || other?.stimulusId === undefined
+              ? []
+              : yield* db.select().from(stimuli).where(eq(stimuli.id, other.stimulusId)).pipe(Effect.orDie)
+            if (
+              question === undefined || question.stimulusId === null || passage === undefined ||
+              passage.kind !== "passage" || passage.id === question.stimulusId
+            ) {
+              return yield* new NoOtherPassage()
+            }
+            const hash = yield* moveQuestion(questionId, { id: passage.id, hash: passage.normalizedHash }).pipe(
+              Effect.provideService(Db, db),
+              Effect.orDie
+            )
+            const bank = yield* loadBank(question.section).pipe(Effect.provideService(Db, db))
+            const pieces = bank.find((entry) => entry.id === questionId)?.trigrams ?? new Set<string>()
+            const repeat = repeatOf(questionId, hash!, pieces, passage.id, bank)
+            const kept = readLinkReasons(question.linkReasons).filter((reason) => !RepeatReasons.has(reason.code))
+            const now = yield* Clock.currentTimeMillis
+            yield* db.update(questions).set({
+              linkReasons: JSON.stringify(repeat === undefined ? kept : [...kept, repeat.reason]),
+              relatedQuestionId: repeat?.related ?? null,
+              status: "draft",
+              updatedAt: now
+            }).where(eq(questions.id, questionId)).pipe(Effect.orDie)
+            yield* db.update(reviewItems).set({ relatedQuestionId: repeat?.related ?? null }).where(eq(reviewItems.id, row.id))
+              .pipe(Effect.orDie)
+            yield* refresh([questionId], "Checking a Question moved to another passage")
+            return row
+          }))
+          return yield* viewOf((yield* db.select().from(reviewItems).where(eq(reviewItems.id, row.id)).pipe(Effect.orDie))[0]!)
+        }).pipe(oneAtATime)
+
       // The same Question: its Sources join the related one, and it is
       // withdrawn, marked as merged into it, so a Learner's history with it
       // counts for the related one and its facts stay (ADR 0005). Items and
@@ -555,6 +611,7 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
         publish,
         withdraw,
         keepAsVariant,
+        usePassage,
         merge,
         dismiss,
         overrideKey,

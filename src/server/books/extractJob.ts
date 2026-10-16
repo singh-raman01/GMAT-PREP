@@ -262,9 +262,6 @@ const linkStep = (params: typeof Params.Type, setsLinked: number, stepsDone: num
     const files = yield* BookFiles
     const pdf = yield* Effect.cached(files.read(loaded.book.fileHash))
     const counts: Record<Linked, number> = { created: 0, merged: 0, relinked: 0, unchanged: 0, skipped: 0 }
-    // Questions of other Books a repaired passage sent back to the Publish
-    // Gate, which this run does not check.
-    const sentBack = new Set<string>()
     for (const item of linked) {
       const reader = readers.get(item.page)
       if (item._tag === "Skip") {
@@ -272,28 +269,36 @@ const linkStep = (params: typeof Params.Type, setsLinked: number, stepsDone: num
         continue
       }
       const prepared = yield* prepare(params.bookId, item, pdf)
-      const outcome = yield* linkCandidate({
-        bookId: params.bookId,
-        set: set.name,
-        mapVersion: params.mapVersion,
-        candidate: item,
-        origin: { model: reader?.model ?? "", promptVersion: reader?.promptVersion ?? "" },
-        checks: prepared.checks,
-        ...(prepared.figure === undefined ? {} : { figure: prepared.figure })
-      }, yield* bankFor(item.section), passages)
-      counts[outcome.linked] += 1
-      for (const id of outcome.sentBack) sentBack.add(id)
-    }
-    // Those that took a Source in the Book meanwhile are this run's to check.
-    const inBook = sentBack.size === 0 ? [] : yield* db.selectDistinct({ id: sources.questionId }).from(sources)
-      .where(and(eq(sources.bookId, params.bookId), inArray(sources.questionId, [...sentBack]))).pipe(Effect.orDie)
-    const unchecked = [...sentBack].filter((id) => !inBook.some((row) => row.id === id))
-    if (unchecked.length > 0) {
-      yield* queueJob(
-        QuestionRefresh,
-        { questionIds: unchecked, reason: `Checking Questions whose passage ${params.title} gave a readable text` },
-        RefreshCap
+      const bank = yield* bankFor(item.section)
+      // Questions of other Books the item sent back to the Publish Gate,
+      // such as those a repaired passage settles, get a job of their own,
+      // queued with the change so none is left waiting.
+      const outcome = yield* db.transaction(() =>
+        Effect.gen(function*() {
+          const outcome = yield* linkCandidate({
+            bookId: params.bookId,
+            set: set.name,
+            mapVersion: params.mapVersion,
+            candidate: item,
+            origin: { model: reader?.model ?? "", promptVersion: reader?.promptVersion ?? "" },
+            checks: prepared.checks,
+            ...(prepared.figure === undefined ? {} : { figure: prepared.figure })
+          }, bank, passages)
+          if (outcome.sentBack.length === 0) return outcome
+          const inBook = yield* db.selectDistinct({ id: sources.questionId }).from(sources)
+            .where(and(eq(sources.bookId, params.bookId), inArray(sources.questionId, [...outcome.sentBack])))
+          const unchecked = outcome.sentBack.filter((id) => !inBook.some((row) => row.id === id))
+          if (unchecked.length > 0) {
+            yield* queueJob(
+              QuestionRefresh,
+              { questionIds: unchecked, reason: `Checking Questions ${params.title} changed` },
+              RefreshCap
+            )
+          }
+          return outcome
+        })
       ).pipe(Effect.orDie)
+      counts[outcome.linked] += 1
     }
     const summary = [
       counts.created > 0 ? `${counts.created} new` : undefined,

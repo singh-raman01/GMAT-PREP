@@ -264,6 +264,24 @@ describe("The verbal type rules", () => {
       .toBe("verbal.rc-application")
   })
 
+  test("take 'support for' as asking for support only where more is asked for", () => {
+    expect(cr("Each of the following, if true, provides support for the officials' prediction EXCEPT:", "verbal.cr-weaken"))
+      .toBe("verbal.cr-strengthen")
+    expect(settledType("rc", "Which of the following, if true, would provide the most support for the author's claim?", "verbal.rc-inference"))
+      .toBe("verbal.rc-application")
+    expect(settledType(
+      "rc",
+      "Which of the following, if true, would provide the strongest support for the hypothesis described in the passage?",
+      "verbal.rc-inference"
+    )).toBe("verbal.rc-application")
+  })
+
+  test("take only portions printed in boldface as Argument structure", () => {
+    expect(cr("Which of the following, if true, most strengthens the critics' bold prediction?", "verbal.cr-strengthen"))
+      .toBe("verbal.cr-strengthen")
+    expect(cr("The portions in boldface play which of the following roles?", "verbal.cr-inference")).toBe("verbal.cr-structure")
+  })
+
   test("read only the question when the stem has no blank line before it", () => {
     expect(settledType(
       "cr",

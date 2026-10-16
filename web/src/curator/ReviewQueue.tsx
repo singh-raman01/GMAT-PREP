@@ -51,7 +51,7 @@ const RepeatCodes: ReadonlySet<ReasonCode> = new Set(["near-match", "same-text-o
 // Problems that leave a Question's text or figure in doubt.
 const UnsureCodes: ReadonlySet<ReasonCode> = new Set(["structure", "render", "figure"])
 
-type Action = "publish" | "withdraw" | "keepAsVariant" | "merge" | "dismiss" | "checkAgain"
+type Action = "publish" | "withdraw" | "keepAsVariant" | "usePassage" | "merge" | "dismiss" | "checkAgain"
 
 const send = (client: Client, action: Action, id: ReviewItemView["id"]): Effect.Effect<
   ReviewItemView,
@@ -65,6 +65,8 @@ const send = (client: Client, action: Action, id: ReviewItemView["id"]): Effect.
       return client.review.withdraw(params)
     case "keepAsVariant":
       return client.review.keepAsVariant(params)
+    case "usePassage":
+      return client.review.usePassage(params)
     case "merge":
       return client.review.merge(params)
     case "dismiss":
@@ -183,10 +185,14 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
     if (result._tag === "Success") {
       const next = result.success
       // Each announcement names its item, so two in a row are both read out.
-      if (action === "checkAgain") {
+      if (action === "checkAgain" || action === "usePassage") {
         leave(next.id)
         away.current.set(next.id, itemName(item))
-        setAnnouncement(`${itemName(item)} is being checked again. It comes back here if it is held.`)
+        setAnnouncement(
+          action === "usePassage"
+            ? `${itemName(item)} now asks about the other Question's passage. It is being checked again and comes back here if it is held.`
+            : `${itemName(item)} is being checked again. It comes back here if it is held.`
+        )
         void load()
         return undefined
       }
@@ -205,6 +211,10 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
       return `Its key is ${failure.key}, by your Key Override, and the other Question's is ${
         failure.relatedKey ?? "not known"
       }. Change one of the keys first, so they agree.`
+    }
+    if (failure._tag === "NoOtherPassage") {
+      void load()
+      return "The two Questions no longer ask about different passages; the queue was read again."
     }
     if (failure._tag === "MergeTargetChecking") {
       void load()
@@ -559,6 +569,9 @@ const ReviewItem = (
   const first = question.sources[0]
   const canPublish = item.reasons.every((reason) => PublishableReasons.has(reason.code))
   const repeats = item.related !== null && item.reasons.some((reason) => RepeatCodes.has(reason.code))
+  // Two passages that differ only a little are one passage printed twice.
+  const otherPassage = repeats && question.stimulus?.kind === "passage" && item.related?.stimulus?.kind === "passage" &&
+    item.related.stimulus.body !== question.stimulus.body
   const override = question.keyOverrides.at(-1)
   return (
     <li className="review-item">
@@ -607,6 +620,11 @@ const ReviewItem = (
             <button type="button" className="button button-quiet" {...about} onClick={() => void run("keepAsVariant")}>
               Keep as a Variant
             </button>
+            {otherPassage && (
+              <button type="button" className="button button-quiet" {...about} onClick={() => void run("usePassage")}>
+                Use the other passage
+              </button>
+            )}
             <button
               ref={mergeButton}
               type="button"
@@ -642,6 +660,12 @@ const ReviewItem = (
           Withdraw
         </button>
       </div>
+      {otherPassage && (
+        <p className="hint">
+          Use the other passage when the two passages are the same one printed twice: this Question keeps its words, asks
+          about the other Question's passage, and is checked again.
+        </p>
+      )}
       {item.checkable && (
         <p className="hint">Check again asks once more for the tags, solves, Approaches or notes a reply left unusable.</p>
       )}
