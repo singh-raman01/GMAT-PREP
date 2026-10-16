@@ -2,9 +2,13 @@ import { and, asc, eq, isNotNull, isNull, lt, max, ne, sql } from "drizzle-orm"
 import { Clock, Effect, Option, Schema } from "effect"
 import { sha256 } from "../access/tokens.ts"
 import { Db } from "../db/Database.ts"
+import { parseCell } from "../../api/dataset.ts"
+import { joinedKey } from "../../api/keys.ts"
+import { normalizeText } from "../../api/richText.ts"
 import {
   books,
   bookSkips,
+  datasets,
   goldenQuestions,
   options,
   parts,
@@ -14,16 +18,19 @@ import {
   stimuli,
   taxonomyVersions
 } from "../db/schema.ts"
-import { normalizeText } from "../../api/richText.ts"
+import { encodeColumns, encodeFigure, encodeRows, type FigureSource } from "../stimuli/stimuli.ts"
 import {
   type Candidate,
   candidateProblems,
   comparableText,
+  type ContentDraft,
   NearMatch,
   type Reason,
   type ReasonCode,
   similarity,
   type Skip,
+  type StimulusDraft,
+  type TableDraft,
   trigrams
 } from "./linking.ts"
 
@@ -53,31 +60,121 @@ export const loadBank = (section: string) =>
       id: questions.id,
       hash: questions.normalizedHash,
       text: questions.normalizedText,
-      key: parts.key,
       stimulusId: questions.stimulusId
     }).from(questions)
-      .leftJoin(parts, and(eq(parts.questionId, questions.id), eq(parts.position, 0)))
       .where(and(eq(questions.section, section), ne(questions.status, "withdrawn")))
       .pipe(Effect.orDie)
+    const keyRows = yield* db.select({ questionId: parts.questionId, key: parts.key }).from(parts)
+      .innerJoin(questions, eq(questions.id, parts.questionId))
+      .where(and(eq(questions.section, section), ne(questions.status, "withdrawn")))
+      .orderBy(asc(parts.position))
+      .pipe(Effect.orDie)
+    const keys = Map.groupBy(keyRows, (row) => row.questionId)
     return rows.map((row): BankEntry => ({
       id: row.id,
       hash: row.hash,
       trigrams: trigrams(row.text),
-      key: row.key,
+      key: joinedKey((keys.get(row.id) ?? []).map((part) => part.key)),
       stimulusId: row.stimulusId
     }))
   })
 
-// The stored passage with this text, or a new one. Passages compare by their
-// normalized text, so the same passage from two Books is one Stimulus.
-const stimulusFor = (passage: string, now: number) =>
+// A Question's Parts, with its key as Sources give one.
+export const keyOf = (questionId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
-    const hash = sha256(normalizeText(passage))
-    const [found] = yield* db.select({ id: stimuli.id }).from(stimuli).where(eq(stimuli.normalizedHash, hash)).limit(1)
-    if (found !== undefined) return { id: found.id, hash }
+    const rows = yield* db.select().from(parts).where(eq(parts.questionId, questionId)).orderBy(asc(parts.position))
+    return {
+      parts: rows,
+      key: joinedKey(rows.map((part) => part.key)),
+      // The Curator overrode a Part's key, which settles every question
+      // about the key.
+      overridden: rows.some((part) => part.keyBasis === "override")
+    }
+  })
+
+const tableText = (table: TableDraft) =>
+  [table.columns.map((column) => `${column.name} ${column.type} ${column.unit}`).join(" | "), ...table.rows.map((row) =>
+    row.join(" | ")
+  )].join("\n")
+
+// What a Stimulus is compared by, so the same passage, table or chart from
+// two Books is one Stimulus. A figure kept as an image is its own.
+const contentHash = (content: ContentDraft, figure: FigureSource | undefined): string => {
+  switch (content.kind) {
+    case "passage":
+      return sha256(normalizeText(content.body))
+    case "table":
+      return sha256(`table|${normalizeText(content.body)}|${tableText(content.table)}`)
+    case "chart":
+      return sha256(`chart|${normalizeText(content.body)}|${tableText(content.table)}|${JSON.stringify(content.spec)}`)
+    case "figure":
+      return sha256(`figure|${figure?.bookId}|${figure?.page}|${figure?.top}|${figure?.bottom}|${figure?.file}`)
+  }
+}
+
+const stimulusHash = (draft: StimulusDraft, figure: FigureSource | undefined) =>
+  draft.kind === "tabs"
+    ? sha256(`tabs|${draft.tabs.map((tab) => `${normalizeText(tab.title)}:${contentHash(tab, figure)}`).join("|")}`)
+    : contentHash(draft, figure)
+
+const insertContent = (
+  content: ContentDraft,
+  hash: string,
+  now: number,
+  figure: FigureSource | undefined,
+  tab?: { readonly parentId: string; readonly position: number; readonly title: string }
+) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    let datasetId: string | null = null
+    if (content.kind === "table" || content.kind === "chart") {
+      datasetId = crypto.randomUUID()
+      const types = content.table.columns.map((column) => column.type)
+      yield* db.insert(datasets).values({
+        id: datasetId,
+        columns: encodeColumns(content.table.columns),
+        rows: encodeRows(content.table.rows.map((row) =>
+          row.map((text, index) => {
+            const parsed = parseCell(types[index] ?? "text", text)
+            return { text, value: "value" in parsed ? parsed.value : null }
+          })
+        )),
+        origin: "book",
+        createdAt: now
+      })
+    }
     const id = crypto.randomUUID()
-    yield* db.insert(stimuli).values({ id, kind: "passage", body: passage, normalizedHash: hash, createdAt: now })
+    yield* db.insert(stimuli).values({
+      id,
+      kind: content.kind,
+      body: content.body,
+      normalizedHash: hash,
+      datasetId,
+      chartSpec: content.kind === "chart" ? JSON.stringify(content.spec) : null,
+      figure: content.kind === "figure" && figure !== undefined ? encodeFigure(figure) : null,
+      parentId: tab?.parentId ?? null,
+      position: tab?.position ?? null,
+      title: tab?.title ?? null,
+      createdAt: now
+    })
+    return id
+  })
+
+// The stored Stimulus with this content, or a new one.
+const stimulusFor = (draft: StimulusDraft, now: number, figure: FigureSource | undefined) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const hash = stimulusHash(draft, figure)
+    const [found] = yield* db.select({ id: stimuli.id }).from(stimuli)
+      .where(and(eq(stimuli.normalizedHash, hash), isNull(stimuli.parentId))).limit(1)
+    if (found !== undefined) return { id: found.id, hash }
+    if (draft.kind !== "tabs") return { id: yield* insertContent(draft, hash, now, figure), hash }
+    const id = crypto.randomUUID()
+    yield* db.insert(stimuli).values({ id, kind: "tabs", body: "", normalizedHash: hash, createdAt: now })
+    for (const [position, tab] of draft.tabs.entries()) {
+      yield* insertContent(tab, contentHash(tab, figure), now, figure, { parentId: id, position, title: tab.title })
+    }
     return { id, hash }
   })
 
@@ -131,9 +228,9 @@ export const holdForReview = (questionId: string, reasons: ReadonlyArray<Reason>
 const sourceKeyReasons = (questionId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
-    const [part] = yield* db.select({ key: parts.key, keyBasis: parts.keyBasis }).from(parts)
-      .where(and(eq(parts.questionId, questionId), eq(parts.position, 0)))
-    if (part === undefined || part.keyBasis === "override") return []
+    const own = yield* keyOf(questionId)
+    if (own.parts.length === 0 || own.overridden) return []
+    const part = { key: own.key }
     const given = yield* db.select({
       title: books.title,
       set: sources.set,
@@ -242,6 +339,8 @@ export const linkCandidate = (
     readonly mapVersion: number
     readonly candidate: Candidate
     readonly origin: QuestionOrigin
+    // For an item that needs a figure: the band of its page, kept as an image.
+    readonly figure?: FigureSource
   },
   bank: Array<BankEntry>
 ): Effect.Effect<Linked, never, Db> =>
@@ -289,20 +388,19 @@ export const linkCandidate = (
           // out again, keeping the repeats the Curator has not settled.
           yield* db.update(questions).set({ bookLabel: candidate.label, updatedAt: now })
             .where(eq(questions.id, source.questionId))
-          const [part] = yield* db.select().from(parts)
-            .where(and(eq(parts.questionId, source.questionId), eq(parts.position, 0)))
-          const keyChanged = part !== undefined && part.keyBasis !== "override" && part.key !== candidate.key
-          if (keyChanged) {
-            yield* db.update(parts).set({ key: candidate.key, keyBasis: candidate.key === null ? null : "book" })
-              .where(eq(parts.id, part.id))
+          const own = yield* keyOf(source.questionId)
+          let keyChanged = false
+          for (const part of own.parts) {
+            const key = candidate.parts[part.position]?.key ?? null
+            if (part.keyBasis === "override" || part.key === key) continue
+            keyChanged = true
+            yield* db.update(parts).set({ key, keyBasis: key === null ? null : "book" }).where(eq(parts.id, part.id))
           }
           const [question] = yield* db.select({ linkReasons: questions.linkReasons, related: questions.relatedQuestionId })
             .from(questions).where(eq(questions.id, source.questionId))
           const repeats = readLinkReasons(question?.linkReasons ?? "[]").filter((reason) => RepeatCodes.has(reason.code))
           // A key the Curator overrode settles every question about the key.
-          const problems = candidateProblems(candidate).filter((reason) =>
-            part?.keyBasis !== "override" || !KeyCodes.has(reason.code)
-          )
+          const problems = candidateProblems(candidate).filter((reason) => !own.overridden || !KeyCodes.has(reason.code))
           yield* settle(
             source.questionId,
             [...problems, ...repeats, ...yield* sourceKeyReasons(source.questionId)],
@@ -312,9 +410,10 @@ export const linkCandidate = (
           return "relinked" as const
         }
 
-        // A passage's Question is the same Question only on the same passage.
-        const stimulus = candidate.passage === null ? null : yield* stimulusFor(candidate.passage, now)
-        const text = comparableText(candidate.stem, candidate.options)
+        // A Question about a passage, table or chart is the same Question
+        // only about the same one.
+        const stimulus = candidate.stimulus === null ? null : yield* stimulusFor(candidate.stimulus, now, input.figure)
+        const text = comparableText(candidate.stem, candidate.parts)
         const hash = sha256(stimulus === null ? text : `${stimulus.hash}|${text}`)
         const pieces = trigrams(text)
         const problems = candidateProblems(candidate)
@@ -363,9 +462,10 @@ export const linkCandidate = (
         // goes back through the Publish Gate.
         if (exact !== undefined && !unsure && exact.key === null) {
           yield* addSource(exact.id, true)
-          const [part] = yield* db.select().from(parts).where(and(eq(parts.questionId, exact.id), eq(parts.position, 0)))
-          if (part !== undefined && part.keyBasis !== "override") {
-            yield* db.update(parts).set({ key: candidate.key, keyBasis: "book" }).where(eq(parts.id, part.id))
+          for (const part of (yield* keyOf(exact.id)).parts) {
+            if (part.keyBasis === "override") continue
+            const key = candidate.parts[part.position]?.key ?? null
+            yield* db.update(parts).set({ key, keyBasis: key === null ? null : "book" }).where(eq(parts.id, part.id))
           }
           const [question] = yield* db.select({ linkReasons: questions.linkReasons, related: questions.relatedQuestionId })
             .from(questions).where(eq(questions.id, exact.id))
@@ -413,7 +513,6 @@ export const linkCandidate = (
 
         const [taxonomy] = yield* db.select({ version: max(taxonomyVersions.version) }).from(taxonomyVersions)
         const questionId = crypto.randomUUID()
-        const partId = crypto.randomUUID()
         yield* db.insert(questions).values({
           id: questionId,
           section: candidate.section,
@@ -433,22 +532,25 @@ export const linkCandidate = (
           createdAt: now,
           updatedAt: now
         })
-        yield* db.insert(parts).values({
-          id: partId,
-          questionId,
-          position: 0,
-          kind: "single-choice",
-          prompt: null,
-          key: candidate.key,
-          keyBasis: candidate.key === null ? null : "book"
-        })
-        if (candidate.options.length > 0) {
-          yield* db.insert(options).values(candidate.options.map((option, position) => ({
-            partId,
+        for (const [position, part] of candidate.parts.entries()) {
+          const partId = crypto.randomUUID()
+          yield* db.insert(parts).values({
+            id: partId,
+            questionId,
             position,
-            label: option.label,
-            text: option.text
-          })))
+            kind: part.kind,
+            prompt: part.prompt,
+            key: part.key,
+            keyBasis: part.key === null ? null : "book"
+          })
+          if (part.options.length > 0) {
+            yield* db.insert(options).values(part.options.map((option, at) => ({
+              partId,
+              position: at,
+              label: option.label,
+              text: option.text
+            })))
+          }
         }
         yield* addSource(questionId, false)
         bank.push({ id: questionId, hash, trigrams: pieces, key: candidate.key, stimulusId: stimulus?.id ?? null })

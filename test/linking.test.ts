@@ -5,6 +5,7 @@ import {
   DsOptions,
   linkSet,
   type LinkedItem,
+  optionNamed,
   settledType
 } from "../src/server/books/linking.ts"
 import type { PageReading } from "../src/server/books/readings.ts"
@@ -145,10 +146,11 @@ describe("Verbal and Data Sufficiency questions", () => {
       labels: []
     })
     const [first, second, fourth] = candidates(linked)
-    expect(first).toMatchObject({ section: "verbal", questionType: "verbal.rc-main-idea", passage: "The council met twice." })
-    expect(second).toMatchObject({ page: 6, questionType: "verbal.rc-application", passage: "The council met twice." })
+    const passage = { kind: "passage", body: "The council met twice." }
+    expect(first).toMatchObject({ section: "verbal", questionType: "verbal.rc-main-idea", stimulus: passage })
+    expect(second).toMatchObject({ page: 6, questionType: "verbal.rc-application", stimulus: passage })
     // No passage names the fourth, so it waits in the Review Queue.
-    expect(fourth?.passage).toBeNull()
+    expect(fourth?.stimulus).toBeNull()
     expect(candidateProblems(fourth!)).toEqual([
       { code: "structure", detail: "The readings do not say which passage it asks about." }
     ])
@@ -186,9 +188,36 @@ describe("Verbal and Data Sufficiency questions", () => {
       section: "di",
       questionType: "di.ds",
       stem: "Is n even?\n\n(1) n + 1 is odd.\n\n(2) 3n is even.",
-      options: DsOptions,
+      parts: [{ kind: "single-choice", prompt: null, options: DsOptions, key: "D" }],
       key: "D"
     })
     expect(linked[1]).toMatchObject({ _tag: "Skip", reason: "geometry" })
+  })
+})
+
+describe("A printed answer", () => {
+  const lettered = (texts: ReadonlyArray<string>) => texts.map((text, index) => ({ label: "ABCDE"[index]!, text }))
+
+  test("names the option with its letter, even when another option's words start with that letter", () => {
+    const cafe = lettered([
+      "Many commuters pass the cafe.",
+      "No other cafe opens early.",
+      "Most commuters buy coffee at the station.",
+      "Commuters have asked the cafe to open earlier.",
+      "The cafe's coffee is cheaper."
+    ])
+    expect(optionNamed(cafe, "C")).toBe("C")
+    expect(optionNamed(cafe, "(D)")).toBe("D")
+  })
+
+  test("names an option by its words, or by the start of exactly one option's words", () => {
+    const pair = lettered(["Yes", "No"])
+    expect(["Yes", "no", "Y", "N"].map((printed) => optionNamed(pair, printed))).toEqual(["A", "B", "A", "B"])
+    const menu = lettered(["less than", "about as much as", "more than"])
+    expect(optionNamed(menu, "more than")).toBe("C")
+    expect(optionNamed(menu, "B")).toBe("B")
+    expect(optionNamed(menu, "m")).toBe("C")
+    expect(optionNamed(lettered(["more than", "most"]), "mo")).toBeUndefined()
+    expect(optionNamed(menu, "twice")).toBeUndefined()
   })
 })

@@ -1,6 +1,7 @@
 import { asc, eq, inArray } from "drizzle-orm"
 import { Effect } from "effect"
 import { bandOf } from "../../api/difficulty.ts"
+import { joinedKey } from "../../api/keys.ts"
 import {
   Debrief,
   DebriefApproach,
@@ -164,12 +165,6 @@ export const practiceQuestion = (
   })
 }
 
-// An Approach's answer: the option it reaches in each Part, in order,
-// joined with commas, such as C for one Part or A,B for two; undefined
-// while a Part has no key.
-export const approachAnswer = (choices: ReadonlyArray<string | null>) =>
-  choices.every((choice) => choice !== null) ? choices.join(",") : undefined
-
 // The Trap Note for each wrong option picked, and the Approaches that reach
 // the current key, fastest first. Trap Notes written before a key change are
 // left out until they are written again.
@@ -193,8 +188,8 @@ export const debriefOf = (question: StoredQuestion, selection: Selection, names:
   })
   // An Approach names the option it reaches in each Part, in order; one
   // written against a key since replaced is left out.
-  const answer = approachAnswer(keys.map((key) => key.key))
-  const valid = question.approaches.filter((approach) => answer !== undefined && approach.answer === answer)
+  const answer = joinedKey(keys.map((key) => key.key))
+  const valid = question.approaches.filter((approach) => answer !== null && approach.answer === answer)
   return new Debrief({
     correct: isCorrect(selection, keys),
     keys: keys.map((key) => ({ part: key.position, key: key.key })),

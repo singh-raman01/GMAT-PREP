@@ -11,6 +11,8 @@ import { bookMaps, books, goldenQuestions, goldenRunReadings, goldenRuns, golden
 import type { JobKind } from "../jobs/JobKind.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { type GoldenEntry, type GoldenItem, goldenReport, type GoldenTags } from "./goldenReport.ts"
+import { PartKind } from "../../api/Practice.ts"
+import { draftText } from "../stimuli/stimulusText.ts"
 
 // Checks the golden set against the current prompts and models: the pages
 // its Questions came from are read again, one a step, with their set's answer
@@ -30,16 +32,35 @@ const Checkpoint = Schema.Struct({
   index: Schema.Int
 })
 
+const Option_ = Schema.Struct({ label: Schema.String, text: Schema.String })
+
 export const GoldenExpected = Schema.Struct({
   questionType: Schema.String,
-  // The passage, for a Reading Comprehension Question.
+  // What it asks about, written out under its label; see stimulusText.ts.
+  stimulus: Schema.optional(Schema.NullOr(Schema.String)),
+  // An approval from before Stimuli of other kinds: an RC passage alone.
   passage: Schema.optional(Schema.NullOr(Schema.String)),
   stem: Schema.String,
-  options: Schema.Array(Schema.Struct({ label: Schema.String, text: Schema.String })),
+  // The first Part's options; parts gives every Part.
+  options: Schema.Array(Option_),
+  parts: Schema.optional(Schema.Array(Schema.Struct({
+    kind: PartKind,
+    prompt: Schema.NullOr(Schema.String),
+    options: Schema.Array(Option_)
+  }))),
+  // Each Part's key, joined.
   key: Schema.NullOr(Schema.String),
   primarySkill: Schema.String,
   secondarySkills: Schema.Array(Schema.String)
 })
+type GoldenExpected = typeof GoldenExpected.Type
+
+// What an approval expects, however old it is.
+const expectedStimulus = (expected: GoldenExpected) =>
+  expected.stimulus ?? (expected.passage === undefined || expected.passage === null ? null : `The passage:\n${expected.passage}`)
+
+const expectedParts = (expected: GoldenExpected) =>
+  expected.parts ?? [{ kind: "single-choice" as const, prompt: null, options: expected.options }]
 const decodeExpected = Schema.decodeUnknownSync(Schema.fromJsonString(GoldenExpected))
 const decodeRanges = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(MapRange)))
 export const encodeReport = Schema.encodeSync(Schema.fromJsonString(GoldenReport))
@@ -168,9 +189,16 @@ const tagStep = (jobId: string, params: typeof Params.Type, index: number) =>
     const taxonomy = (yield* Taxonomy).view
     // Tagged with the input production tagging has, the Book's explanation
     // included.
+    const stimulus = expectedStimulus(row.expected)
+    const split = stimulus?.indexOf(":\n") ?? -1
     const tagged = yield* tagQuestion(jobId, taxonomy, {
-      ...row.expected,
-      stimulus: row.expected.passage ?? null,
+      questionType: row.expected.questionType,
+      stimulus: stimulus === null
+        ? null
+        : { label: stimulus.slice(0, Math.max(0, split)), text: stimulus.slice(split + 2) },
+      stem: row.expected.stem,
+      parts: expectedParts(row.expected),
+      key: row.expected.key,
       explanation: row.explanation
     }).pipe(
       Effect.catchTag("LlmInvalidReply", () => Effect.succeed(undefined))
@@ -225,9 +253,15 @@ const reportStep = (params: typeof Params.Type) =>
     const entries = planned.rows.map((row): GoldenEntry => {
       const found = linked.get(setKey(row.set))?.find((item) => item.number === row.number && item.page === row.page)
       const tagged = tags.find((each) => each.questionId === row.questionId)
+      const quoted = found?.stimulus === null || found === undefined ? null : draftText(found.stimulus)
       const item: GoldenItem | null = found === undefined
         ? null
-        : { passage: found.passage, stem: found.stem, options: found.options, key: found.key }
+        : {
+          stimulus: quoted === null ? null : `${quoted.label}:\n${quoted.text}`,
+          stem: found.stem,
+          parts: found.parts.map((part) => ({ prompt: part.prompt, options: part.options })),
+          key: found.key
+        }
       const again: GoldenTags | null = tagged === undefined || tagged.primarySkill === null
         ? null
         : {
@@ -239,7 +273,11 @@ const reportStep = (params: typeof Params.Type) =>
         questionId: row.questionId,
         set: row.set,
         number: row.number,
-        expected: { ...row.expected, passage: row.expected.passage ?? null },
+        expected: {
+          ...row.expected,
+          stimulus: expectedStimulus(row.expected),
+          parts: expectedParts(row.expected).map((part) => ({ prompt: part.prompt, options: part.options }))
+        },
         item,
         tags: again
       }
