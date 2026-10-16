@@ -22,8 +22,9 @@ export const studyClockOf = (profileId: string) =>
 // A timed Session's Rated Responses, once it ends, each in turn: one moves
 // its Question's Difficulty by the Profile's Section Ability before it, from
 // the Sessions that ended earlier and the answers before it in this one, and
-// gives the Section a new Score Estimate. Timed Practice Sets, Sectionals
-// and Mock Sections all end this way.
+// gives the Section a new Score Estimate. Timed Practice Sets and Sectionals
+// are rated when they end; a Mock's Sections when the Mock ends, in the
+// order they were taken.
 export const rateSession = (session: { readonly id: string; readonly profileId: string }) =>
   Effect.gen(function*() {
     const db = yield* Db

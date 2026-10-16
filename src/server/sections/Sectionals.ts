@@ -72,8 +72,9 @@ import { judge, rescore, scored } from "./report.ts"
 // "Sessions"). The next unit is chosen after each Response, adaptively; a
 // Question must be answered before the next appears and there is no going
 // back. When time remains after the last Question, Review & Edit allows up
-// to three changed answers. The Section is scored, and Difficulty and
-// Ability move, only when it closes.
+// to three changed answers. The Section is scored only when it closes, and
+// Difficulty and Ability move then for a Sectional, and for a Mock's
+// Sections when the Mock ends.
 
 type SessionRow = typeof sessions.$inferSelect
 type ResponseRow = typeof responses.$inferSelect
@@ -885,15 +886,16 @@ export class Sectionals extends Context.Service<Sectionals, {
           else yield* end(session, "finished", elapsedMs)
         })).pipe(Effect.flatMap(() => after(caller, id)), oneAtATime)
 
-      // This device takes over the Section. Taking over a Mock's Section
-      // takes over the Mock too, so its break and next Section follow.
+      // This device takes over the Section. Taking over a Mock's running
+      // Section takes over the Mock too, so its break and next Section
+      // follow; a closed one leaves the Mock with the device it is on.
       const claim = (caller: Caller, id: SessionId) =>
         Effect.gen(function*() {
           const session = yield* own(caller.profileId, id)
           if (caller.device !== undefined) {
             yield* db.update(sessions).set({ holder: caller.device }).where(eq(sessions.id, id)).pipe(Effect.orDie)
             const mock = decodeConfig(session.config).mock
-            if (mock !== undefined) {
+            if (mock !== undefined && session.status === "active") {
               yield* db.update(sessions).set({ holder: caller.device })
                 .where(and(eq(sessions.id, mock.id), eq(sessions.status, "active"))).pipe(Effect.orDie)
             }
@@ -910,9 +912,14 @@ export class Sectionals extends Context.Service<Sectionals, {
         if (active.length === 0) yield* wake.close
         const ids = new Set(active.map((session) => session.id))
         for (const id of [...clocks.keys()]) if (!ids.has(id)) clocks.delete(id)
+        // One Section that cannot tick does not hold up the others.
         for (const session of active) {
-          const { expired } = yield* advance(session, now)
-          if (expired) yield* inTransaction(expire(session))
+          yield* Effect.gen(function*() {
+            const { expired } = yield* advance(session, now)
+            if (expired) yield* inTransaction(expire(session))
+          }).pipe(
+            Effect.catchCause((cause) => Effect.logError(`The Section ${session.id} could not tick: ${Cause.pretty(cause)}`))
+          )
         }
       }).pipe(
         oneAtATime,
