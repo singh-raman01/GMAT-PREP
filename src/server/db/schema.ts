@@ -258,6 +258,25 @@ export const stimuli = sqliteTable(
   (t) => [index("stimuli_hash").on(t.normalizedHash), index("stimuli_parent").on(t.parentId)]
 )
 
+// A generation batch (ADR 0003): Generated Questions of one Data Insights
+// Question Type that the Curator asked for, aimed at a Skill and a Difficulty
+// Band.
+export const generationBatches = sqliteTable("generation_batches", {
+  id: text("id").primaryKey(),
+  // Counts up from 1, for naming the batch.
+  number: integer("number").notNull().unique(),
+  questionType: text("question_type").notNull(),
+  skill: text("skill").notNull(),
+  // easy, medium or hard
+  band: text("band").notNull(),
+  // How many items it asks for: Questions, or MSR sets of three.
+  count: integer("count").notNull(),
+  // Items the generator could not make valid, even when asked again.
+  failed: integer("failed").notNull().default(0),
+  jobId: text("job_id").references(() => jobs.id, { onDelete: "set null" }),
+  createdAt: integer("created_at").notNull()
+})
+
 // The Question Bank. A Question keeps the model and prompt that extracted it.
 export const questions = sqliteTable(
   "questions",
@@ -310,6 +329,9 @@ export const questions = sqliteTable(
     // The Question the Curator merged this one into. A merged Question stays,
     // withdrawn, and a Learner's history with it counts for that Question.
     mergedInto: text("merged_into"),
+    // A Generated Question's batch, and its item's place in the batch from 1.
+    batchId: text("batch_id").references(() => generationBatches.id, { onDelete: "restrict" }),
+    batchItem: integer("batch_item"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull()
   },
@@ -317,7 +339,8 @@ export const questions = sqliteTable(
     index("questions_hash").on(t.normalizedHash),
     index("questions_stimulus").on(t.stimulusId),
     index("questions_status").on(t.status),
-    index("questions_enrichment").on(t.enrichment)
+    index("questions_enrichment").on(t.enrichment),
+    index("questions_batch").on(t.batchId)
   ]
 )
 
@@ -339,6 +362,29 @@ export const parts = sqliteTable(
   },
   (t) => [uniqueIndex("parts_question_position").on(t.questionId, t.position)]
 )
+
+// How a Generated Question's Part was keyed: the predicate the generator
+// wrote, the one a second, independent pass wrote from the Part's words, and
+// what each gave on the Dataset. An MSR statement that is an inference from
+// text has no predicates; its key waits for agreeing solves and the Curator.
+export const statementPredicates = sqliteTable("statement_predicates", {
+  partId: text("part_id").primaryKey().references(() => parts.id, { onDelete: "cascade" }),
+  // computed or inference
+  kind: text("kind").notNull(),
+  datasetId: text("dataset_id").references(() => datasets.id, { onDelete: "restrict" }),
+  // JSON: see generation/predicates.ts.
+  predicate: text("predicate"),
+  second: text("second"),
+  // What each gave, as the Curator reads it.
+  result: text("result"),
+  secondResult: text("second_result"),
+  // A blank whose nearest option counts.
+  approximate: integer("approximate", { mode: "boolean" }).notNull().default(false),
+  // The model and prompt of the second pass.
+  model: text("model").notNull(),
+  promptVersion: text("prompt_version").notNull(),
+  createdAt: integer("created_at").notNull()
+})
 
 export const options = sqliteTable(
   "options",

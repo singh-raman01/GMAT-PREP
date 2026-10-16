@@ -16,6 +16,7 @@ import { CuratorCookie } from "../../api/Curator.ts"
 import { BookFiles } from "../books/BookFiles.ts"
 import { Books } from "../books/Books.ts"
 import { Curator } from "../curator/Curator.ts"
+import { Generation } from "../generation/Generation.ts"
 import { Bank } from "../review/Bank.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { Golden } from "../review/Golden.ts"
@@ -32,6 +33,18 @@ export const BooksHandlers = HttpApiBuilder.group(
       readAgain: ({ params }) => books.readAgain(params.id),
       start: ({ params, payload }) => books.start(params.id, payload.spendCap),
       confirmMap: ({ params, payload }) => books.confirmMap(params.id, payload.ranges, payload.spendCap)
+    })
+  })
+)
+
+export const GenerationHandlers = HttpApiBuilder.group(
+  Api,
+  "generation",
+  Effect.fn(function*(handlers) {
+    const generation = yield* Generation
+    return handlers.handleAll({
+      batches: () => generation.batches,
+      start: ({ payload }) => generation.start(payload)
     })
   })
 )

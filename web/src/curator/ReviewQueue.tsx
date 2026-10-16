@@ -44,7 +44,10 @@ const ReasonLabels: Record<ReasonCode, string> = {
   "option-notes": "Option notes",
   "teaching-text": "Teaching text",
   "difficulty": "Difficulty",
-  "not-enriched": "Not enriched"
+  "not-enriched": "Not enriched",
+  "predicate-disagreement": "Predicates disagree",
+  "inference": "Inference to confirm",
+  "inference-unconfirmed": "Inference unconfirmed"
 }
 
 const RepeatCodes: ReadonlySet<ReasonCode> = new Set(["near-match", "same-text-other-key"])
@@ -98,6 +101,8 @@ const namesOf = (taxonomy: TaxonomyView | undefined): Names => {
 // What an item is, in a few words: its first Source, or its page.
 const itemName = (item: ReviewItemView) => {
   if (item.page !== null) return `${item.page.bookTitle}, page ${item.page.number}`
+  const generated = item.question?.generated
+  if (generated !== null && generated !== undefined) return `Generated batch ${generated.batch}, item ${generated.item}`
   const first = item.question?.sources[0]
   return first === undefined ? "A Question" : `${first.bookTitle}: ${first.set}, question ${first.number}`
 }
@@ -329,8 +334,10 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
 }
 
 const sourceText = (question: QuestionView) =>
-  question.sources.map((source) => `${source.bookTitle}, ${source.set}, question ${source.number}, page ${source.page}`)
-    .join("; ")
+  question.generated !== null
+    ? `Generated in batch ${question.generated.batch}, item ${question.generated.item}`
+    : question.sources.map((source) => `${source.bookTitle}, ${source.set}, question ${source.number}, page ${source.page}`)
+      .join("; ")
 
 const OptionNote = ({ note, names }: { readonly note: OptionNoteView; readonly names: Names }) => (
   <span className="option-note">

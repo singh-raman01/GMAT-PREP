@@ -4,6 +4,7 @@ import { FigureFiles } from "./books/FigureFiles.ts"
 import { Books } from "./books/Books.ts"
 import { Curator } from "./curator/Curator.ts"
 import { DatabaseLive } from "./db/Database.ts"
+import { Generation } from "./generation/Generation.ts"
 import { JobFeed } from "./events/JobFeed.ts"
 import { BookFileRoutes } from "./http/books.ts"
 import { EventsRoutes } from "./http/events.ts"
@@ -43,6 +44,7 @@ export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Layer.mergeAll(
   ReviewQueue.layer,
   Golden.layer,
   Bank.layer,
+  Generation.layer,
   Practice.layer,
   RemoveUploadLeftovers
 ).pipe(

@@ -8,7 +8,16 @@ import { holdForReview, readLinkReasons, UnsureCodes } from "../books/bankWrites
 import { ApproachSeconds, shownTextProblem, SolverRuns } from "../books/enrichment.ts"
 import { NoPassage, type Reason } from "../books/linking.ts"
 import { Db } from "../db/Database.ts"
-import { approaches, optionNotes, options, parts, questions, reviewItems, solverRuns } from "../db/schema.ts"
+import {
+  approaches,
+  optionNotes,
+  options,
+  parts,
+  questions,
+  reviewItems,
+  solverRuns,
+  statementPredicates
+} from "../db/schema.ts"
 
 // The Publish Gate: every check a Question must pass before Learners see it.
 // A Question that passes is published; any other is held in the Review
@@ -48,6 +57,9 @@ export interface GateInput {
     readonly trapPattern: string | null
     readonly trapNote: string
   }>
+  // A Generated Question's Parts, by position, that are inferences from
+  // text, which code cannot check.
+  readonly inferenceParts?: ReadonlyArray<number>
 }
 
 const BandRank: Record<DifficultyBand, number> = { easy: 0, medium: 1, hard: 2 }
@@ -112,6 +124,27 @@ export const gateReasons = (taxonomy: TaxonomyView, input: GateInput): ReadonlyA
       code: "solver-disagreement",
       detail: `Independent solves answered ${listed(input.solverAnswers)}; the key is ${key}.`
     })
+  }
+
+  // A generated inference from text stands on its three solves agreeing with
+  // its key, and on the Curator, who publishes it once they have checked it.
+  const partKeyList = partKeys(key, input.parts.length)
+  for (const part of input.inferenceParts ?? []) {
+    const answers = input.solverAnswers.map((answer) => partKeys(answer, input.parts.length)[part] ?? "none")
+    const own = partKeyList[part] ?? "none"
+    reasons.push(
+      answers.length >= SolverRuns && answers.every((answer) => answer === own)
+        ? {
+          code: "inference",
+          detail: `Part ${part + 1} is an inference from the text that code cannot check; its three solves agree with its key, ${own}. Publish it once you have checked it.`
+        }
+        : {
+          code: "inference-unconfirmed",
+          detail: `Part ${part + 1} is an inference from the text that code cannot check, and its solves answered ${
+            answers.length === 0 ? "nothing" : listed(answers)
+          }; its key is ${own}.`
+        }
+    )
   }
 
   if (!input.approaches.some((approach) => approach.author === "llm")) {
@@ -194,6 +227,9 @@ export const gateInputOf = (questionId: string) =>
       ? []
       : yield* db.select().from(optionNotes).where(inArray(optionNotes.partId, partIds)).orderBy(asc(optionNotes.position))
     const labelsOf = (partId: string) => optionRows.filter((option) => option.partId === partId).map((option) => option.label)
+    const inferences = partIds.length === 0 ? [] : yield* db.select({ partId: statementPredicates.partId })
+      .from(statementPredicates)
+      .where(and(inArray(statementPredicates.partId, partIds), eq(statementPredicates.kind, "inference")))
     const input: GateInput = {
       questionType: question.questionType,
       hasStimulus: question.stimulusId !== null,
@@ -213,7 +249,8 @@ export const gateInputOf = (questionId: string) =>
         mistakeType: note.mistakeType,
         trapPattern: note.trapPattern,
         trapNote: note.trapNote
-      }))
+      })),
+      inferenceParts: inferences.map((row) => partIds.indexOf(row.partId)).toSorted((a, b) => a - b)
     }
     return { question, input }
   })

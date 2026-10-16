@@ -36,10 +36,12 @@ import {
   UnsureCodes
 } from "../books/bankWrites.ts"
 import { Db } from "../db/Database.ts"
+import { partReasonPrefix } from "../generation/items.ts"
 import {
   approaches,
   bookmarks,
   books,
+  generationBatches,
   goldenQuestions,
   keyOverrides,
   optionNotes,
@@ -165,6 +167,11 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
             .orderBy(asc(sources.createdAt), asc(sql`${sources}.rowid`))
           const goldenRows = yield* db.select({ questionId: goldenQuestions.questionId }).from(goldenQuestions)
             .where(inArray(goldenQuestions.questionId, [...ids]))
+          const batchIds = [...new Set(rows.flatMap((row) => (row.batchId === null ? [] : [row.batchId])))]
+          const batchRows = batchIds.length === 0 ? [] : yield* db.select({
+            id: generationBatches.id,
+            number: generationBatches.number
+          }).from(generationBatches).where(inArray(generationBatches.id, batchIds))
           return new Map(rows.map((row) => {
             const own = partRows.filter((each) => each.questionId === row.id)
             const positionOf = (partId: string) => own.find((part) => part.id === partId)?.position ?? 0
@@ -197,6 +204,10 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
               status: row.status as QuestionStatus,
               bookLabel: row.bookLabel,
               explanation: explained?.explanation ?? null,
+              generated: row.batchId === null ? null : {
+                batch: batchRows.find((batch) => batch.id === row.batchId)?.number ?? 0,
+                item: row.batchItem ?? 0
+              },
               sources: mine.map((source) =>
                 new SourceView({
                   bookId: BookId.make(source.bookId),
@@ -551,7 +562,12 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
             }).pipe(Effect.orDie)
             yield* db.update(parts).set({ key, keyBasis: "override" }).where(eq(parts.id, part.id)).pipe(Effect.orDie)
             const [question] = yield* db.select().from(questions).where(eq(questions.id, questionId)).pipe(Effect.orDie)
-            const kept = readLinkReasons(question?.linkReasons ?? "[]").filter((each) => !KeyCodes.has(each.code))
+            // A Generated Question's disagreement about this Part is settled
+            // too; the Curator has read its words.
+            const prefix = partReasonPrefix(part.kind as PartKind, position)
+            const kept = readLinkReasons(question?.linkReasons ?? "[]").filter((each) =>
+              !KeyCodes.has(each.code) && !(each.code === "predicate-disagreement" && each.detail.startsWith(prefix))
+            )
             yield* db.update(questions).set({
               linkReasons: JSON.stringify(kept),
               status: "draft",
