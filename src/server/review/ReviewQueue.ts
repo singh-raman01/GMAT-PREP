@@ -29,6 +29,7 @@ import {
   parts,
   questions,
   reviewItems,
+  servedQuestions,
   solverRuns,
   sources
 } from "../db/schema.ts"
@@ -341,8 +342,9 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
           return updated!
         })).pipe(Effect.flatMap(viewOf), oneAtATime)
 
-      // The same Question: its Sources join the related one, and it goes.
-      // Items and Questions that pointed at it point at the related one now,
+      // The same Question: its Sources join the related one, and it goes, or
+      // stays withdrawn when a Session served it. Items and Questions that
+      // pointed at it point at the related one now,
       // and the related one is checked again if its Sources now disagree.
       const merge = (id: ReviewItemId) =>
         Effect.gen(function*() {
@@ -360,7 +362,15 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
             yield* db.update(questions).set({ relatedQuestionId: target })
               .where(eq(questions.relatedQuestionId, row.questionId!)).pipe(Effect.orDie)
             const updated = yield* decide(row, "merged", { questionId: null })
-            yield* db.delete(questions).where(eq(questions.id, row.questionId!)).pipe(Effect.orDie)
+            // A Question a Session served keeps its row, withdrawn, so its
+            // Responses stay on record (ADR 0005).
+            const [served] = yield* db.select({ sessionId: servedQuestions.sessionId }).from(servedQuestions)
+              .where(eq(servedQuestions.questionId, row.questionId!)).limit(1).pipe(Effect.orDie)
+            if (served === undefined) {
+              yield* db.delete(questions).where(eq(questions.id, row.questionId!)).pipe(Effect.orDie)
+            } else {
+              yield* setQuestionStatus(row.questionId!, "withdrawn")
+            }
             yield* recheckSources(target).pipe(Effect.provideService(Db, db), Effect.orDie)
             return { updated, target }
           }))

@@ -10,7 +10,7 @@ import {
   type ReviewReason
 } from "../../../src/api/Review.ts"
 import type { TaxonomyView } from "../../../src/api/Taxonomy.ts"
-import { bandOf } from "../../../src/api/taxonomyRules.ts"
+import { bandOf } from "../../../src/api/difficulty.ts"
 import { call } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
 import { RichInline, RichText } from "../RichText.tsx"

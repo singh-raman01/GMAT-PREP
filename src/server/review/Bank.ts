@@ -1,13 +1,18 @@
-import { eq } from "drizzle-orm"
-import { Context, Effect, Layer } from "effect"
-import { SkillCount, ThinSkillThreshold } from "../../api/Bank.ts"
+import { and, eq, inArray, isNull } from "drizzle-orm"
+import { Clock, Context, Effect, Layer, Semaphore } from "effect"
+import { ReserveSection, SkillCount, ThinSkillThreshold, UnknownSection } from "../../api/Bank.ts"
+import { bandOf } from "../../api/difficulty.ts"
 import { skillsFor } from "../../api/taxonomyRules.ts"
 import { Db } from "../db/Database.ts"
-import { books, questions } from "../db/schema.ts"
+import { books, difficulty, questions } from "../db/schema.ts"
+import { currentDifficulty } from "../practice/history.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
+import { releaseOrder } from "./reserve.ts"
 
 export class Bank extends Context.Service<Bank, {
   readonly thinSkills: Effect.Effect<ReadonlyArray<SkillCount>>
+  readonly reserve: Effect.Effect<ReadonlyArray<ReserveSection>>
+  release(section: string, count: number): Effect.Effect<ReadonlyArray<ReserveSection>, UnknownSection>
 }>()("gmat-prep/server/Bank") {
   static readonly layer = Layer.effect(
     Bank,
@@ -41,7 +46,56 @@ export class Bank extends Context.Service<Bank, {
           .toSorted((a, b) => a.questions - b.questions || a.name.localeCompare(b.name))
       }).pipe(Effect.orDie)
 
-      return Bank.of({ thinSkills })
+      const oneAtATime = (yield* Semaphore.make(1)).withPermits(1)
+
+      const reserve = Effect.gen(function*() {
+        const published = yield* db.select({
+          section: questions.section,
+          reserve: questions.reserve,
+          releasedAt: questions.releasedAt
+        }).from(questions).where(eq(questions.status, "published"))
+        return taxonomy.sections.map((section) => {
+          const mine = published.filter((question) => question.section === section.id)
+          return new ReserveSection({
+            id: section.id,
+            name: section.name,
+            questions: mine.length,
+            held: mine.filter((question) => question.reserve === true && question.releasedAt === null).length,
+            released: mine.filter((question) => question.reserve === true && question.releasedAt !== null).length
+          })
+        })
+      }).pipe(Effect.orDie)
+
+      const release = (section: string, count: number) =>
+        Effect.gen(function*() {
+          if (!taxonomy.sections.some((each) => each.id === section)) return yield* new UnknownSection({ section })
+          const held = yield* db.select({
+            id: questions.id,
+            questionType: questions.questionType,
+            hash: questions.normalizedHash,
+            difficulty: currentDifficulty
+          }).from(questions)
+            .leftJoin(difficulty, eq(difficulty.questionId, questions.id))
+            .where(and(
+              eq(questions.section, section),
+              eq(questions.status, "published"),
+              eq(questions.reserve, true),
+              isNull(questions.releasedAt)
+            ))
+            .pipe(Effect.orDie)
+          const chosen = releaseOrder(
+            held.map((question) => ({ ...question, band: bandOf(Number(question.difficulty)) })),
+            count
+          )
+          const now = yield* Clock.currentTimeMillis
+          if (chosen.length > 0) {
+            yield* db.update(questions).set({ releasedAt: now }).where(inArray(questions.id, [...chosen]))
+              .pipe(Effect.orDie)
+          }
+          return yield* reserve
+        }).pipe(oneAtATime)
+
+      return Bank.of({ thinSkills, reserve, release })
     })
   )
 }

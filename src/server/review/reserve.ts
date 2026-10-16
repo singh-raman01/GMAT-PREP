@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm"
 import { Clock, Effect } from "effect"
 import { fitsSlot } from "../../api/blueprint.ts"
-import { type Band, bandOf } from "../../api/taxonomyRules.ts"
+import { bandOf, type DifficultyBand } from "../../api/difficulty.ts"
 import { Db } from "../db/Database.ts"
 import { questions, sources } from "../db/schema.ts"
 
@@ -17,7 +17,7 @@ export interface ReserveUnit {
   readonly id: string
   readonly size: number
   readonly questionType: string
-  readonly band: Band
+  readonly band: DifficultyBand
   // Orders units within a stratum, the same way every time.
   readonly hash: string
   // Decided before: in the Reserve or not; null when undecided.
@@ -109,3 +109,35 @@ export const assignReserve = (bookId: string) =>
     }
     return joined
   })
+
+// A held Reserve Question the Curator may release.
+export interface HeldQuestion {
+  readonly id: string
+  readonly questionType: string
+  readonly band: DifficultyBand
+  readonly hash: string
+}
+
+// Which held Questions to release, so that what stays held keeps its spread
+// across Question Types and Difficulty Bands: each comes from the stratum
+// holding the most, and within it, the last in hash order.
+export const releaseOrder = (held: ReadonlyArray<HeldQuestion>, count: number): ReadonlyArray<string> => {
+  const strata = new Map<string, Array<HeldQuestion>>()
+  for (const question of held) {
+    const key = `${question.questionType}|${question.band}`
+    strata.set(key, [...(strata.get(key) ?? []), question])
+  }
+  for (const members of strata.values()) members.sort((a, b) => b.hash.localeCompare(a.hash))
+  const keys = [...strata.keys()].toSorted()
+  const picked: Array<string> = []
+  while (picked.length < count) {
+    let fullest: Array<HeldQuestion> | undefined
+    for (const key of keys) {
+      const members = strata.get(key)!
+      if (members.length > (fullest?.length ?? 0)) fullest = members
+    }
+    if (fullest === undefined) break
+    picked.push(fullest.shift()!.id)
+  }
+  return picked
+}

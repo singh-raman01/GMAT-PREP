@@ -12,6 +12,7 @@ import { WebRoutes } from "./http/web.ts"
 import type { JobKinds } from "./jobs/JobKind.ts"
 import { JobStore } from "./jobs/JobStore.ts"
 import { JobKindsLive } from "./jobs/kinds/index.ts"
+import { Practice } from "./practice/Practice.ts"
 import { Profiles } from "./profiles/Profiles.ts"
 import { Bank } from "./review/Bank.ts"
 import { Golden } from "./review/Golden.ts"
@@ -40,6 +41,7 @@ export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Layer.mergeAll(
   ReviewQueue.layer,
   Golden.layer,
   Bank.layer,
+  Practice.layer,
   RemoveUploadLeftovers
 ).pipe(
   Layer.provideMerge(Layer.mergeAll(Settings.layer, ApiKeyStore.layer, BookFiles.layer, Taxonomy.layer)),
