@@ -5,9 +5,10 @@ import { setKey } from "../../api/bookMapRules.ts"
 import { Db } from "../db/Database.ts"
 import { bookMaps, bookPages, books, pageReadings, questions, sources } from "../db/schema.ts"
 import type { JobKind } from "../jobs/JobKind.ts"
+import { queueJob } from "../jobs/JobStore.ts"
 import { runGate } from "../review/gate.ts"
+import { QuestionRefresh, RefreshCap } from "../review/refreshJob.ts"
 import { assignReserve, assignUndecided } from "../review/reserve.ts"
-import { strandedDrafts } from "../review/stranded.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { heldPages, holdUnreadPage, type Linked, linkCandidate, loadBank, recordSkip, retireStale } from "./bankWrites.ts"
 import { enrichQuestion } from "./enrichment.ts"
@@ -160,7 +161,19 @@ const linkStep = (params: typeof Params.Type, setsLinked: number, stepsDone: num
         .where(eq(bookMaps.bookId, params.bookId)).pipe(Effect.orDie)
       const linked = `Linked ${loaded.sets.length} question ${loaded.sets.length === 1 ? "set" : "sets"}`
       if (latest?.version !== params.mapVersion) return { _tag: "Finished", result: `${linked}.` } as const
-      const retired = yield* retireStale(params.bookId, params.mapVersion, new Set(loaded.unread.keys()))
+      const retired = yield* db.transaction(() =>
+        Effect.gen(function*() {
+          const { retired, sentBack } = yield* retireStale(params.bookId, params.mapVersion, new Set(loaded.unread.keys()))
+          if (sentBack.length > 0) {
+            yield* queueJob(
+              QuestionRefresh,
+              { questionIds: sentBack, reason: `Checking Questions ${params.title} no longer gives` },
+              RefreshCap
+            )
+          }
+          return retired
+        })
+      ).pipe(Effect.orDie)
       const drafts = yield* draftsOf(params.bookId)
       return {
         _tag: "Continue",
@@ -223,9 +236,9 @@ const linkStep = (params: typeof Params.Type, setsLinked: number, stepsDone: num
   })
 
 // Draft Questions with a Source in the Book, oldest first: the Book's new
-// Questions, and those its re-linking sent back to the Publish Gate. Then any
-// draft no job would check, such as one this run's re-linking sent back
-// through another Book's Source (see review/stranded.ts).
+// Questions, and those its re-linking sent back to the Publish Gate. One the
+// run sent back that has no Source left in the Book gets a refresh job of
+// its own.
 const draftsOf = (bookId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
@@ -235,8 +248,7 @@ const draftsOf = (bookId: string) =>
       .where(eq(questions.status, "draft"))
       .orderBy(asc(questions.createdAt), asc(sql`${questions}.rowid`))
       .pipe(Effect.orDie)
-    if (rows.length > 0) return rows.map((row) => row.id)
-    return yield* strandedDrafts.pipe(Effect.orDie)
+    return rows.map((row) => row.id)
   })
 
 const enrichStep = (jobId: string, params: typeof Params.Type, setsLinked: number, stepsDone: number) =>

@@ -1,4 +1,4 @@
-import { and, count, eq, inArray, sql } from "drizzle-orm"
+import { and, eq, inArray, type SQL, sql } from "drizzle-orm"
 import { Clock, Effect, Option, Schema } from "effect"
 import { CostPreview, CostStep, type PageRoute } from "../../api/Books.ts"
 import { formatDollars } from "../../api/money.ts"
@@ -38,7 +38,9 @@ const Params = Schema.Struct({ bookId: Schema.String, title: Schema.String })
 const Checkpoint = Schema.Struct({
   // The next page to read; past the last page once all are read.
   nextPage: Schema.Int,
-  sampling: Schema.Boolean
+  sampling: Schema.Boolean,
+  // Sample Questions enriched so far, to cost enrichment.
+  enriched: Schema.optional(Schema.Int)
 })
 
 // Up to n items spread evenly through the list, first to last.
@@ -140,11 +142,13 @@ const projectStep = (
 // The full run on 10 pages spread through the Book: the Book Map model
 // surveys them, and the extraction model reads those it can extract. The
 // readings are kept for the full run; the surveys only cost the run, since
-// the full run surveys those pages again among their neighbours. What the calls took, read back from
-// the job's own call records, projects the full run; a repeated step adds
-// nothing it did not spend.
-const sampleStep = (jobId: string, bookId: string) =>
+// the full run surveys those pages again among their neighbours. Then up to
+// two of the sample's Questions are enriched, one a step, only to cost
+// enrichment. What the calls took, read back from the call records,
+// projects the full run.
+const sampleStep = (jobId: string, bookId: string, at: typeof Checkpoint.Type) =>
   Effect.gen(function*() {
+    const enriched = at.enriched ?? 0
     const db = yield* Db
     const textPages = yield* db.select({ number: bookPages.number }).from(bookPages)
       .where(and(eq(bookPages.bookId, bookId), eq(bookPages.hasText, true)))
@@ -189,29 +193,42 @@ const sampleStep = (jobId: string, bookId: string) =>
         }
       }
     }
-    yield* sampleEnrichment(jobId, sampledQuestions)
+    const toEnrich = (yield* enrichmentReady) ? Math.min(SampleQuestions, sampledQuestions.length) : 0
+    const next = sampledQuestions[enriched]
+    if (enriched < toEnrich && next !== undefined) {
+      yield* enrichSample(jobId, next)
+      return {
+        _tag: "Continue",
+        checkpoint: { ...at, enriched: enriched + 1 },
+        stepsTotal: null,
+        note: `Costing enrichment on a sample Question (${enriched + 1} of ${toEnrich})`
+      } as const
+    }
 
     // What the sample took across every reading of the Book, since a reading
     // that was cancelled or failed leaves surveys and readings this one reuses.
     const intakeJobs = db.select({ id: jobs.id }).from(jobs)
       .where(and(eq(jobs.kind, "book-intake"), sql`json_extract(${jobs.params}, '$.bookId') = ${bookId}`))
-    const spent = yield* db.select({
-      task: llmCalls.task,
-      tokens: sql<number>`coalesce(sum(${llmCalls.tokensIn} + ${llmCalls.tokensOut}), 0)`,
-      cost: sql<number>`coalesce(sum(${llmCalls.cost}), 0)`,
-      model: sql<string>`max(${llmCalls.model})`
-    }).from(llmCalls).where(inArray(llmCalls.jobId, intakeJobs)).groupBy(llmCalls.task).pipe(Effect.orDie)
+    const spentIn = (where: SQL | undefined) =>
+      db.select({
+        task: llmCalls.task,
+        tokens: sql<number>`coalesce(sum(${llmCalls.tokensIn} + ${llmCalls.tokensOut}), 0)`,
+        cost: sql<number>`coalesce(sum(${llmCalls.cost}), 0)`,
+        model: sql<string>`max(${llmCalls.model})`
+      }).from(llmCalls).where(where).groupBy(llmCalls.task).pipe(Effect.orDie)
+    const spent = yield* spentIn(inArray(llmCalls.jobId, intakeJobs))
     const of = (task: string) => spent.find((row) => row.task === task) ?? { tokens: 0, cost: 0, model: "" }
+    // Enrichment replies are not kept, so only this reading's calls cost the
+    // Questions it enriched. A Question whose enrichment stopped part way was
+    // done again in full, so the estimate errs high.
+    const enrichSpent = yield* spentIn(
+      and(eq(llmCalls.jobId, jobId), inArray(llmCalls.task, ["tagging", "solving", "approaches"]))
+    )
     // Pages like the sampled extractable ones, in the same share.
     const extractablePages = sample.length === 0 ? 0 : Math.round(extractable.length / sample.length * textPages.length)
     // Questions in the same share of the Book as in the sample.
     const projectedQuestions = sample.length === 0 ? 0 : Math.round(sampledQuestions.length / sample.length * textPages.length)
-    const enrichCalls = ["tagging", "solving", "approaches"].map(of)
-    // A sample Question's enrichment ends with its Approaches call.
-    const [enriched] = yield* db.select({ n: count() }).from(llmCalls)
-      .where(and(inArray(llmCalls.jobId, intakeJobs), eq(llmCalls.task, "approaches")))
-      .pipe(Effect.orDie)
-    const enrichmentCosted = projectedQuestions === 0 || (enriched?.n ?? 0) > 0
+    const enrichmentCosted = projectedQuestions === 0 || enriched > 0
     const steps = [
       // The full run surveys every page with text, the sampled ones again.
       projectStep("Book Map", { pages: sample.length, ...of("book-map") }, textPages.length),
@@ -225,9 +242,9 @@ const sampleStep = (jobId: string, bookId: string) =>
       projectStep(
         "Enrichment",
         {
-          pages: enriched?.n ?? 0,
-          tokens: enrichCalls.reduce((total, call) => total + call.tokens, 0),
-          cost: enrichCalls.reduce((total, call) => total + call.cost, 0)
+          pages: enriched,
+          tokens: enrichSpent.reduce((total, call) => total + call.tokens, 0),
+          cost: enrichSpent.reduce((total, call) => total + call.cost, 0)
         },
         projectedQuestions,
         "question",
@@ -263,34 +280,29 @@ const sampleStep = (jobId: string, bookId: string) =>
     } as const
   })
 
-// Enriches up to two of the sample's Questions, only to cost enrichment: they
-// are tagged, solved three times and given Approaches, and the replies are
-// not kept. Their key is not known yet, so the first solve's answer stands in.
-// Skipped when the enrichment models are not set, so the step is not costed.
-// A try of this step that stopped part way picks up at the first Question
-// with no Approaches call, doing that one again in full.
+// Up to two of the sample's Questions are enriched, only to cost enrichment:
+// each is tagged, solved three times and given Approaches, and the replies
+// are not kept. Their key is not known yet, so the first solve's answer
+// stands in. Skipped when the enrichment models are not set, so the step is
+// not costed.
 const SampleQuestions = 2
 
-const sampleEnrichment = (jobId: string, sampled: ReadonlyArray<QuestionText>) =>
+const enrichmentReady = Effect.gen(function*() {
+  const llm = yield* (yield* Settings).llm
+  const hasKey = Option.isSome(yield* (yield* ApiKeyStore).read)
+  return (["tagging", "solving", "approaches"] as const).every((task) => missingSettings(llm, hasKey, task).length === 0)
+})
+
+const enrichSample = (jobId: string, question: QuestionText) =>
   Effect.gen(function*() {
-    const db = yield* Db
-    const llm = yield* (yield* Settings).llm
-    const hasKey = Option.isSome(yield* (yield* ApiKeyStore).read)
-    const ready = (["tagging", "solving", "approaches"] as const).every((task) => missingSettings(llm, hasKey, task).length === 0)
-    if (!ready) return
-    const [done] = yield* db.select({ n: count() }).from(llmCalls)
-      .where(and(eq(llmCalls.jobId, jobId), eq(llmCalls.task, "approaches")))
-      .pipe(Effect.orDie)
     const taxonomy = (yield* Taxonomy).view
-    for (const question of sampled.slice(done?.n ?? 0, SampleQuestions)) {
-      yield* unlessInvalid(tagQuestion(jobId, taxonomy, question))
-      const answers: Array<string> = []
-      for (let run = 1; run <= SolverRuns; run++) {
-        const solve = yield* unlessInvalid(solveQuestion(jobId, question, run))
-        if (solve !== undefined) answers.push(solve.value.answer)
-      }
-      yield* unlessInvalid(writeApproaches(jobId, taxonomy, { ...question, key: answers[0] ?? "A" }, undefined))
+    yield* unlessInvalid(tagQuestion(jobId, taxonomy, question))
+    const answers: Array<string> = []
+    for (let run = 1; run <= SolverRuns; run++) {
+      const solve = yield* unlessInvalid(solveQuestion(jobId, question, run))
+      if (solve !== undefined) answers.push(solve.value.answer)
     }
+    yield* unlessInvalid(writeApproaches(jobId, taxonomy, { ...question, key: answers[0] ?? "A" }, undefined))
   })
 
 export const BookIntake: JobKind<typeof Params.Type, typeof Checkpoint.Type> = {
@@ -301,5 +313,7 @@ export const BookIntake: JobKind<typeof Params.Type, typeof Checkpoint.Type> = {
   start: () => ({ nextPage: 1, sampling: false }),
   stepsTotal: () => null,
   step: ({ jobId, params, checkpoint }) =>
-    checkpoint.sampling ? sampleStep(jobId, params.bookId) : readStep(params.bookId, checkpoint.nextPage)
+    checkpoint.sampling
+      ? sampleStep(jobId, params.bookId, checkpoint)
+      : readStep(params.bookId, checkpoint.nextPage)
 }

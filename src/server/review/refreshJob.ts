@@ -7,13 +7,11 @@ import type { JobKind } from "../jobs/JobKind.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { runGate } from "./gate.ts"
 import { assignUndecided } from "./reserve.ts"
-import { strandedDrafts } from "./stranded.ts"
 
-// Sends Questions the Curator changed back through enrichment and the Publish
-// Gate, one a step: after a Key Override, the new key's Approaches and
+// Sends the Questions it names back through enrichment and the Publish Gate,
+// one a step: after a Key Override, the new key's Approaches and
 // wrong-option notes are written, and the tags, Difficulty estimate and
 // solver runs are reused. A Question no longer a draft by then is skipped.
-// Then it takes any draft no job would check (see stranded.ts).
 
 const Params = Schema.Struct({
   questionIds: Schema.Array(Schema.String),
@@ -30,7 +28,7 @@ export const RefreshCap = 1
 const refreshStep = (jobId: string, params: typeof Params.Type, done: number) =>
   Effect.gen(function*() {
     const db = yield* Db
-    const id = params.questionIds[done] ?? (yield* strandedDrafts.pipe(Effect.orDie))[0]
+    const id = params.questionIds[done]
     if (id === undefined) {
       return {
         _tag: "Finished",

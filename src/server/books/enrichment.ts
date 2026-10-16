@@ -4,10 +4,10 @@ import { renderProblem } from "../../api/richText.ts"
 import type { TaxonomyView } from "../../api/Taxonomy.ts"
 import { optionMistakeTypes, skillsFor, strategiesFor, trapPatternsFor } from "../../api/taxonomyRules.ts"
 import { Db } from "../db/Database.ts"
-import { approaches, optionNotes, options, parts, questions, solverRuns, sources } from "../db/schema.ts"
+import { approaches, optionNotes, options, parts, questions, solverRuns } from "../db/schema.ts"
 import { LlmAdapter, type LlmError } from "../llm/LlmAdapter.ts"
 import { quoteData } from "../llm/quoting.ts"
-import { readLinkReasons } from "./bankWrites.ts"
+import { explanationOf, readLinkReasons, UnsureCodes } from "./bankWrites.ts"
 
 // Enrichment: the LLM tags a Question from the Taxonomy and estimates its
 // Difficulty, solves it three times on its own, and writes Approaches and a
@@ -216,12 +216,17 @@ export const approachesProblems = (reply: ApproachesReply, question: QuestionTex
       if (problem !== undefined) problems.push(`${which}'s ${field} cannot be shown: ${problem}.`)
     }
   })
+  // The book's explanation, when shown, is an Approach of its own.
   const book = reply.bookApproach
-  if (
-    book !== null && question.explanation !== null &&
-    (book.expectedSeconds < ApproachSeconds.minimum || book.expectedSeconds > ApproachSeconds.maximum)
-  ) {
-    problems.push(`The book's Approach expects ${book.expectedSeconds} seconds; give a time from ${ApproachSeconds.minimum} to ${ApproachSeconds.maximum}.`)
+  if (question.explanation !== null && book === null) {
+    problems.push("The book gives an explanation: give its bookApproach.")
+  }
+  if (question.explanation !== null && book !== null) {
+    if (book.expectedSeconds < ApproachSeconds.minimum || book.expectedSeconds > ApproachSeconds.maximum) {
+      problems.push(`The book's Approach expects ${book.expectedSeconds} seconds; give a time from ${ApproachSeconds.minimum} to ${ApproachSeconds.maximum}.`)
+    }
+    const problem = shownTextProblem(book.validWhen)
+    if (problem !== undefined) problems.push(`The book's Approach's validWhen cannot be shown: ${problem}.`)
   }
   const wrong = question.options.map((option) => option.label).filter((label) => label !== question.key)
   const noted: ReadonlyArray<string> = reply.wrongOptions.map((option) => option.label)
@@ -237,10 +242,6 @@ export const approachesProblems = (reply: ApproachesReply, question: QuestionTex
 
 // Enriching a stored Question ------------------------------------------------
 
-// Problems that leave a Question's text or figure in doubt: it is not
-// enriched, and its link reasons hold it.
-const UnsureCodes: ReadonlySet<string> = new Set(["structure", "render", "figure"])
-
 // A reply that stays invalid after its retry leaves that part of the
 // enrichment missing, and the Publish Gate holds the Question for it, instead
 // of stopping the whole run. Any other error stops the step as usual.
@@ -255,25 +256,15 @@ const loadQuestion = (questionId: string) =>
     const [part] = yield* db.select().from(parts).where(and(eq(parts.questionId, questionId), eq(parts.position, 0)))
     if (part === undefined) return undefined
     const optionRows = yield* db.select().from(options).where(eq(options.partId, part.id)).orderBy(asc(options.position))
-    // The Question's own Source first, then the others, oldest first.
-    const given = yield* db.select({
-      explanation: sources.explanation,
-      answer: sources.explanationAnswer,
-      bookKey: sources.bookKey
-    }).from(sources).where(eq(sources.questionId, questionId)).orderBy(asc(sources.merged), asc(sources.createdAt))
-    const explained = given.find((source) => source.explanation !== null)
+    const explained = yield* explanationOf(questionId)
     const text: QuestionText = {
       questionType: question.questionType,
       stem: question.stem,
       options: optionRows.map((option) => ({ label: option.label, text: option.text })),
       key: part.key,
-      explanation: explained?.explanation ?? null
+      explanation: explained.explanation
     }
-    // The answer the explanation reaches: the one it states, else its own
-    // Book's key for the item. One that states none is not taken to reach a
-    // key from elsewhere, such as a Key Override.
-    const reaches = explained === undefined ? null : explained.answer ?? explained.bookKey
-    return { question, partId: part.id, text, explanationReaches: reaches }
+    return { question, partId: part.id, text, explanationReaches: explained.reaches }
   })
 
 const retryNote = (problems: ReadonlyArray<string>) =>

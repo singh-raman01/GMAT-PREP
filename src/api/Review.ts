@@ -97,7 +97,7 @@ export class QuestionView extends Schema.Class<QuestionView>("gmat-prep/api/Ques
   keyBasis: Schema.NullOr(Schema.Literals(["book", "computed", "override"])),
   status: QuestionStatus,
   bookLabel: Schema.NullOr(Schema.String),
-  // The first Source's explanation, as the Book prints it.
+  // The explanation its Approaches are written with, as the Book prints it.
   explanation: Schema.NullOr(Schema.String),
   sources: Schema.Array(SourceView),
   // What enrichment gave it: Skill ids, the Difficulty estimate, the
@@ -108,7 +108,9 @@ export class QuestionView extends Schema.Class<QuestionView>("gmat-prep/api/Ques
   solverAnswers: Schema.Array(Schema.String),
   approaches: Schema.Array(ApproachView),
   optionNotes: Schema.Array(OptionNoteView),
-  keyOverrides: Schema.Array(KeyOverrideView)
+  keyOverrides: Schema.Array(KeyOverrideView),
+  // Approved for the golden set.
+  golden: Schema.Boolean
 }) {}
 
 export class ReviewItemView extends Schema.Class<ReviewItemView>("gmat-prep/api/ReviewItemView")({
@@ -127,11 +129,12 @@ export class ReviewItemView extends Schema.Class<ReviewItemView>("gmat-prep/api/
   createdAt: Schema.Number
 }) {}
 
-// Questions waiting for enrichment and the Publish Gate: those a job will
-// check, and those no job will reach until the Curator asks or the app
-// starts again.
+// Questions waiting for enrichment and the Publish Gate: those a job is
+// checking, those only a paused job will check, and those no job will check
+// until the Curator asks, as after a job was cancelled.
 export class DraftsView extends Schema.Class<DraftsView>("gmat-prep/api/DraftsView")({
   checking: Schema.Int,
+  paused: Schema.Int,
   stranded: Schema.Int
 }) {}
 
@@ -170,6 +173,14 @@ export class KeysDiffer extends Schema.TaggedError<KeysDiffer>()(
   { httpApiStatus: 409 }
 ) {}
 
+// The Question to merge into is still waiting for its checks, which could
+// overwrite what the merge gives it.
+export class MergeTargetChecking extends Schema.TaggedError<MergeTargetChecking>()(
+  "MergeTargetChecking",
+  {},
+  { httpApiStatus: 409 }
+) {}
+
 // Publishing waits until every reason that blocks it is resolved.
 export class CannotPublish extends Schema.TaggedError<CannotPublish>()(
   "CannotPublish",
@@ -199,10 +210,11 @@ export class ReviewApi extends HttpApiGroup.make("review")
       error: [ReviewItemNotFound, ReviewItemNotOpen]
     }),
     // A near match or same text: the same Question, so this one's Sources
-    // join the related Question and this one goes.
+    // join the related Question and this one goes, with any golden-set
+    // approval. Its Key Override goes with its Sources.
     HttpApiEndpoint.post("merge", "/review/:id/merge", {
       ...decided,
-      error: [ReviewItemNotFound, ReviewItemNotOpen, KeysDiffer]
+      error: [ReviewItemNotFound, ReviewItemNotOpen, KeysDiffer, MergeTargetChecking]
     }),
     // Tries again the enrichment an unusable reply left missing or wrong:
     // tagging, solving, or the Approaches and notes. The Question leaves the

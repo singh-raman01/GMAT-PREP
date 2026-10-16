@@ -70,6 +70,26 @@ export const settleEnd = (end: JobEnd, requested: "pause" | "cancel" | null): Jo
 const encodeJson = <A>(schema: Schema.Codec<A, unknown>, value: A) =>
   JSON.stringify(Schema.encodeSync(Schema.toCodecJson(schema))(value))
 
+// Queues a job, inside the caller's transaction when there is one: a job
+// step can hand work on to another job this way.
+export const queueJob = <P, C>(kind: JobKind<P, C>, params: P, spendCap: number) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const now = yield* Clock.currentTimeMillis
+    const [created] = yield* db.insert(jobs).values({
+      id: crypto.randomUUID(),
+      kind: kind.kind,
+      params: encodeJson(kind.params, params),
+      status: "queued",
+      stepsTotal: kind.stepsTotal(params),
+      spendCap,
+      revision: nextRevision,
+      createdAt: now,
+      updatedAt: now
+    }).returning().pipe(Effect.orDie)
+    return created!
+  })
+
 export const decodeJson = <A>(schema: Schema.Codec<A, unknown>, text: string): Option.Option<A> =>
   Option.flatMap(
     Option.liftThrowable(() => JSON.parse(text) as unknown)(),
@@ -138,21 +158,7 @@ export class JobStore extends Context.Service<JobStore, {
         db.select().from(jobs).where(eq(jobs.id, id)).pipe(Effect.map((rows) => rows[0]), Effect.orDie)
 
       const create = <P, C>(kind: JobKind<P, C>, params: P, spendCap: number) =>
-        Effect.gen(function*() {
-          const now = yield* Clock.currentTimeMillis
-          const [created] = yield* db.insert(jobs).values({
-            id: crypto.randomUUID(),
-            kind: kind.kind,
-            params: encodeJson(kind.params, params),
-            status: "queued",
-            stepsTotal: kind.stepsTotal(params),
-            spendCap,
-            revision: nextRevision,
-            createdAt: now,
-            updatedAt: now
-          }).returning().pipe(Effect.orDie)
-          return view(created!)
-        })
+        queueJob(kind, params, spendCap).pipe(Effect.provideService(Db, db), Effect.map(view))
 
       const list = db.select().from(jobs).orderBy(desc(jobs.createdAt)).limit(100).pipe(
         Effect.map((rows) => rows.map(view)),

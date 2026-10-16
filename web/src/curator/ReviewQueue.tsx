@@ -17,6 +17,7 @@ import type { TaxonomyView } from "../../../src/api/Taxonomy.ts"
 import { bandOf } from "../../../src/api/difficulty.ts"
 import { call, type Client } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
+import { linkProps } from "../router.ts"
 import { RichInline, RichText } from "../RichText.tsx"
 import { afterStreamClosed, useJobEvents } from "./jobEvents.ts"
 
@@ -45,6 +46,8 @@ const ReasonLabels: Record<ReasonCode, string> = {
 }
 
 const RepeatCodes: ReadonlySet<ReasonCode> = new Set(["near-match", "same-text-other-key"])
+// Problems that leave a Question's text or figure in doubt.
+const UnsureCodes: ReadonlySet<ReasonCode> = new Set(["structure", "render", "figure"])
 
 type Action = "publish" | "withdraw" | "keepAsVariant" | "merge" | "dismiss" | "checkAgain"
 
@@ -201,6 +204,10 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
         failure.relatedKey ?? "not known"
       }. Change one of the keys first, so they agree.`
     }
+    if (failure._tag === "MergeTargetChecking") {
+      void load()
+      return "The other Question is still waiting for its checks. Merge into it once it is published or held."
+    }
     if (failure._tag === "ReviewItemNotOpen" || failure._tag === "ReviewItemNotFound") {
       void load()
       return "This item changed in the meantime; the queue was read again."
@@ -253,12 +260,18 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
         you publish, change the key of, or withdraw them.
       </p>
       <p className="visually-hidden" role="status">{announcement}</p>
-      {waiting !== undefined && (waiting.checking > 0 || waiting.stranded > 0) && (
+      {waiting !== undefined && (waiting.checking > 0 || waiting.paused > 0 || waiting.stranded > 0) && (
         <div className="drafts-note">
           {waiting.checking > 0 && (
             <p>
               {waiting.checking} {waiting.checking === 1 ? "Question is" : "Questions are"}{" "}
               being checked. Any that are held come here.
+            </p>
+          )}
+          {waiting.paused > 0 && (
+            <p>
+              {waiting.paused} {waiting.paused === 1 ? "Question waits" : "Questions wait"}{" "}
+              for a paused job. <a {...linkProps("/curator/jobs")}>Resume it in Jobs</a>.
             </p>
           )}
           {waiting.stranded > 0 && (
@@ -394,9 +407,11 @@ const Enrichment = ({ question, names }: { readonly question: QuestionView; read
 
 // Replacing the key, with the reason kept beside it.
 const KeyChange = (
-  { id, question, about, onChange, onCancel }: {
+  { id, question, unsure, about, onChange, onCancel }: {
     readonly id: string
     readonly question: QuestionView
+    // Its text is in doubt, so nothing is written for it until that is settled.
+    readonly unsure: boolean
     readonly about: { readonly "aria-describedby": string }
     readonly onChange: (key: string, reason: string) => Promise<string | undefined>
     readonly onCancel: () => void
@@ -445,6 +460,8 @@ const KeyChange = (
       <p className="hint">
         {key === undefined || key === question.key
           ? "The key stays, now as your decision, and the Question goes through every check again."
+          : unsure
+          ? "The key changes. Approaches and wrong-choice notes wait until its text is no longer in doubt, so it comes back here."
           : "Its Approaches and wrong-choice notes are written again for the new key, and it goes through every check again."}
       </p>
       <div className="actions">
@@ -613,7 +630,8 @@ const ReviewItem = (
       {checkingMerge && (
         <div id={ids.merge} className="merge-check" role="group" aria-label="Merge into the other Question">
           <p ref={mergeCheck} tabIndex={-1}>
-            This Question's Sources join the other Question, and this one is removed. Merging cannot be undone.
+            This Question's Sources join the other Question, and this one is removed
+            {question.golden ? ", with its golden-set approval" : ""}. Merging cannot be undone.
           </p>
           <div className="actions">
             <button type="button" className="button" {...about} onClick={() => void run("merge")}>Merge</button>
@@ -631,6 +649,7 @@ const ReviewItem = (
         <KeyChange
           id={ids.key}
           question={question}
+          unsure={item.reasons.some((reason) => UnsureCodes.has(reason.code))}
           about={about}
           onChange={(key, reason) => onChangeKey(item, key, reason)}
           onCancel={() => close(() => setChangingKey(false), keyButton)}
