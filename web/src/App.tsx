@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import type { ProfileSummary } from "../../src/api/Profiles.ts"
-import { call, type Trouble, troubleOf } from "./api.ts"
+import { announceUnlockChanged, call, onUnlockChanged, showProfile, type Trouble, troubleOf } from "./api.ts"
+import { useFocusOnMount } from "./focus.ts"
 import { ProfilePicker } from "./ProfilePicker.tsx"
 import { TaxonomyBrowser } from "./TaxonomyBrowser.tsx"
 
@@ -12,53 +13,80 @@ type Screen =
 
 export const App = () => {
   const [screen, setScreen] = useState<Screen>({ _tag: "Starting" })
+  const shown = useRef<string | undefined>(undefined)
 
-  const stop = useCallback((error: { readonly _tag: string }) => {
-    setScreen({ _tag: "Stopped", trouble: troubleOf(error) })
+  const show = useCallback((next: Screen) => {
+    const profileId = next._tag === "Studying" ? next.profile.id : undefined
+    shown.current = profileId
+    showProfile(profileId)
+    setScreen(next)
   }, [])
 
-  // An unlocked Profile survives a reload, because the cookie does.
-  const start = useCallback(async () => {
+  const stop = useCallback((error: { readonly _tag: string }) => {
+    show({ _tag: "Stopped", trouble: troubleOf(error) })
+  }, [show])
+
+  // Asks the server which Profile this browser has unlocked, if any. An
+  // unlock survives a reload, because the cookie does; it can also change in
+  // another tab. notice is shown if no Profile is unlocked.
+  const recheck = useCallback(async (notice?: string) => {
+    showProfile(undefined)
     const result = await call((client) => client.session.me())
     if (result._tag === "Success") {
-      setScreen({ _tag: "Studying", profile: result.success })
+      if (shown.current === result.success.id) {
+        showProfile(result.success.id)
+      } else {
+        show({ _tag: "Studying", profile: result.success })
+      }
     } else if (result.failure._tag === "NotUnlocked") {
-      setScreen({ _tag: "Picking", notice: undefined })
+      if (shown.current !== undefined || notice !== undefined) {
+        show({ _tag: "Picking", notice })
+      } else {
+        setScreen((current) => (current._tag === "Picking" ? current : { _tag: "Picking", notice: undefined }))
+      }
     } else {
       stop(result.failure)
     }
-  }, [stop])
+  }, [show, stop])
 
   useEffect(() => {
-    void start()
-  }, [start])
+    void recheck()
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void recheck()
+    }
+    document.addEventListener("visibilitychange", onVisible)
+    const stopListening = onUnlockChanged(() => void recheck())
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible)
+      stopListening()
+    }
+  }, [recheck])
+
+  const unlocked = useCallback((profile: ProfileSummary) => {
+    show({ _tag: "Studying", profile })
+    announceUnlockChanged()
+  }, [show])
 
   const lock = useCallback(async () => {
     const result = await call((client) => client.session.lock())
     if (result._tag === "Failure" && result.failure._tag !== "NotUnlocked") {
-      stop(result.failure)
-    } else {
-      setScreen({ _tag: "Picking", notice: undefined })
+      return stop(result.failure)
     }
-  }, [stop])
+    announceUnlockChanged()
+    await recheck()
+  }, [recheck, stop])
 
   const sessionLost = useCallback(() => {
-    setScreen({ _tag: "Picking", notice: "Your profile was locked, so open it again to carry on." })
-  }, [])
+    void recheck("Your profile was locked, so open it again to carry on.")
+  }, [recheck])
 
   switch (screen._tag) {
     case "Starting":
       return null
     case "Stopped":
-      return <Stopped trouble={screen.trouble} onRetry={start} />
+      return <Stopped trouble={screen.trouble} onRetry={() => void recheck()} />
     case "Picking":
-      return (
-        <ProfilePicker
-          notice={screen.notice}
-          onUnlocked={(profile) => setScreen({ _tag: "Studying", profile })}
-          onStopped={stop}
-        />
-      )
+      return <ProfilePicker notice={screen.notice} onUnlocked={unlocked} onStopped={stop} />
     case "Studying":
       return (
         <>
@@ -72,7 +100,7 @@ export const App = () => {
             </div>
           </header>
           <main className="page">
-            <TaxonomyBrowser onSessionLost={sessionLost} onStopped={stop} />
+            <TaxonomyBrowser key={screen.profile.id} onSessionLost={sessionLost} onStopped={stop} />
           </main>
         </>
       )
@@ -97,13 +125,14 @@ const troubleText: Record<Trouble, { readonly title: string; readonly body: stri
   }
 }
 
-const Stopped = ({ trouble, onRetry }: { readonly trouble: Trouble; readonly onRetry: () => Promise<void> }) => {
+const Stopped = ({ trouble, onRetry }: { readonly trouble: Trouble; readonly onRetry: () => void }) => {
+  const heading = useFocusOnMount<HTMLHeadingElement>()
   const text = troubleText[trouble]
-  const act = () => (trouble === "unreadable" ? window.location.reload() : void onRetry())
+  const act = () => (trouble === "unreadable" ? window.location.reload() : onRetry())
   return (
     <main className="page page-narrow">
       <p className="wordmark">GMAT prep</p>
-      <h1>{text.title}</h1>
+      <h1 ref={heading} tabIndex={-1}>{text.title}</h1>
       <p className="lede">{text.body}</p>
       <button type="button" className="button" onClick={act}>
         {text.action}

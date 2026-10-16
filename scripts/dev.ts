@@ -9,9 +9,13 @@ const root = join(import.meta.dir, "..")
 const dataDir = process.env["GMAT_PREP_DATA_DIR"] ?? join(root, ".data")
 mkdirSync(dataDir, { recursive: true })
 
+// Marks this run's server.json. On Windows bun --watch runs the server as a
+// child process, so the process id cannot identify it.
+const runId = crypto.randomUUID()
+
 const server = Bun.spawn([process.execPath, "--watch", "src/server/main.ts"], {
   cwd: root,
-  env: { ...process.env, GMAT_PREP_DATA_DIR: dataDir },
+  env: { ...process.env, GMAT_PREP_DATA_DIR: dataDir, GMAT_PREP_RUN_ID: runId },
   stdio: ["inherit", "inherit", "inherit"]
 })
 
@@ -24,8 +28,8 @@ const serverUrl = async (): Promise<string | undefined> => {
     if (server.exitCode !== null) return undefined
     if (existsSync(file)) {
       try {
-        const info = JSON.parse(readFileSync(file, "utf8")) as { readonly pid: number; readonly url: string }
-        if (info.pid === server.pid) return info.url
+        const info = JSON.parse(readFileSync(file, "utf8")) as { readonly runId: string | null; readonly url: string }
+        if (info.runId === runId) return info.url
       } catch {
         // Written but not complete yet; read again.
       }
@@ -35,24 +39,36 @@ const serverUrl = async (): Promise<string | undefined> => {
   return undefined
 }
 
+// Stops a process and everything it started. On Windows killing a process
+// leaves its children running, so the whole tree is ended.
+const stopTree = (proc: Bun.Subprocess) => {
+  if (proc.exitCode !== null) return
+  if (process.platform === "win32") {
+    Bun.spawnSync(["taskkill", "/pid", String(proc.pid), "/t", "/f"])
+  } else {
+    proc.kill()
+  }
+}
+
 const url = await serverUrl()
 if (url === undefined) {
-  server.kill()
+  stopTree(server)
   await server.exited
   console.error("The server did not start. See its message above.")
   process.exit(1)
 }
 
 console.log(`The API is at ${url}. Open the address Vite prints below.`)
-const vite = Bun.spawn([process.execPath, "x", "vite", "--config", "web/vite.config.ts"], {
+// --bun runs Vite on Bun rather than on whatever Node is installed.
+const vite = Bun.spawn([process.execPath, "x", "--bun", "vite", "--config", "web/vite.config.ts"], {
   cwd: root,
   env: { ...process.env, GMAT_PREP_API_URL: url },
   stdio: ["inherit", "inherit", "inherit"]
 })
 
 const stop = () => {
-  server.kill()
-  vite.kill()
+  stopTree(server)
+  stopTree(vite)
 }
 process.on("SIGINT", stop)
 process.on("SIGTERM", stop)

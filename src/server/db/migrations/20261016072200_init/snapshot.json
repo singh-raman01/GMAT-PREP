@@ -1,7 +1,7 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "56f4773a-8c60-4fff-996b-fee16de4c8f0",
+  "id": "fcb03f01-6064-4a1c-9bab-dcd77bb31604",
   "prevIds": [
     "00000000-0000-0000-0000-000000000000"
   ],
@@ -45,6 +45,16 @@
       "default": null,
       "generated": null,
       "name": "created_at",
+      "entityType": "columns",
+      "table": "profile_unlocks"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "last_used_at",
       "entityType": "columns",
       "table": "profile_unlocks"
     },

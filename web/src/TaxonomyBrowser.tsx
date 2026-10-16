@@ -1,7 +1,8 @@
 import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useId, useMemo, useState } from "react"
 import type { TaxonomySection, TaxonomyView } from "../../src/api/Taxonomy.ts"
 import { call } from "./api.ts"
-import { findInTaxonomy, highlight, searchTerms } from "./search.ts"
+import { useFocusOnMount } from "./focus.ts"
+import { findInTaxonomy, highlight, type HitGroup, searchTerms } from "./search.ts"
 
 interface Props {
   readonly onSessionLost: () => void
@@ -15,13 +16,22 @@ const MistakesTab = "mistakes"
 
 const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
 
-const hashTab = () => decodeURIComponent(window.location.hash.slice(1))
+// The tab named in the URL's hash, as written by select below. A hash typed or
+// pasted by hand may not decode, and then names no tab.
+const hashTab = () => {
+  try {
+    return decodeURIComponent(window.location.hash.slice(1))
+  } catch {
+    return ""
+  }
+}
 
 export const TaxonomyBrowser = ({ onSessionLost, onStopped }: Props) => {
   const [view, setView] = useState<TaxonomyView>()
   const [tab, setTab] = useState(hashTab)
   const [query, setQuery] = useState("")
   const searchId = useId()
+  const heading = useFocusOnMount<HTMLHeadingElement>()
 
   useEffect(() => {
     let live = true
@@ -52,10 +62,12 @@ export const TaxonomyBrowser = ({ onSessionLost, onStopped }: Props) => {
     [view]
   )
 
+  const title = <h1 ref={heading} tabIndex={-1}>What the GMAT tests</h1>
+
   if (view === undefined) {
     return (
       <>
-        <h1>What the GMAT tests</h1>
+        {title}
         <p className="lede quiet" aria-busy="true">Loading the taxonomy</p>
       </>
     )
@@ -63,8 +75,9 @@ export const TaxonomyBrowser = ({ onSessionLost, onStopped }: Props) => {
 
   const tabIds = [...view.sections.map((section) => section.id), MistakesTab]
   const current = tabIds.includes(tab) ? tab : tabIds[0]!
-  const section = view.sections.find((candidate) => candidate.id === current)
   const searching = searchTerms(query).length > 0
+  const groups = searching ? findInTaxonomy(view, query) : []
+  const matches = groups.reduce((sum, group) => sum + group.hits.length, 0)
   const c = view.counts
 
   const select = (id: string) => {
@@ -92,7 +105,7 @@ export const TaxonomyBrowser = ({ onSessionLost, onStopped }: Props) => {
 
   return (
     <>
-      <h1>What the GMAT tests</h1>
+      {title}
       <p className="lede">
         Taxonomy version {view.version} has {count(c.sections, "section", "sections")},{" "}
         {count(c.topics, "topic", "topics")}, {count(c.skills, "skill", "skills")},{" "}
@@ -116,9 +129,17 @@ export const TaxonomyBrowser = ({ onSessionLost, onStopped }: Props) => {
             if (event.key === "Escape") setQuery("")
           }}
         />
+        {/* Always present, so screen readers announce each new count. */}
+        <p className="result-count" role="status">
+          {!searching
+            ? ""
+            : matches === 0
+            ? "Nothing matches. Try a shorter or different word."
+            : `${count(matches, "entry matches", "entries match")}.`}
+        </p>
       </div>
 
-      {searching ? <Results view={view} query={query} /> : (
+      {searching ? <Results groups={groups} query={query} /> : (
         <>
           <div className="tabs" role="tablist" aria-label="Sections and mistake types">
             {tabIds.map((id) => {
@@ -144,24 +165,37 @@ export const TaxonomyBrowser = ({ onSessionLost, onStopped }: Props) => {
               )
             })}
           </div>
-          <div className="panel" id={`panel-${current}`} role="tabpanel" aria-labelledby={`tab-${current}`} tabIndex={0}>
-            {section === undefined
-              ? (
-                <Group
-                  title="Mistake types"
-                  about={`${
-                    count(c.mistakeTypes, "reason", "reasons")
-                  } an answer goes wrong. The app labels each wrong answer with one of them.`}
-                >
-                  <ul className="entries">
-                    {view.mistakeTypes.map((mistake) => (
-                      <Entry key={mistake.id} name={mistake.name} description={mistake.description} level={3} />
-                    ))}
-                  </ul>
-                </Group>
-              )
-              : <SectionPanel section={section} types={types} />}
-          </div>
+          {tabIds.map((id) => {
+            const section = view.sections.find((candidate) => candidate.id === id)
+            return (
+              <div
+                key={id}
+                className="panel"
+                id={`panel-${id}`}
+                role="tabpanel"
+                aria-labelledby={`tab-${id}`}
+                tabIndex={0}
+                hidden={id !== current}
+              >
+                {section === undefined
+                  ? (
+                    <Group
+                      title="Mistake types"
+                      about={`${
+                        count(c.mistakeTypes, "reason", "reasons")
+                      } an answer goes wrong. The app labels each wrong answer with one of them.`}
+                    >
+                      <ul className="entries">
+                        {view.mistakeTypes.map((mistake) => (
+                          <Entry key={mistake.id} name={mistake.name} description={mistake.description} level={3} />
+                        ))}
+                      </ul>
+                    </Group>
+                  )
+                  : <SectionPanel section={section} types={types} />}
+              </div>
+            )
+          })}
         </>
       )}
     </>
@@ -287,15 +321,10 @@ const Marked = ({ text, terms }: { readonly text: string; readonly terms: Readon
   </>
 )
 
-const Results = ({ view, query }: { readonly view: TaxonomyView; readonly query: string }) => {
+const Results = ({ groups, query }: { readonly groups: ReadonlyArray<HitGroup>; readonly query: string }) => {
   const terms = searchTerms(query)
-  const groups = findInTaxonomy(view, query)
-  const total = groups.reduce((sum, group) => sum + group.hits.length, 0)
   return (
     <div className="results">
-      <p className="result-count" role="status">
-        {total === 0 ? "Nothing matches. Try a shorter or different word." : `${count(total, "entry matches", "entries match")}.`}
-      </p>
       {groups.map((group) => (
         <section
           key={group.id}

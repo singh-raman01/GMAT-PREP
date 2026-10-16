@@ -2,6 +2,7 @@ CREATE TABLE `profile_unlocks` (
 	`token_hash` text PRIMARY KEY,
 	`profile_id` text NOT NULL,
 	`created_at` integer NOT NULL,
+	`last_used_at` integer NOT NULL,
 	CONSTRAINT `fk_profile_unlocks_profile_id_profiles_id_fk` FOREIGN KEY (`profile_id`) REFERENCES `profiles`(`id`) ON DELETE CASCADE
 );
 --> statement-breakpoint

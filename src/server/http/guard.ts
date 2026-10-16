@@ -32,6 +32,36 @@ const refused = HttpServerResponse.text(
   { status: 403 }
 )
 
+// Writes come only from the app's own pages. SameSite cookies stop other sites
+// from using an unlock, but not pages on other ports of this computer, and not
+// writes that need no unlock, such as creating a Profile. Browsers name the
+// page that sent a request in Origin; tools such as curl send none.
+const UnsafeMethods = new Set(["POST", "PUT", "PATCH", "DELETE"])
+
+export const MaxJsonBytes = 1_000_000
+
+const writeRefusal = (request: HttpServerRequest.HttpServerRequest, host: string) => {
+  if (!UnsafeMethods.has(request.method)) return undefined
+  const origin = request.headers["origin"]
+  if (origin !== undefined && origin.toLowerCase() !== `http://${host.toLowerCase()}`) {
+    return HttpServerResponse.text("Changes are accepted only from GMAT prep's own pages.", { status: 403 })
+  }
+  const length = request.headers["content-length"]
+  const hasBody = (length !== undefined && length !== "0") || request.headers["transfer-encoding"] !== undefined
+  if (!hasBody) return undefined
+  const type = (request.headers["content-type"] ?? "").toLowerCase()
+  if (!type.startsWith("application/json")) {
+    return HttpServerResponse.text("Send the request body as JSON.", { status: 415 })
+  }
+  if (length === undefined) {
+    return HttpServerResponse.text("Send the length of the request body.", { status: 411 })
+  }
+  if (Number(length) > MaxJsonBytes) {
+    return HttpServerResponse.text("The request body is too large.", { status: 413 })
+  }
+  return undefined
+}
+
 const addSecurityHeaders: HttpEffect.PreResponseHandler = (_request, response) =>
   Effect.succeed(HttpServerResponse.setHeaders(response, SecurityHeaders))
 
@@ -46,8 +76,8 @@ const logServerFailure = (request: HttpServerRequest.HttpServerRequest, cause: C
     )
   )
 
-// Refuses other hosts, adds the security headers to every response, error
-// responses included, and logs server failures. Ordinary requests are not
+// Refuses other hosts and cross-site writes, adds the security headers to
+// every response, error responses included, and logs server failures. Ordinary requests are not
 // logged, to keep the terminal quiet.
 export const GuardLive = HttpRouter.middleware(
   (httpEffect) =>
@@ -57,6 +87,10 @@ export const GuardLive = HttpRouter.middleware(
       const host = hostName(request.headers["host"])
       if (host === undefined || !ThisComputer.has(host)) {
         return refused
+      }
+      const refusedWrite = writeRefusal(request, request.headers["host"] ?? "")
+      if (refusedWrite !== undefined) {
+        return refusedWrite
       }
       return yield* httpEffect.pipe(Effect.tapCause((cause) => logServerFailure(request, cause)))
     }),

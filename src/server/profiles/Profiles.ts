@@ -1,8 +1,9 @@
-import { eq } from "drizzle-orm"
+import { and, eq, lt } from "drizzle-orm"
 import { Clock, Context, Effect, Layer, Semaphore } from "effect"
 import {
   InvalidTimeZone,
   NotUnlocked,
+  PinRequired,
   ProfileId,
   ProfileLocked,
   ProfileNameTaken,
@@ -24,6 +25,11 @@ export interface CreateProfile {
   readonly pin?: string | undefined
   readonly timeZone?: string | undefined
 }
+
+// An unlock unused for this long ends, so a browser left signed in on a shared
+// computer does not keep a Profile open for good.
+export const UnlockIdleMs = 12 * 60 * 60 * 1000
+const LastUsedResolutionMs = 5 * 60 * 1000
 
 const hostTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone
 
@@ -52,7 +58,7 @@ const toSummary = (row: typeof profiles.$inferSelect) =>
 export class Profiles extends Context.Service<Profiles, {
   readonly list: Effect.Effect<ReadonlyArray<ProfileSummary>>
   create(input: CreateProfile): Effect.Effect<Unlocked, ProfileNameTaken | InvalidTimeZone>
-  unlock(id: ProfileId, pin: string | undefined): Effect.Effect<Unlocked, ProfileNotFound | WrongPin | ProfileLocked>
+  unlock(id: ProfileId, pin: string | undefined): Effect.Effect<Unlocked, ProfileNotFound | PinRequired | WrongPin | ProfileLocked>
   fromToken(token: string): Effect.Effect<ProfileSummary, NotUnlocked>
   lock(token: string): Effect.Effect<void>
 }>()("gmat-prep/server/Profiles") {
@@ -60,15 +66,25 @@ export class Profiles extends Context.Service<Profiles, {
     Profiles,
     Effect.gen(function*() {
       const db = yield* Db
-      // Creating a Profile and checking a PIN each read, decide and write. One
-      // at a time, so requests sent together cannot share a free attempt count
-      // or a free name.
-      const oneAtATime = (yield* Semaphore.make(1)).withPermits(1)
+      // Creating a Profile and checking a PIN each read, decide and write, so
+      // they run one at a time: creations together, so two cannot take one
+      // name, and PIN checks per Profile, so guesses sent together still count
+      // one by one.
+      const oneCreationAtATime = (yield* Semaphore.make(1)).withPermits(1)
+      const pinChecks = new Map<string, Semaphore.Semaphore>()
+      const onePinCheckAtATime = (profileId: string) => {
+        let semaphore = pinChecks.get(profileId)
+        if (semaphore === undefined) {
+          semaphore = Semaphore.makeUnsafe(1)
+          pinChecks.set(profileId, semaphore)
+        }
+        return semaphore.withPermits(1)
+      }
 
       const issueToken = Effect.fn("Profiles.issueToken")(function*(profileId: string) {
         const token = newToken()
-        const createdAt = yield* Clock.currentTimeMillis
-        yield* db.insert(profileUnlocks).values({ tokenHash: sha256(token), profileId, createdAt })
+        const now = yield* Clock.currentTimeMillis
+        yield* db.insert(profileUnlocks).values({ tokenHash: sha256(token), profileId, createdAt: now, lastUsedAt: now })
         return token
       }, Effect.orDie)
 
@@ -104,23 +120,24 @@ export class Profiles extends Context.Service<Profiles, {
         }
         const token = yield* issueToken(row.id)
         return { profile: toSummary(row), token }
-      }, oneAtATime)
+      }, oneCreationAtATime)
 
-      const unlock = Effect.fn("Profiles.unlock")(function*(id: ProfileId, pin: string | undefined) {
+      const checkAndUnlock = Effect.fn("Profiles.unlock")(function*(id: ProfileId, pin: string | undefined) {
         const [row] = yield* db.select().from(profiles).where(eq(profiles.id, id)).pipe(Effect.orDie)
         if (row === undefined) {
           return yield* new ProfileNotFound()
         }
         const pinHash = row.pinHash
         if (pinHash !== null) {
+          if (pin === undefined) {
+            return yield* new PinRequired()
+          }
           const now = yield* Clock.currentTimeMillis
           const state = { failedAttempts: row.failedPinAttempts, lockedUntil: row.lockedUntil }
           if (isLocked(state, now)) {
             return yield* new ProfileLocked({ lockedUntil: state.lockedUntil ?? now })
           }
-          const correct = pin === undefined
-            ? false
-            : yield* Effect.promise(() => Bun.password.verify(pin, pinHash))
+          const correct = yield* Effect.promise(() => Bun.password.verify(pin, pinHash))
           const attempt = attemptPin(state, now, correct)
           yield* db.update(profiles)
             .set({ failedPinAttempts: attempt.next.failedAttempts, lockedUntil: attempt.next.lockedUntil })
@@ -137,17 +154,34 @@ export class Profiles extends Context.Service<Profiles, {
         }
         const token = yield* issueToken(row.id)
         return { profile: toSummary(row), token }
-      }, oneAtATime)
+      })
 
+      const unlock = (id: ProfileId, pin: string | undefined) =>
+        checkAndUnlock(id, pin).pipe(onePinCheckAtATime(id))
+
+      // An unlock that has gone unused for UnlockIdleMs ends. Use moves its
+      // last-used time on, written at most every few minutes.
       const fromToken = Effect.fn("Profiles.fromToken")(function*(token: string) {
-        const rows = yield* db.select({ profile: profiles })
+        const tokenHash = sha256(token)
+        const rows = yield* db.select({ profile: profiles, lastUsedAt: profileUnlocks.lastUsedAt })
           .from(profileUnlocks)
           .innerJoin(profiles, eq(profileUnlocks.profileId, profiles.id))
-          .where(eq(profileUnlocks.tokenHash, sha256(token)))
+          .where(eq(profileUnlocks.tokenHash, tokenHash))
           .pipe(Effect.orDie)
         const [match] = rows
         if (match === undefined) {
           return yield* new NotUnlocked()
+        }
+        const now = yield* Clock.currentTimeMillis
+        if (now - match.lastUsedAt > UnlockIdleMs) {
+          yield* db.delete(profileUnlocks).where(eq(profileUnlocks.tokenHash, tokenHash)).pipe(Effect.orDie)
+          return yield* new NotUnlocked()
+        }
+        if (now - match.lastUsedAt > LastUsedResolutionMs) {
+          yield* db.update(profileUnlocks)
+            .set({ lastUsedAt: now })
+            .where(and(eq(profileUnlocks.tokenHash, tokenHash), lt(profileUnlocks.lastUsedAt, now)))
+            .pipe(Effect.orDie)
         }
         return toSummary(match.profile)
       })

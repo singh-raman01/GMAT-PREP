@@ -1,6 +1,6 @@
 import { BunHttpServer } from "@effect/platform-bun"
 import { Effect, Layer, Ref } from "effect"
-import { Cookies, HttpClient, HttpRouter } from "effect/http"
+import { Cookies, HttpClient, HttpClientRequest, HttpRouter, type HttpServer } from "effect/http"
 import { HttpApiClient } from "effect/http-api"
 import { TestClock } from "effect/testing"
 import { mkdtempSync } from "node:fs"
@@ -19,6 +19,22 @@ export const openBrowser = Effect.gen(function*() {
   return yield* HttpApiClient.make(Api, { transformClient: HttpClient.withCookiesRef(jar) })
 })
 
+// A browser whose cookies the test can read, to replay an old unlock.
+export const openInspectableBrowser = Effect.gen(function*() {
+  const jar = yield* Ref.make(Cookies.empty)
+  const api = yield* HttpApiClient.make(Api, { transformClient: HttpClient.withCookiesRef(jar) })
+  const cookie = (name: string) => Ref.get(jar).pipe(Effect.map((cookies) => Cookies.getValue(cookies, name)))
+  return { api, cookie }
+})
+
+// GET with a given Cookie header, as a browser holding that cookie would send.
+export const getWithCookie = (path: string, cookie: string) =>
+  Effect.gen(function*() {
+    const client = yield* HttpClient.HttpClient
+    const response = yield* client.execute(HttpClientRequest.get(path).pipe(HttpClientRequest.setHeader("cookie", cookie)))
+    return response.status
+  })
+
 // The real routes and services on an ephemeral port, with a fake clock and no
 // worker process.
 export const appLayer = (dataDir: string) =>
@@ -31,6 +47,6 @@ export const appLayer = (dataDir: string) =>
   )
 
 export const runWithApp = <A, E>(
-  effect: Effect.Effect<A, E, HttpClient.HttpClient>,
+  effect: Effect.Effect<A, E, HttpClient.HttpClient | HttpServer.HttpServer>,
   dataDir: string = tempDataDir()
 ): Promise<A> => Effect.runPromise(effect.pipe(Effect.provide(appLayer(dataDir))))
