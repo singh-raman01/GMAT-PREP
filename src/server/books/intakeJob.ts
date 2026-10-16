@@ -1,14 +1,15 @@
 import { and, eq, inArray, sql } from "drizzle-orm"
 import { Clock, Effect, Schema } from "effect"
-import { CostPreview, type PageRoute } from "../../api/Books.ts"
+import { CostPreview, CostStep, type PageRoute } from "../../api/Books.ts"
 import { formatDollars } from "../../api/money.ts"
 import { Db } from "../db/Database.ts"
-import { bookPages, books } from "../db/schema.ts"
+import { bookPages, books, llmCalls } from "../db/schema.ts"
 import { type JobKind, JobStepFailed } from "../jobs/JobKind.ts"
 import { Settings, taskReadsImages } from "../settings/Settings.ts"
 import { BookFiles } from "./BookFiles.ts"
 import { hasTextLayer, readPdfPages, unreadableNote } from "./pdf.ts"
-import { surveyPages } from "./survey.ts"
+import { readPage, readsGroup } from "./readings.ts"
+import { readSurvey, surveyPages } from "./survey.ts"
 
 // Reading a Book that was just added: its pages, a hundred per step, then
 // the cost preview from a 10-page sample read by the Book Map model. The
@@ -100,6 +101,27 @@ const readStep = (bookId: string, nextPage: number) =>
     } as const
   })
 
+// Projects a step of the full run from what it took on the sampled pages.
+const projectStep = (
+  name: string,
+  sampled: { readonly pages: number; readonly tokens: number; readonly cost: number },
+  remainingPages: number
+) =>
+  new CostStep({
+    name,
+    sampledPages: sampled.pages,
+    sampleTokens: sampled.tokens,
+    sampleCost: sampled.cost,
+    projectedPages: remainingPages,
+    projectedTokens: sampled.pages === 0 ? 0 : Math.round(sampled.tokens / sampled.pages * remainingPages),
+    projectedCost: sampled.pages === 0 ? 0 : sampled.cost / sampled.pages * remainingPages
+  })
+
+// The full run on 10 pages spread through the Book: the Book Map model
+// surveys them, and the extraction model reads those it can extract. Their
+// readings are kept for the full run. What the calls took, read back from
+// the job's own call records, projects the full run; a repeated step adds
+// nothing it did not spend.
 const sampleStep = (jobId: string, bookId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
@@ -108,60 +130,83 @@ const sampleStep = (jobId: string, bookId: string) =>
       .orderBy(bookPages.number)
       .pipe(Effect.orDie)
     const sample = spread(textPages.map((page) => page.number), SamplePages)
-    const finish = (preview: CostPreview, result: string) =>
-      Effect.gen(function*() {
-        const now = yield* Clock.currentTimeMillis
-        const encoded = Schema.encodeSync(Schema.fromJsonString(CostPreview))(preview)
-        yield* db.update(books).set({ status: "previewed", preview: encoded, note: null, updatedAt: now })
-          .where(eq(books.id, bookId)).pipe(Effect.orDie)
-        return { _tag: "Finished", result } as const
-      })
+    const now = yield* Clock.currentTimeMillis
 
-    const [first, ...rest] = sample
-    if (first === undefined) {
-      return yield* finish(
-        new CostPreview({
-          model: "",
-          sampledPages: [],
-          sampleTokens: 0,
-          sampleCost: 0,
-          projectedPages: 0,
-          projectedTokens: 0,
-          projectedCost: 0
-        }),
-        "No page has a text layer, so there was nothing to sample."
-      )
-    }
-    const rows = yield* db.select({ number: bookPages.number, text: bookPages.text }).from(bookPages)
-      .where(and(eq(bookPages.bookId, bookId), inArray(bookPages.number, [first, ...rest])))
+    const rows = sample.length === 0 ? [] : yield* db.select({
+      number: bookPages.number,
+      text: bookPages.text,
+      survey: bookPages.survey
+    }).from(bookPages)
+      .where(and(eq(bookPages.bookId, bookId), inArray(bookPages.number, [...sample])))
       .orderBy(bookPages.number)
       .pipe(Effect.orDie)
-    const [firstRow, ...otherRows] = rows
-    if (firstRow === undefined) return yield* new JobStepFailed({ message: "The sampled pages could not be found." })
-    const surveyed = yield* surveyPages({ jobId, pages: [firstRow, ...otherRows], chapterBefore: null })
-    for (const [number, survey] of surveyed.surveys) {
-      yield* db.update(bookPages).set({ survey: JSON.stringify(survey) })
-        .where(and(eq(bookPages.bookId, bookId), eq(bookPages.number, number)))
-        .pipe(Effect.orDie)
+    const [firstUnsurveyed, ...otherUnsurveyed] = rows.filter((row) => row.survey === null)
+    if (firstUnsurveyed !== undefined) {
+      const surveyed = yield* surveyPages({ jobId, pages: [firstUnsurveyed, ...otherUnsurveyed], chapterBefore: null })
+      for (const [number, survey] of surveyed.surveys) {
+        yield* db.update(bookPages).set({ survey: JSON.stringify(survey) })
+          .where(and(eq(bookPages.bookId, bookId), eq(bookPages.number, number)))
+          .pipe(Effect.orDie)
+      }
     }
-    // The full run reads the other pages with text, at the sample's rate.
+    const surveys = yield* db.select({ number: bookPages.number, survey: bookPages.survey }).from(bookPages)
+      .where(and(eq(bookPages.bookId, bookId), inArray(bookPages.number, [...sample])))
+      .pipe(Effect.orDie)
+    const extractable = surveys.flatMap((row) => {
+      const survey = readSurvey(row.survey)
+      return survey !== null && survey.role !== "other" && survey.group !== null && readsGroup(survey.role, survey.group)
+        ? [{ page: row.number, role: survey.role, group: survey.group }]
+        : []
+    })
+    for (const page of extractable) {
+      yield* readPage({ jobId, bookId, page: page.page, role: page.role, group: page.group })
+    }
+
+    const spent = yield* db.select({
+      task: llmCalls.task,
+      tokens: sql<number>`coalesce(sum(${llmCalls.tokensIn} + ${llmCalls.tokensOut}), 0)`,
+      cost: sql<number>`coalesce(sum(${llmCalls.cost}), 0)`,
+      model: sql<string>`max(${llmCalls.model})`
+    }).from(llmCalls).where(eq(llmCalls.jobId, jobId)).groupBy(llmCalls.task).pipe(Effect.orDie)
+    const of = (task: string) => spent.find((row) => row.task === task) ?? { tokens: 0, cost: 0, model: "" }
     const remaining = textPages.length - sample.length
-    const projectedTokens = Math.round(surveyed.tokens / sample.length * remaining)
-    const projectedCost = surveyed.cost / sample.length * remaining
-    return yield* finish(
-      new CostPreview({
-        model: surveyed.model,
-        sampledPages: sample,
-        sampleTokens: surveyed.tokens,
-        sampleCost: surveyed.cost,
-        projectedPages: remaining,
-        projectedTokens,
-        projectedCost
-      }),
-      `Sampled ${sample.length} pages for ${formatDollars(surveyed.cost)}. The full run reads ${remaining} more: about ${
-        projectedTokens.toLocaleString("en-US")
-      } tokens, ${formatDollars(projectedCost)}.`
-    )
+    // Pages like the sampled extractable ones, in the same share.
+    const extractablePages = sample.length === 0 ? 0 : Math.round(extractable.length / sample.length * textPages.length)
+    const steps = [
+      projectStep("Book Map", { pages: sample.length, ...of("book-map") }, remaining),
+      projectStep(
+        "Extraction",
+        { pages: extractable.length, ...of("extraction") },
+        Math.max(0, extractablePages - extractable.length)
+      )
+    ]
+    const preview = new CostPreview({
+      model: of("book-map").model,
+      sampledPages: sample,
+      sampleTokens: steps.reduce((total, step) => total + step.sampleTokens, 0),
+      sampleCost: steps.reduce((total, step) => total + step.sampleCost, 0),
+      projectedPages: remaining,
+      projectedTokens: steps.reduce((total, step) => total + step.projectedTokens, 0),
+      projectedCost: steps.reduce((total, step) => total + step.projectedCost, 0),
+      steps
+    })
+    yield* db.update(books)
+      .set({
+        status: "previewed",
+        preview: Schema.encodeSync(Schema.fromJsonString(CostPreview))(preview),
+        note: null,
+        updatedAt: now
+      })
+      .where(eq(books.id, bookId))
+      .pipe(Effect.orDie)
+    return {
+      _tag: "Finished",
+      result: sample.length === 0
+        ? "No page has a text layer, so there was nothing to sample."
+        : `Sampled ${sample.length} pages for ${formatDollars(preview.sampleCost)}. The full run would take about ${
+          preview.projectedTokens.toLocaleString("en-US")
+        } tokens, ${formatDollars(preview.projectedCost)}.`
+    } as const
   })
 
 export const BookIntake: JobKind<typeof Params.Type, typeof Checkpoint.Type> = {

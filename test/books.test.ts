@@ -281,11 +281,34 @@ describe("The cost preview", () => {
         expect(preview.sampledPages).toEqual([...preview.sampledPages].sort((a, b) => a - b))
         expect(preview.sampledPages[0]).toBeLessThan(5)
         expect(preview.sampledPages.at(-1)).toBeGreaterThan(20)
-        // One call of 1000 tokens in and 100 out at $1 and $4 a million.
-        expect(preview).toMatchObject({ model: "map-model", sampleTokens: 1100, projectedPages: 14 })
-        expect(preview.sampleCost).toBeCloseTo(0.0014, 12)
-        expect(preview.projectedTokens).toBe(1540)
-        expect(preview.projectedCost).toBeCloseTo(0.0014 / 10 * 14, 12)
+        // Every call takes 1000 tokens in and 100 out: $0.0014 with the Book
+        // Map model, $0.0028 with the extraction model.
+        expect(preview.model).toBe("map-model")
+        expect(preview.projectedPages).toBe(14)
+        const [map, extraction] = preview.steps
+        // The survey of the 10 pages, then the 14 other pages with text.
+        expect(map).toMatchObject({
+          name: "Book Map",
+          sampledPages: 10,
+          sampleTokens: 1100,
+          projectedPages: 14,
+          projectedTokens: 1540
+        })
+        expect(map?.sampleCost).toBeCloseTo(0.0014, 12)
+        expect(map?.projectedCost).toBeCloseTo(0.0014 / 10 * 14, 12)
+        // 9 of the 10 are Problem Solving pages; the tenth holds Data
+        // Sufficiency, which this version does not extract. 9 in 10 of the
+        // 24 pages with text is 22 such pages, 13 of them still to read.
+        expect(extraction).toMatchObject({
+          name: "Extraction",
+          sampledPages: 9,
+          sampleTokens: 9900,
+          projectedPages: 13,
+          projectedTokens: 14300
+        })
+        expect(extraction?.projectedCost).toBeCloseTo(9 * 0.0028 / 9 * 13, 12)
+        expect(preview.sampleTokens).toBe(11000)
+        expect(preview.projectedTokens).toBe(1540 + 14300)
         const [sampleRequest] = yield* fake.requests
         expect(sampleRequest?.model).toBe("map-model")
         expect(quotedPages(sampleRequest!).map((page) => page.number)).toEqual([...preview.sampledPages])
@@ -293,7 +316,7 @@ describe("The cost preview", () => {
 
         // Nothing more runs until the Curator starts the full run.
         yield* advanceUntil(Effect.succeed(undefined), { step: "1 minute", maxSteps: 10 }).pipe(Effect.ignore)
-        expect(yield* fake.requests).toHaveLength(1)
+        expect(yield* fake.requests).toHaveLength(10)
         expect((yield* detailOf(curator.api, view.id)).book.status).toBe("previewed")
 
         const started = yield* curator.api.books.start({ params: { id: view.id }, payload: { spendCap: 0.05 } })
@@ -304,7 +327,7 @@ describe("The cost preview", () => {
         expect(again).toMatchObject({ _tag: "BookNotReady", status: "mapping" })
         yield* waitForStatus(curator.api, view.id, "map-proposed")
         // The full run read the 14 pages the sample did not, ten at a time.
-        const runRequests = (yield* fake.requests).slice(1)
+        const runRequests = (yield* fake.requests).slice(10)
         expect(runRequests.map((request) => quotedPages(request).length)).toEqual([10, 4])
       }),
       AllJobKinds

@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
 import { CuratorSession } from "./Curator.ts"
 import { JobView, LlmNotConfigured, SpendCap } from "./Jobs.ts"
@@ -94,17 +94,31 @@ export const MapRoleLabels: Record<MapRole, string> = {
 export const PageRoute = Schema.Literals(["text", "image", "review"])
 export type PageRoute = typeof PageRoute.Type
 
-export class CostPreview extends Schema.Class<CostPreview>("gmat-prep/api/CostPreview")({
-  // The model that read the sample, and what the sample took.
-  model: Schema.String,
-  sampledPages: Schema.Array(Schema.Int),
+// One step of the full run in the cost preview: what it took on the sample,
+// and what it would take on the rest of the Book.
+export class CostStep extends Schema.Class<CostStep>("gmat-prep/api/CostStep")({
+  // Such as "Book Map" or "Extraction".
+  name: Schema.String,
+  sampledPages: Schema.Int,
   sampleTokens: Schema.Int,
   sampleCost: Schema.Number,
-  // The pages the full run sends to the model, and what it would take,
-  // projected from the sample.
   projectedPages: Schema.Int,
   projectedTokens: Schema.Int,
   projectedCost: Schema.Number
+}) {}
+
+export class CostPreview extends Schema.Class<CostPreview>("gmat-prep/api/CostPreview")({
+  // The model that surveyed the sample.
+  model: Schema.String,
+  sampledPages: Schema.Array(Schema.Int),
+  // Totals over the steps.
+  sampleTokens: Schema.Int,
+  sampleCost: Schema.Number,
+  // The pages the Book Map model reads in the full run.
+  projectedPages: Schema.Int,
+  projectedTokens: Schema.Int,
+  projectedCost: Schema.Number,
+  steps: Schema.Array(CostStep).pipe(Schema.withDecodingDefaultKey(Effect.succeed([])))
 }) {}
 
 // What happened to every item extracted from a Book.
