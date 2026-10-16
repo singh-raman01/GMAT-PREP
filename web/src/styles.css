@@ -1709,6 +1709,11 @@ input.number-input {
   gap: 1rem 1.5rem;
 }
 
+.item-range > .hint {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
 .practice-preview {
   min-height: 1.5em;
   color: var(--pencil);
@@ -2751,9 +2756,17 @@ input[type="date"] {
 }
 
 .filter-count {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 1rem;
   margin: 0.75rem 0 1rem;
   color: var(--pencil);
   font-size: var(--step-0);
+}
+
+.filter-count p {
+  margin: 0;
 }
 
 .error-list {
@@ -2819,7 +2832,7 @@ input[type="date"] {
   font-size: var(--step-0);
 }
 
-/* What went wrong, in a Debrief: one tap picks a Mistake Type. */
+/* A wrong Part's Mistake Type, in a Debrief: one tap picks it. */
 
 .mistakes {
   display: grid;

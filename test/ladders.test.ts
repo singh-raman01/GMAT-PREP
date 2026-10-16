@@ -10,7 +10,7 @@ const question = (id: string): QuestionFact => ({
   id,
   unit: null,
   targetMs: 120_000,
-  parts: [{ position: 0, key: "C", labels: ["A", "B", "C", "D", "E"], notes: new Map() }]
+  parts: [{ position: 0, key: "C", notes: new Map() }]
 })
 const questions = new Map(["q1", "q2", "s1", "s2"].map((id) => [id, question(id)] as const))
 

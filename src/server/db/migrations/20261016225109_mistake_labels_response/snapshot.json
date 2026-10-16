@@ -1,7 +1,7 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "7ea520ee-ccb3-45f7-8eb0-09461a2ebd83",
+  "id": "be6acde4-f3fb-4069-9986-72e53c35870b",
   "prevIds": [
     "10a475ae-20f5-438c-a67d-8eeb148bbe0b"
   ],
@@ -124,10 +124,6 @@
     },
     {
       "name": "responses",
-      "entityType": "tables"
-    },
-    {
-      "name": "retry_skips",
       "entityType": "tables"
     },
     {
@@ -2588,66 +2584,6 @@
       "generated": null,
       "name": "id",
       "entityType": "columns",
-      "table": "retry_skips"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "profile_id",
-      "entityType": "columns",
-      "table": "retry_skips"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "question_id",
-      "entityType": "columns",
-      "table": "retry_skips"
-    },
-    {
-      "type": "integer",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "step",
-      "entityType": "columns",
-      "table": "retry_skips"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "note",
-      "entityType": "columns",
-      "table": "retry_skips"
-    },
-    {
-      "type": "integer",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "created_at",
-      "entityType": "columns",
-      "table": "retry_skips"
-    },
-    {
-      "type": "text",
-      "notNull": false,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "id",
-      "entityType": "columns",
       "table": "review_items"
     },
     {
@@ -4007,36 +3943,6 @@
     },
     {
       "columns": [
-        "profile_id"
-      ],
-      "tableTo": "profiles",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "nameExplicit": false,
-      "name": "fk_retry_skips_profile_id_profiles_id_fk",
-      "entityType": "fks",
-      "table": "retry_skips"
-    },
-    {
-      "columns": [
-        "question_id"
-      ],
-      "tableTo": "questions",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "nameExplicit": false,
-      "name": "fk_retry_skips_question_id_questions_id_fk",
-      "entityType": "fks",
-      "table": "retry_skips"
-    },
-    {
-      "columns": [
         "question_id"
       ],
       "tableTo": "questions",
@@ -4549,15 +4455,6 @@
         "id"
       ],
       "nameExplicit": false,
-      "name": "retry_skips_pk",
-      "table": "retry_skips",
-      "entityType": "pks"
-    },
-    {
-      "columns": [
-        "id"
-      ],
-      "nameExplicit": false,
       "name": "review_items_pk",
       "table": "review_items",
       "entityType": "pks"
@@ -4717,6 +4614,24 @@
     {
       "columns": [
         {
+          "value": "response_id",
+          "isExpression": false
+        },
+        {
+          "value": "part",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "mistake_labels_response",
+      "entityType": "indexes",
+      "table": "mistake_labels"
+    },
+    {
+      "columns": [
+        {
           "value": "profile_id",
           "isExpression": false
         }
@@ -4865,20 +4780,6 @@
       "name": "responses_profile_question",
       "entityType": "indexes",
       "table": "responses"
-    },
-    {
-      "columns": [
-        {
-          "value": "profile_id",
-          "isExpression": false
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "origin": "manual",
-      "name": "retry_skips_profile",
-      "entityType": "indexes",
-      "table": "retry_skips"
     },
     {
       "columns": [

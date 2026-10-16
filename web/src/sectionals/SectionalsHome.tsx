@@ -59,6 +59,8 @@ export const SectionalsHome = ({ onSessionLost, onStopped }: Props) => {
     switch (result.failure._tag) {
       case "SectionalRunning":
         return navigate(`/sectionals/${result.failure.id}`)
+      case "MockRunning":
+        return navigate(`/mocks/${result.failure.id}`)
       case "ReserveTooSmall":
         setProblem("Too few unseen Questions are held for Mocks now. The list below says what is missing.")
         return void load()
@@ -68,6 +70,7 @@ export const SectionalsHome = ({ onSessionLost, onStopped }: Props) => {
   }
 
   const running = options?.running ?? null
+  const mock = options?.mock ?? null
   return (
     <>
       <h1 ref={heading} tabIndex={-1}>Sectionals</h1>
@@ -84,6 +87,15 @@ export const SectionalsHome = ({ onSessionLost, onStopped }: Props) => {
           <p className="hint">Its clock keeps running while you are away, and the Section ends when time is up.</p>
         </section>
       )}
+      {mock !== null && (
+        <section className="group" aria-labelledby="sectional-mock">
+          <h2 id="sectional-mock">Mock in progress</h2>
+          <p>
+            <a className="set-name" {...linkProps(`/mocks/${mock}`)}>Go back to your Mock</a>
+          </p>
+          <p className="hint">A Sectional can start once the Mock is over.</p>
+        </section>
+      )}
       <section className="group" aria-labelledby="sectional-start">
         <h2 id="sectional-start">Start a Sectional</h2>
         {options === undefined ? <p className="quiet" aria-busy="true">Checking what each Section holds</p> : (
@@ -92,7 +104,7 @@ export const SectionalsHome = ({ onSessionLost, onStopped }: Props) => {
               <SectionStart
                 key={readiness.section.id}
                 readiness={readiness}
-                blocked={running !== null}
+                blocked={running !== null || mock !== null}
                 onStart={() => void start(readiness.section.id)}
               />
             ))}

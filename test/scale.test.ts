@@ -77,10 +77,21 @@ describe("Calibration by Official Scores", () => {
     expect(two.calibrated).toBe(true)
   })
 
-  test("points that fit no rising line, or the same Ability twice, keep the uncalibrated slope and shift it", () => {
+  test("points that fit no rising line, or Abilities under 0.5 apart, keep the uncalibrated slope and shift it", () => {
     const falling = calibratedLine([{ ability: -1, score: 80 }, { ability: 1, score: 70 }])
     expect(falling).toMatchObject({ slope: 5, offset: 75, calibrated: true })
     const same = calibratedLine([{ ability: 0.2, score: 76 }, { ability: 0.2, score: 80 }])
     expect(same).toMatchObject({ slope: 5, offset: 77, calibrated: true })
+    // 0.05 apart would fit 120 points per unit of Ability.
+    const close = calibratedLine([{ ability: 0.5, score: 76 }, { ability: 0.55, score: 82 }])
+    expect(close.slope).toBe(5)
+    expect(close.offset).toBeCloseTo(79 - 5 * 0.525, 10)
+  })
+
+  test("a fitted slope stays within half to twice the uncalibrated one, the line through the points' middle", () => {
+    const steep = calibratedLine([{ ability: 0, score: 70 }, { ability: 1, score: 90 }])
+    expect(steep).toMatchObject({ slope: 10, offset: 75, calibrated: true })
+    const shallow = calibratedLine([{ ability: -1, score: 74 }, { ability: 1, score: 76 }])
+    expect(shallow).toMatchObject({ slope: 2.5, offset: 75, calibrated: true })
   })
 })

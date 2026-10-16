@@ -167,7 +167,11 @@ export const MocksHome = ({ onSessionLost, onStopped }: Props) => {
             {done.map((each) => (
               <li key={each.id}>
                 <a className="set-name" {...linkProps(`/mocks/${each.id}`)}>
-                  {each.total === null ? "No Total" : `${each.total.score}, likely ${each.total.low} to ${each.total.high}`}
+                  {each.total === null
+                    ? "No Total"
+                    : `${each.total.score}, likely ${each.total.low} to ${each.total.high}${
+                      each.total.calibrated ? "" : ", not yet calibrated"
+                    }`}
                 </a>
                 <span className="set-facts">
                   {each.order.map((section) => section.name).join(", ")}, {dayAndTime(each.finishedAt ?? each.createdAt)}
@@ -178,14 +182,20 @@ export const MocksHome = ({ onSessionLost, onStopped }: Props) => {
           </ul>
         </section>
       )}
-      <PaperMarks onFailure={handle} />
+      <PaperMarks onFailure={handle} onChanged={() => void load()} />
     </>
   )
 }
 
 // Books, or pages of them, the Learner worked on paper.
-const PaperMarks = ({ onFailure }: { readonly onFailure: (failure: { readonly _tag: string }) => void }) => {
-  const ids = { book: useId(), from: useId(), to: useId() }
+// A mark changes which Questions are unseen, so the start check is read again.
+const PaperMarks = (
+  { onFailure, onChanged }: {
+    readonly onFailure: (failure: { readonly _tag: string }) => void
+    readonly onChanged: () => void
+  }
+) => {
+  const ids = { book: useId(), from: useId(), to: useId(), pagesHint: useId() }
   const [marks, setMarks] = useState<ReadonlyArray<PaperMarkView>>()
   const [books, setBooks] = useState<PracticeOptions["books"]>()
   const [bookId, setBookId] = useState("")
@@ -224,7 +234,7 @@ const PaperMarks = ({ onFailure }: { readonly onFailure: (failure: { readonly _t
       setMarks(result.success)
       setFrom("")
       setTo("")
-      return
+      return onChanged()
     }
     switch (result.failure._tag) {
       case "PaperMarkInvalid":
@@ -241,7 +251,10 @@ const PaperMarks = ({ onFailure }: { readonly onFailure: (failure: { readonly _t
     busy.current = true
     const result = await call((client) => client.paperMarks.remove({ params: { id } }))
     busy.current = false
-    if (result._tag === "Success") return setMarks(result.success)
+    if (result._tag === "Success") {
+      setMarks(result.success)
+      return onChanged()
+    }
     if (result.failure._tag === "PaperMarkNotFound") {
       const listed = await call((client) => client.paperMarks.list())
       if (listed._tag === "Success") setMarks(listed.success)
@@ -266,14 +279,14 @@ const PaperMarks = ({ onFailure }: { readonly onFailure: (failure: { readonly _t
                 <li key={mark.id}>
                   <span className="set-name">
                     {mark.book.title}
-                    {mark.firstPage === null ? ", the whole Book" : `, pages ${mark.firstPage} to ${mark.lastPage}`}
+                    {mark.firstPage === null ? ", the whole Book" : `, PDF pages ${mark.firstPage} to ${mark.lastPage}`}
                   </span>
                   <span className="set-facts">{plural(mark.questions, "Question", "Questions")}</span>
                   <button
                     type="button"
                     className="link-button"
                     aria-label={`Remove the mark on ${mark.book.title}${
-                      mark.firstPage === null ? "" : `, pages ${mark.firstPage} to ${mark.lastPage}`
+                      mark.firstPage === null ? "" : `, PDF pages ${mark.firstPage} to ${mark.lastPage}`
                     }`}
                     onClick={() => void remove(mark.id)}
                   >
@@ -307,9 +320,10 @@ const PaperMarks = ({ onFailure }: { readonly onFailure: (failure: { readonly _t
               {!whole && (
                 <div className="item-range">
                   <div className="field">
-                    <label htmlFor={ids.from}>From page</label>
+                    <label htmlFor={ids.from}>From PDF page</label>
                     <input
                       id={ids.from}
+                      aria-describedby={ids.pagesHint}
                       className="number-input"
                       type="text"
                       inputMode="numeric"
@@ -319,9 +333,10 @@ const PaperMarks = ({ onFailure }: { readonly onFailure: (failure: { readonly _t
                     />
                   </div>
                   <div className="field">
-                    <label htmlFor={ids.to}>To page</label>
+                    <label htmlFor={ids.to}>To PDF page</label>
                     <input
                       id={ids.to}
+                      aria-describedby={ids.pagesHint}
                       className="number-input"
                       type="text"
                       inputMode="numeric"
@@ -330,6 +345,10 @@ const PaperMarks = ({ onFailure }: { readonly onFailure: (failure: { readonly _t
                       onChange={(event) => setTo(event.target.value)}
                     />
                   </div>
+                  <p id={ids.pagesHint} className="hint">
+                    The page numbers of the PDF file, counted from its first page, which can differ from those printed on
+                    the pages.
+                  </p>
                 </div>
               )}
               <div className="actions">

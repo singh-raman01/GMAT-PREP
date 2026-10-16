@@ -6,11 +6,13 @@ import { HttpApiClient } from "effect/http-api"
 import { TestClock } from "effect/testing"
 import { Api } from "../src/api/Api.ts"
 import { DefaultBlueprint } from "../src/api/blueprint.ts"
+import { BookId } from "../src/api/Books.ts"
 import type { ErrorLogFilters } from "../src/api/ErrorLog.ts"
 import type { PracticeChoice, PracticeView } from "../src/api/Practice.ts"
 import { QuestionId } from "../src/api/Review.ts"
 import { Db } from "../src/server/db/Database.ts"
-import { parts, questions } from "../src/server/db/schema.ts"
+import { parts, questions, sessions, sources } from "../src/server/db/schema.ts"
+import { encodeConfig } from "../src/server/sections/config.ts"
 import { numbered, OtherPsSkill, seedBook } from "./fixtures/bank.ts"
 import { seedExamBank, SmallBlueprint } from "./fixtures/examBank.ts"
 import { openBrowser, runWithWorkers } from "./harness.ts"
@@ -113,11 +115,11 @@ describe("The Error Log", () => {
         params: { questionId },
         payload: { responseId: entry!.responseId, part: 0, mistakeType: "misread" }
       })
-      expect(changed.parts[0]).toMatchObject({ mistakeType: { id: "misread", name: "Misread" }, byLearner: true })
+      expect(changed.parts[0]).toMatchObject({ mistakeType: { id: "misread", name: "Misread" }, basis: "learner" })
       // The Curator changes the key to B: A is still wrong, and the label stays.
       const db = yield* Db
       yield* db.update(parts).set({ key: "B" }).where(eq(parts.questionId, questionId)).pipe(Effect.orDie)
-      expect((yield* list(asha, { mistakeType: "misread" })).entries.map((each) => each.parts[0]!.byLearner)).toEqual([true])
+      expect((yield* list(asha, { mistakeType: "misread" })).entries.map((each) => each.parts[0]!.basis)).toEqual(["learner"])
       // A key of A makes the answer right, and the entry goes.
       yield* db.update(parts).set({ key: "A" }).where(eq(parts.questionId, questionId)).pipe(Effect.orDie)
       expect((yield* list(asha)).total).toBe(0)
@@ -152,7 +154,7 @@ describe("The Error Log", () => {
         payload: { seq: view.nextSeq, questionId: view.current!.question.id, selection: [{ part: 0, choice: "A" }], guessed: false }
       })
       const mistakes = answered.current!.mistakes!
-      expect(mistakes.parts.map((part) => [part.picked, part.mistakeType?.id, part.byLearner])).toEqual([["A", "trap", false]])
+      expect(mistakes.parts.map((part) => [part.picked, part.mistakeType?.id, part.basis])).toEqual([["A", "trap", "option"]])
       expect(mistakes.choices.map((choice) => choice.id)).toEqual([
         "concept-gap",
         "wrong-approach",
@@ -166,7 +168,7 @@ describe("The Error Log", () => {
         payload: { responseId: mistakes.responseId, part: 0, mistakeType: "concept-gap" }
       })
       const again = yield* asha.practice.get({ params: { id: view.id } })
-      expect(again.current!.mistakes!.parts[0]).toMatchObject({ mistakeType: { id: "concept-gap" }, byLearner: true })
+      expect(again.current!.mistakes!.parts[0]).toMatchObject({ mistakeType: { id: "concept-gap" }, basis: "learner" })
       // A right answer has none.
       const next = yield* asha.practice.next({ params: { id: view.id }, payload: { position: 1 } })
       yield* TestClock.adjust("60 seconds")
@@ -297,5 +299,132 @@ describe("Sections in the Error Log", () => {
       const log = yield* list(asha)
       expect(log.total).toBeGreaterThan(0)
       expect(log.facets.sections.map((section) => section.id).toSorted()).toEqual(["di", "quant", "verbal"])
+    })))
+})
+
+// What the Curator's merge does to the merged Question (ReviewQueue.ts).
+const merge = (from: string, into: string) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    yield* db.update(sources).set({ questionId: into, merged: true }).where(eq(sources.questionId, from))
+    yield* db.update(questions).set({ status: "withdrawn", mergedInto: into }).where(eq(questions.id, from))
+  }).pipe(Effect.orDie)
+
+const bookItem = (bookId: string, number: number): PracticeChoice => ({
+  kind: "book",
+  bookId: BookId.make(bookId),
+  set: "Problem Solving",
+  from: number,
+  to: number
+})
+
+describe("Review fixes in the Error Log", () => {
+  test("an untimed answer is never slow, however long the Question sat open", () =>
+    runWithWorkers(Effect.gen(function*() {
+      yield* seedBook("Quant Review", numbered(1))
+      const asha = yield* learner("Asha")
+      yield* answer(asha, yield* asha.practice.start({ payload: { choice: untimed(1) } }), "C", { seconds: 600 })
+      expect((yield* list(asha)).total).toBe(0)
+    })))
+
+  test("a merged Question's Responses count for the one it became, judged by its key, every one in the history", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const a = yield* seedBook("Book A", numbered(1))
+      const b = yield* seedBook("Book B", numbered(1))
+      const q1 = a.ids.get(1)!
+      const q2 = b.ids.get(1)!
+      const asha = yield* learner("Asha")
+      // Right on Book B's copy, then wrong on Book A's, then wrong on B's.
+      yield* answer(asha, yield* asha.practice.start({ payload: { choice: bookItem(b.bookId, 1) } }), "C")
+      yield* answer(asha, yield* asha.practice.start({ payload: { choice: bookItem(a.bookId, 1) } }), "A")
+      yield* answer(asha, yield* asha.practice.start({ payload: { choice: bookItem(b.bookId, 1) } }), "B")
+      yield* merge(q2, q1)
+      const log = yield* list(asha)
+      expect(log.entries.map((entry) => [String(entry.questionId), entry.misses])).toEqual([[q1, 2]])
+      const detail = yield* asha.errorLog.get({ params: { questionId: QuestionId.make(q2) } })
+      expect(detail.history.map((item) => [item.correct, item.reasons])).toEqual([[true, []], [false, ["wrong"]], [false, ["wrong"]]])
+      // A key change on the Question it became makes the copy's B right and
+      // its C wrong: the latest miss is now A's.
+      const db = yield* Db
+      yield* db.update(parts).set({ key: "B" }).where(eq(parts.questionId, q1)).pipe(Effect.orDie)
+      expect((yield* list(asha)).entries.map((entry) => [entry.misses, entry.parts[0]!.picked])).toEqual([[2, "A"]])
+    })))
+
+  test("option notes written for an old key give no Mistake Type or Trap Pattern until written again", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const book = yield* seedBook("Quant Review", numbered(1))
+      const questionId = book.ids.get(1)!
+      const asha = yield* learner("Asha")
+      yield* answer(asha, yield* asha.practice.start({ payload: { choice: bookItem(book.bookId, 1) } }), "A")
+      const db = yield* Db
+      yield* db.update(parts).set({ key: "B" }).where(eq(parts.questionId, questionId)).pipe(Effect.orDie)
+      yield* db.update(questions).set({ enrichment: "key-content" }).where(eq(questions.id, questionId)).pipe(Effect.orDie)
+      const [entry] = (yield* list(asha)).entries
+      expect(entry!.parts[0]).toMatchObject({ mistakeType: null, trapPattern: null, basis: "none" })
+      expect((yield* list(asha)).facets.mistakeTypes.map((each) => each.id)).toEqual(["unlabelled"])
+      yield* db.update(questions).set({ enrichment: "done" }).where(eq(questions.id, questionId)).pipe(Effect.orDie)
+      expect((yield* list(asha)).entries[0]!.parts[0]).toMatchObject({ mistakeType: { id: "trap" }, basis: "option" })
+    })))
+
+  test("Difficulty Bands come easy to hard, and a long list comes a page at a time", () =>
+    runWithWorkers(Effect.gen(function*() {
+      yield* seedBook("Hard Book", numbered(1, { seed: 1 }))
+      yield* seedBook("Easy Book", numbered(1, { seed: -1 }))
+      yield* seedBook("Medium Book", numbered(1, { seed: 0 }))
+      const asha = yield* learner("Asha")
+      let view = yield* asha.practice.start({ payload: { choice: untimed(3) } })
+      for (let i = 0; i < 3; i++) view = yield* answer(asha, view, "A")
+      const log = yield* list(asha)
+      expect(log.facets.bands.map((band) => band.id)).toEqual(["easy", "medium", "hard"])
+      const page = yield* list(asha, { offset: 1, limit: 1 })
+      expect([page.entries.length, page.matching, page.total, String(page.entries[0]!.questionId)])
+        .toEqual([1, 3, 3, String(log.entries[1]!.questionId)])
+      expect(log.timeZone).toBe("UTC")
+    })))
+
+  test("an entry waits while a running Sectional holds its Question, and opens once that ends", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const book = yield* seedBook("Quant Review", numbered(1))
+      const questionId = book.ids.get(1)!
+      const asha = yield* learner("Asha")
+      yield* answer(asha, yield* asha.practice.start({ payload: { choice: bookItem(book.bookId, 1) } }), "A")
+      // As a Sectional that chose it from the Seen tier stands.
+      const db = yield* Db
+      const sectional = crypto.randomUUID()
+      yield* db.insert(sessions).values({
+        id: sectional,
+        profileId: asha.profileId,
+        kind: "sectional",
+        timed: true,
+        config: encodeConfig({
+          section: "quant",
+          blueprint: DefaultBlueprint,
+          units: [{ unitId: questionId, group: "ps", questionIds: [questionId], seen: [questionId], skipped: [], tier: "seen", slot: "own" }],
+          passed: {},
+          stage: "question",
+          unfilled: 0,
+          report: null
+        }),
+        status: "active",
+        timeLimitMs: 2_700_000,
+        elapsedMs: 0,
+        clockSavedAt: null,
+        holder: "tab-1",
+        createdAt: 0
+      }).pipe(Effect.orDie)
+      expect(yield* list(asha)).toMatchObject({ total: 0, held: 1, entries: [] })
+      expect(yield* asha.errorLog.get({ params: { questionId: QuestionId.make(questionId) } })
+        .pipe(Effect.flip, Effect.map((error) => error._tag))).toBe("ErrorLogEntryHeld")
+      yield* db.update(sessions).set({ status: "finished" }).where(eq(sessions.id, sectional)).pipe(Effect.orDie)
+      expect(yield* list(asha)).toMatchObject({ total: 1, held: 0 })
+      expect(String((yield* asha.errorLog.get({ params: { questionId: QuestionId.make(questionId) } })).entry.questionId)).toBe(questionId)
+    })))
+
+  test("a wrong answer given in under a quarter of the Target Time says the timing chose Time pressure", () =>
+    runWithWorkers(Effect.gen(function*() {
+      yield* seedBook("Quant Review", numbered(1))
+      const asha = yield* learner("Asha")
+      yield* answer(asha, yield* asha.practice.start({ payload: { choice: untimed(1) } }), "A", { seconds: 20 })
+      expect((yield* list(asha)).entries[0]!.parts[0]).toMatchObject({ mistakeType: { id: "time-pressure" }, basis: "timing" })
     })))
 })

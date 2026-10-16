@@ -1,4 +1,4 @@
-import { eq, inArray, sql } from "drizzle-orm"
+import { and, eq, inArray, sql } from "drizzle-orm"
 import { Effect } from "effect"
 import { studyDayOf } from "../../api/studyDay.ts"
 import { Db } from "../db/Database.ts"
@@ -61,7 +61,7 @@ export const ratedHistory = (profileId: string) =>
     const firstSets = [...new Set([...firstSeenOf(served).values()].filter((event) => event.timed).map((event) => event.sessionId))]
       .filter((id): id is string => id !== null)
     if (firstSets.length === 0) return [] as ReadonlyArray<RatedAnswer>
-    const facts = (yield* db.select({
+    const facts = yield* db.select({
       id: responses.id,
       sessionId: responses.sessionId,
       questionId: responses.questionId,
@@ -69,14 +69,26 @@ export const ratedHistory = (profileId: string) =>
       seq: responses.seq,
       selection: responses.selection,
       createdAt: responses.createdAt,
-      ended: sql<number>`${sessions.status} = 'finished'`
+      ended: sql<number>`${sessions.status} = 'finished'`,
+      // A Mock's Section counts as ended once the Mock is over, so the Score
+      // Estimates say nothing of a closed Section while the Mock runs.
+      mockId: sql<string | null>`json_extract(${sessions.config}, '$.mock.id')`
     }).from(responses)
       .innerJoin(sessions, eq(sessions.id, responses.sessionId))
       // The sets are the Profile's own, and found by their index.
-      .where(inArray(responses.sessionId, firstSets)))
-      .map((fact) => ({ ...fact, questionId: resolve(fact.questionId) }))
-    const rated = ratedResponses(served, facts)
-    const kept = facts.filter((fact) => rated.has(fact.id))
+      .where(inArray(responses.sessionId, firstSets))
+    const mockIds = [...new Set(facts.flatMap((fact) => (fact.mockId === null ? [] : [fact.mockId])))]
+    const mocksOver = new Set(
+      mockIds.length === 0 ? [] : (yield* db.select({ id: sessions.id }).from(sessions)
+        .where(and(inArray(sessions.id, mockIds), eq(sessions.status, "finished")))).map((row) => row.id)
+    )
+    const counted = facts.map((fact) => ({
+      ...fact,
+      questionId: resolve(fact.questionId),
+      ended: Boolean(fact.ended) && (fact.mockId === null || mocksOver.has(fact.mockId))
+    }))
+    const rated = ratedResponses(served, counted)
+    const kept = counted.filter((fact) => rated.has(fact.id))
     if (kept.length === 0) return [] as ReadonlyArray<RatedAnswer>
     const ids = [...new Set(kept.map((fact) => fact.questionId))]
     const rows = yield* db.select({
@@ -96,7 +108,7 @@ export const ratedHistory = (profileId: string) =>
         responseId: fact.id,
         sessionId: fact.sessionId,
         seq: fact.seq,
-        ended: Boolean(fact.ended),
+        ended: fact.ended,
         questionId: fact.questionId,
         section: question.section,
         difficulty: Number(question.difficulty),

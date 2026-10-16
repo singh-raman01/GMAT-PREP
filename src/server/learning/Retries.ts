@@ -1,10 +1,13 @@
 import { Clock, Context, Effect, Layer, Semaphore } from "effect"
 import { PracticeView, SessionId } from "../../api/Practice.ts"
 import { NoRetriesDue, RetriesRunning, RetriesView, RetryDue } from "../../api/Retries.ts"
+import { QuestionId } from "../../api/Review.ts"
 import { Db } from "../db/Database.ts"
 import { retrySkips } from "../db/schema.ts"
 import { heldBySections, mergeTargets, publishedPool, seenBy } from "../practice/history.ts"
+import { namesOf } from "../practice/content.ts"
 import { type Caller, Practice } from "../practice/Practice.ts"
+import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { ErrorLog, type RetryState } from "./ErrorLog.ts"
 import type { Step } from "./ladder.ts"
 import { planRetries } from "./retryPlan.ts"
@@ -26,10 +29,10 @@ type Due = RetryState["entries"][number] & { readonly step: Step; readonly dueDa
 const dueOf = (state: RetryState): ReadonlyArray<Due> =>
   state.entries.flatMap((entry): Array<Due> => {
     const ladder = entry.ladder.ladder
-    if (entry.view.status !== "open" || ladder.step === null || ladder.dueDay === null) return []
+    if (entry.status !== "open" || ladder.step === null || ladder.dueDay === null) return []
     const timed = ladder.step > 1 || entry.ladder.reasons.includes("slow")
     return [{ ...entry, step: ladder.step, dueDay: ladder.dueDay, timed }]
-  }).toSorted((a, b) => a.dueDay - b.dueDay || a.view.lastMissedAt - b.view.lastMissedAt)
+  }).toSorted((a, b) => a.dueDay - b.dueDay || a.lastMissedAt - b.lastMissedAt)
 
 export class Retries extends Context.Service<Retries, {
   due(profileId: string): Effect.Effect<RetriesView>
@@ -41,6 +44,7 @@ export class Retries extends Context.Service<Retries, {
       const db = yield* Db
       const errorLog = yield* ErrorLog
       const practice = yield* Practice
+      const names = namesOf((yield* Taxonomy).view)
       const run = <A, E>(effect: Effect.Effect<A, E, Db>) => effect.pipe(Effect.provideService(Db, db), Effect.orDie)
       // Two starts at once, from two tabs, make one set.
       const oneAtATime = (yield* Semaphore.make(1)).withPermits(1)
@@ -51,17 +55,18 @@ export class Retries extends Context.Service<Retries, {
           const all = dueOf(state)
           const today = all.filter((each) => each.dueDay <= state.today)
           const held = today.length === 0 ? new Set<string>() : yield* run(heldBySections(profileId))
+          const named = (id: string) => names.named(id)
           return new RetriesView({
             due: today.map((each) =>
               new RetryDue({
-                questionId: each.view.questionId,
+                questionId: QuestionId.make(each.questionId),
                 step: each.step,
-                questionType: each.view.questionType,
-                primarySkill: each.view.primarySkill,
+                questionType: named(each.question.questionType),
+                primarySkill: each.question.primarySkill === null ? null : named(each.question.primarySkill),
                 reasons: each.ladder.reasons,
                 timed: each.timed,
                 dueOn: dayText(each.dueDay),
-                held: each.step === 1 && held.has(each.view.questionId)
+                held: each.step === 1 && held.has(each.questionId)
               })
             ),
             upcoming: Array.from({ length: Ahead }, (_, index) => state.today + 1 + index).map((day) => ({
@@ -90,10 +95,10 @@ export class Retries extends Context.Service<Retries, {
             wanted.map((each) => ({
               step: each.step,
               target: {
-                id: each.view.questionId,
+                id: each.questionId,
                 questionType: each.question.questionType,
                 primarySkill: each.question.primarySkill,
-                secondarySkills: each.secondarySkills,
+                secondarySkills: each.question.secondarySkills,
                 difficulty: each.question.difficulty
               }
             })),

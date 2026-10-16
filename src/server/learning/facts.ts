@@ -1,73 +1,170 @@
-import { asc, eq, inArray, sql } from "drizzle-orm"
+import { and, asc, eq, inArray, type SQL, sql } from "drizzle-orm"
 import { Effect } from "effect"
 import { groupOf } from "../../api/blueprint.ts"
-import { MissedPartView, MistakesView, type Named } from "../../api/Practice.ts"
+import { MissedPartView, MistakesView, type Named, type Selection } from "../../api/Practice.ts"
 import { QuestionId } from "../../api/Review.ts"
 import { targetSecondsFor } from "../../api/targetTimes.ts"
 import { Db } from "../db/Database.ts"
-import { mistakeLabels, questions, responses, servedQuestions } from "../db/schema.ts"
-import type { Names, StoredQuestion } from "../practice/content.ts"
-import { storedQuestions } from "../practice/content.ts"
-import { readSelection } from "../practice/history.ts"
+import { books, difficulty, mistakeLabels, optionNotes, options, parts, questions, responses, servedQuestions, sources } from "../db/schema.ts"
+import type { Names } from "../practice/content.ts"
+import { currentDifficulty } from "../practice/history.ts"
 import { type MissedPart, missesOf, type QuestionFact, type ResponseFact } from "./misses.ts"
 
 // The facts the Error Log rules read, from the database, and the views of a
 // miss's wrong Parts.
 
-export const responseFact = (row: typeof responses.$inferSelect): ResponseFact => ({
+export const responseFact = (
+  row: Pick<
+    typeof responses.$inferSelect,
+    "id" | "sessionId" | "questionId" | "kind" | "seq" | "selection" | "timeSpentMs" | "guessed" | "createdAt"
+  >
+): ResponseFact => ({
   id: row.id,
   sessionId: row.sessionId,
   questionId: row.questionId,
   kind: row.kind,
   seq: row.seq,
-  selection: readSelection(row.selection),
+  // Checked when it was written; a history of many reads it without the
+  // Schema's cost.
+  selection: JSON.parse(row.selection) as Selection,
   timeSpentMs: row.timeSpentMs,
   guessed: row.guessed,
   at: row.createdAt
 })
 
-// Each Question with its Parts, its Target Time and, for an RC passage's or
-// MSR set's Question, the Stimulus it is timed with.
-export const questionFacts = (
-  stored: ReadonlyMap<string, StoredQuestion>,
-  stimulusOf: ReadonlyMap<string, string | null>,
-  overrides: Readonly<Record<string, number>>
-): Array<QuestionFact> =>
-  [...stored.values()].map((question) => ({
-    id: question.id,
-    unit: groupOf(question.questionType)?.units === true ? stimulusOf.get(question.id) ?? null : null,
-    targetMs: targetSecondsFor(question.questionType, overrides) * 1000,
-    parts: question.parts.map((part) => ({
-      position: part.position,
-      key: part.key,
-      labels: part.options.map((option) => option.label),
-      notes: part.notes
-    }))
-  }))
+// What the Error Log needs of each Question answered: no Stimuli, option
+// texts or Approaches, which only an open entry shows.
+export interface QuestionSummary {
+  readonly id: string
+  readonly section: string
+  readonly questionType: string
+  readonly primarySkill: string | null
+  readonly secondarySkills: ReadonlyArray<string>
+  readonly difficulty: number
+  readonly stem: string
+  readonly status: string
+  readonly enrichment: string
+  readonly stimulusId: string | null
+  readonly parts: ReadonlyArray<{
+    readonly position: number
+    readonly prompt: string | null
+    readonly key: string | null
+    // Each wrong option's note, by the option's label.
+    readonly notes: ReadonlyMap<string, { readonly mistakeType: string; readonly trapPattern: string | null }>
+  }>
+  readonly books: ReadonlyArray<
+    { readonly id: string; readonly title: string; readonly edition: string; readonly createdAt: number }
+  >
+}
 
-export const stimuliOf = (ids: ReadonlyArray<string>) =>
+// Reads ids a few hundred at a time, within SQLite's limit on parameters.
+const inChunks = <A, E, R>(ids: ReadonlyArray<string>, read: (chunk: Array<string>) => Effect.Effect<ReadonlyArray<A>, E, R>) =>
   Effect.gen(function*() {
-    if (ids.length === 0) return new Map<string, string | null>()
-    const db = yield* Db
-    const rows = yield* db.select({ id: questions.id, stimulusId: questions.stimulusId }).from(questions)
-      .where(inArray(questions.id, [...ids]))
-    return new Map(rows.map((row) => [row.id, row.stimulusId] as const))
+    const found: Array<A> = []
+    for (let start = 0; start < ids.length; start += 500) found.push(...(yield* read(ids.slice(start, start + 500))))
+    return found
   })
+
+export const questionSummaries = (ids: ReadonlyArray<string>) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const wanted = [...new Set(ids)]
+    const rows = yield* inChunks(wanted, (chunk) =>
+      db.select({
+        id: questions.id,
+        section: questions.section,
+        questionType: questions.questionType,
+        primarySkill: questions.primarySkill,
+        secondarySkills: questions.secondarySkills,
+        difficulty: currentDifficulty,
+        stem: questions.stem,
+        status: questions.status,
+        enrichment: questions.enrichment,
+        stimulusId: questions.stimulusId
+      }).from(questions).leftJoin(difficulty, eq(difficulty.questionId, questions.id)).where(inArray(questions.id, chunk))
+    )
+    const partRows = yield* inChunks(wanted, (chunk) =>
+      db.select({ id: parts.id, questionId: parts.questionId, position: parts.position, prompt: parts.prompt, key: parts.key })
+        .from(parts).where(inArray(parts.questionId, chunk)).orderBy(asc(parts.position))
+    )
+    const partIds = partRows.map((part) => part.id)
+    const noteRows = yield* inChunks(partIds, (chunk) =>
+      db.select({
+        partId: optionNotes.partId,
+        label: options.label,
+        mistakeType: optionNotes.mistakeType,
+        trapPattern: optionNotes.trapPattern
+      }).from(optionNotes)
+        .innerJoin(options, and(eq(options.partId, optionNotes.partId), eq(options.position, optionNotes.position)))
+        .where(inArray(optionNotes.partId, chunk))
+    )
+    const bookRows = yield* inChunks(wanted, (chunk) =>
+      db.select({
+        questionId: sources.questionId,
+        id: books.id,
+        title: books.title,
+        edition: books.edition,
+        createdAt: books.createdAt
+      })
+        .from(sources).innerJoin(books, eq(books.id, sources.bookId)).where(inArray(sources.questionId, chunk))
+        .orderBy(asc(sources.createdAt))
+    )
+    const partsOf = Map.groupBy(partRows, (part) => part.questionId)
+    const notesOf = Map.groupBy(noteRows, (note) => note.partId)
+    const booksOf = Map.groupBy(bookRows, (book) => book.questionId)
+    return new Map(rows.map((row) => [row.id, {
+      id: row.id,
+      section: row.section,
+      questionType: row.questionType,
+      primarySkill: row.primarySkill,
+      secondarySkills: JSON.parse(row.secondarySkills) as ReadonlyArray<string>,
+      difficulty: Number(row.difficulty),
+      stem: row.stem,
+      status: row.status,
+      enrichment: row.enrichment,
+      stimulusId: row.stimulusId,
+      parts: (partsOf.get(row.id) ?? []).map((part) => ({
+        position: part.position,
+        prompt: part.prompt,
+        key: part.key,
+        notes: new Map((notesOf.get(part.id) ?? []).map((note) => [note.label, note] as const))
+      })),
+      books: [...new Map((booksOf.get(row.id) ?? []).map((book) => [book.id, book] as const)).values()]
+    } satisfies QuestionSummary] as const)) as ReadonlyMap<string, QuestionSummary>
+  })
+
+// A Question as the rules read it: its Parts, its Target Time and, for an RC
+// passage's or MSR set's Question, the Stimulus it is timed with. Option
+// notes count only once written for the current key (enrichment done), as
+// the Debrief shows them.
+export const questionFactOf = (
+  question: Pick<QuestionSummary, "id" | "questionType" | "stimulusId" | "enrichment" | "parts">,
+  overrides: Readonly<Record<string, number>>
+): QuestionFact => ({
+  id: question.id,
+  unit: groupOf(question.questionType)?.units === true ? question.stimulusId : null,
+  targetMs: targetSecondsFor(question.questionType, overrides) * 1000,
+  parts: question.parts.map((part) => ({
+    position: part.position,
+    key: part.key,
+    notes: question.enrichment === "done" ? part.notes : new Map()
+  }))
+})
 
 // The Learner's latest Mistake Type for each Response and Part, keyed
 // "response:part".
-export const labelsOf = (where: ReturnType<typeof eq>) =>
+export const labelsOf = (where: SQL) =>
   Effect.gen(function*() {
     const db = yield* Db
-    const rows = yield* db.select().from(mistakeLabels).where(where)
-      .orderBy(asc(mistakeLabels.createdAt), asc(sql`${mistakeLabels}.rowid`))
+    // The latest written stands, whatever the clock said.
+    const rows = yield* db.select().from(mistakeLabels).where(where).orderBy(asc(sql`${mistakeLabels}.rowid`))
     return new Map(rows.map((label) => [`${label.responseId}:${label.part}`, label.mistakeType] as const))
   })
 
 export const missedPartView = (
   part: MissedPart,
   label: string | undefined,
-  question: StoredQuestion,
+  question: { readonly parts: ReadonlyArray<{ readonly position: number; readonly prompt: string | null }> },
   names: Names
 ) => {
   const mistakeType = label ?? part.mistakeType
@@ -76,15 +173,15 @@ export const missedPartView = (
     prompt: question.parts.length > 1 ? question.parts.find((each) => each.position === part.part)?.prompt ?? null : null,
     picked: part.picked,
     mistakeType: mistakeType === null ? null : names.named(mistakeType),
-    byLearner: label !== undefined,
+    basis: label === undefined ? part.basis : "learner",
     trapPattern: part.trapPattern === null ? null : names.named(part.trapPattern)
   })
 }
 
 // The Mistake Types of a wrong answer, for its Debrief: the miss the
 // Session's final Response to the Question makes, with the Learner's labels.
-// Undefined when that answer is not wrong. The caller knows the Session
-// shows how it went.
+// Null when that answer is not wrong. The caller knows the Session shows how
+// it went. Only the Session's own Questions are read, without their content.
 export const sessionMistakes = (
   session: { readonly id: string; readonly kind: string; readonly timed: boolean; readonly timeLimitMs: number | null },
   questionId: string,
@@ -99,25 +196,27 @@ export const sessionMistakes = (
     const db = yield* Db
     const given = yield* db.select().from(responses).where(eq(responses.sessionId, session.id))
     if (!given.some((response) => response.questionId === questionId)) return null
-    const ids = [...new Set(given.map((response) => response.questionId))]
+    const ids = [...new Set(given.flatMap((response) => [response.questionId, context.resolve(response.questionId)]))]
     const served = yield* db.select({
       sessionId: servedQuestions.sessionId,
       questionId: servedQuestions.questionId,
       servedElapsedMs: servedQuestions.servedElapsedMs
     }).from(servedQuestions).where(eq(servedQuestions.sessionId, session.id))
-    const stored = yield* storedQuestions(ids)
+    const summaries = yield* questionSummaries(ids)
     const misses = missesOf({
       sessions: [{ id: session.id, kind: session.kind, limitMs: session.timed ? session.timeLimitMs : null, shown: true }],
       responses: given.map(responseFact),
       served,
-      questions: questionFacts(stored, yield* stimuliOf(ids), context.overrides)
+      questions: new Map([...summaries].map(([id, question]) => [id, questionFactOf(question, context.overrides)] as const)),
+      resolve: context.resolve
     })
-    const miss = misses.find((each) => each.questionId === questionId && each.reasons.includes("wrong"))
-    if (miss === undefined) return null
+    const entry = context.resolve(questionId)
+    const miss = misses.find((each) => each.questionId === entry && each.reasons.includes("wrong"))
+    const question = summaries.get(entry)
+    if (miss === undefined || question === undefined) return null
     const labels = yield* labelsOf(eq(mistakeLabels.responseId, miss.responseId))
-    const question = stored.get(questionId)!
     return new MistakesView({
-      questionId: QuestionId.make(context.resolve(questionId)),
+      questionId: QuestionId.make(entry),
       responseId: miss.responseId,
       parts: miss.parts.map((part) => missedPartView(part, labels.get(`${miss.responseId}:${part.part}`), question, context.names)),
       choices: context.choices

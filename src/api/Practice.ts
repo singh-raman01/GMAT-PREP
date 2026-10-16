@@ -162,8 +162,9 @@ export class MissedPartView extends Schema.Class<MissedPartView>("gmat-prep/api/
   // The option picked; null when none was, as when time ran out.
   picked: Schema.NullOr(Schema.String),
   mistakeType: Schema.NullOr(Named),
-  // Set by the Learner, in place of the one the app filled in.
-  byLearner: Schema.Boolean,
+  // Where the Mistake Type came from: the Learner, who set it in place of the
+  // app's; the answer's timing; the picked option's note; or nowhere yet.
+  basis: Schema.Literals(["learner", "timing", "option", "none"]),
   trapPattern: Schema.NullOr(Named)
 }) {}
 

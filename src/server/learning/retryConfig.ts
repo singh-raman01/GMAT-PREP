@@ -20,3 +20,8 @@ const RetryList = Schema.Struct({ retry: Schema.optional(Schema.Array(RetryItem)
 const decodeRetryList = Schema.decodeUnknownSync(Schema.fromJsonString(RetryList))
 
 export const retryItemsOf = (config: string): ReadonlyArray<RetryItem> => decodeRetryList(config).retry ?? []
+
+// The retry list as SQLite's json_extract gives it: the array's JSON, or null
+// for a set with none.
+const decodeRetryItems = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(RetryItem)))
+export const retryListOf = (json: string | null): ReadonlyArray<RetryItem> => (json === null ? [] : decodeRetryItems(json))

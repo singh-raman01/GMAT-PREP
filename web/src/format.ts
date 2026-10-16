@@ -3,10 +3,15 @@
 export const clockTime = (millis: number) =>
   new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(millis)
 
-export const dayAndTime = (millis: number) =>
-  new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(
-    millis
-  )
+// In this browser's time zone, or the one given, such as a Profile's.
+export const dayAndTime = (millis: number, timeZone?: string) =>
+  new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    ...(timeZone === undefined ? {} : { timeZone })
+  }).format(millis)
 
 export const minutesAndSeconds = (millis: number) => {
   const seconds = Math.max(0, Math.ceil(millis / 1000))

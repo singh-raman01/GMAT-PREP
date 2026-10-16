@@ -139,6 +139,14 @@ const Break = (
   // Going on keeps the break only in its first minute after Section 1; the
   // server decides, and this follows the clock on screen.
   const keeps = pause.keepsBreak && BreakMs - remaining < KeepBreakMs
+  // Said aloud as each moment passes: the first minute, the last, the end.
+  const announcement = over
+    ? `The break is over. Section ${next.place} is starting.`
+    : remaining <= 60_000
+    ? "One minute left in the break."
+    : pause.keepsBreak && !keeps
+    ? "The first minute is over, so going on now ends your break."
+    : ""
   return (
     <div className="mock-break">
       <p className="back">
@@ -153,6 +161,7 @@ const Break = (
         break ends, or when you go on.
       </p>
       <p>{keeps ? "Going on now keeps your break for after Section 2." : "Going on now ends your break."}</p>
+      <p className="visually-hidden" role="status">{announcement}</p>
       {!view.heldHere && (
         <div className="held-elsewhere" role="status">
           <p>This Mock is open in another tab or on another device, so you can only look at it here.</p>
@@ -223,8 +232,8 @@ const Report = ({ view, report }: { readonly view: MockView; readonly report: Mo
         </ul>
       )}
       <p className="quiet">
-        Difficulty and your Score Estimates moved as each Section closed. Questions you had not seen before count toward
-        them.
+        Difficulty and your Score Estimates moved when the Mock ended, Section by Section. Questions you had not seen
+        before count toward them.
       </p>
       <div className="actions">
         <a className="button" {...linkProps("/mocks")}>Back to Mocks</a>

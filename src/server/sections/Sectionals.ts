@@ -72,8 +72,9 @@ import { judge, rescore, scored } from "./report.ts"
 // "Sessions"). The next unit is chosen after each Response, adaptively; a
 // Question must be answered before the next appears and there is no going
 // back. When time remains after the last Question, Review & Edit allows up
-// to three changed answers. The Section is scored, and Difficulty and
-// Ability move, only when it closes.
+// to three changed answers. The Section is scored only when it closes, and
+// Difficulty and Ability move then for a Sectional, and for a Mock's
+// Sections when the Mock ends.
 
 type SessionRow = typeof sessions.$inferSelect
 type ResponseRow = typeof responses.$inferSelect
@@ -445,8 +446,10 @@ export class Sectionals extends Context.Service<Sectionals, {
           })
         })
 
-      // Ends the Sectional: the Learner finished it, or its time ran out. Its
-      // report is kept, then its Rated Responses move Difficulty and Ability.
+      // Ends the Section: the Learner finished it, or its time ran out. Its
+      // report is kept, then a Sectional's Rated Responses move Difficulty and
+      // Ability. A Mock's Sections are rated when the Mock is over, so nothing
+      // shows how a closed Section went while it runs.
       const end = (session: SessionRow, endedBy: "finished" | "time", elapsedMs: number) =>
         Effect.gen(function*() {
           const now = yield* Clock.currentTimeMillis
@@ -458,7 +461,7 @@ export class Sectionals extends Context.Service<Sectionals, {
           const line = lines[config.section as keyof typeof lines] ?? UncalibratedLine
           const report = yield* reportOf(session, config, elapsedMs, line)
           yield* saveConfig(session.id, { ...config, report, line })
-          yield* run(rateSession(session))
+          if (config.mock === undefined) yield* run(rateSession(session))
         })
 
       // When time runs out on a Question, it gets a time-out Response: wrong,
@@ -497,6 +500,8 @@ export class Sectionals extends Context.Service<Sectionals, {
           readonly marked: ReadonlySet<string>
           readonly resolve: (id: string) => string
           readonly revealed: boolean
+          // The time the first answer took; a change in Review & Edit takes none.
+          readonly firstTimeMs?: number | undefined
         },
         final: ResponseRow | undefined
       ) =>
@@ -526,7 +531,7 @@ export class Sectionals extends Context.Service<Sectionals, {
             response: !over || final === undefined ? null : new ResponseView({
               selection,
               guessed: false,
-              timeSpentMs: final.timeSpentMs,
+              timeSpentMs: context.firstTimeMs ?? final.timeSpentMs,
               correct: final.kind !== "time-out" && isCorrect(selection, keys),
               rated,
               timedOut: final.kind === "time-out"
@@ -819,11 +824,12 @@ export class Sectionals extends Context.Service<Sectionals, {
           const served = yield* servedOf(id)
           const row = served.find((each) => each.position === position)
           if (row === undefined) return yield* outOfStep(session, caller.device, "not-current")
-          const final = (yield* responsesOf(id)).findLast((each) => each.questionId === row.questionId)
+          const given = (yield* responsesOf(id)).filter((each) => each.questionId === row.questionId)
+          const final = given.at(-1)
           const marked = yield* run(bookmarkedBy(session.profileId))
           const resolve = yield* run(mergeTargets)
           return new SectionalQuestion({
-            served: yield* servedView(session, row, { marked, resolve, revealed: shown }, final),
+            served: yield* servedView(session, row, { marked, resolve, revealed: shown, firstTimeMs: given[0]?.timeSpentMs }, final),
             selection: final === undefined || final.kind === "time-out" ? null : readSelection(final.selection)
           })
         })
@@ -880,11 +886,19 @@ export class Sectionals extends Context.Service<Sectionals, {
           else yield* end(session, "finished", elapsedMs)
         })).pipe(Effect.flatMap(() => after(caller, id)), oneAtATime)
 
+      // This device takes over the Section. Taking over a Mock's running
+      // Section takes over the Mock too, so its break and next Section
+      // follow; a closed one leaves the Mock with the device it is on.
       const claim = (caller: Caller, id: SessionId) =>
         Effect.gen(function*() {
           const session = yield* own(caller.profileId, id)
-          if (caller.device !== undefined && session.holder !== caller.device) {
+          if (caller.device !== undefined) {
             yield* db.update(sessions).set({ holder: caller.device }).where(eq(sessions.id, id)).pipe(Effect.orDie)
+            const mock = decodeConfig(session.config).mock
+            if (mock !== undefined && session.status === "active") {
+              yield* db.update(sessions).set({ holder: caller.device })
+                .where(and(eq(sessions.id, mock.id), eq(sessions.status, "active"))).pipe(Effect.orDie)
+            }
           }
           return yield* after(caller, id)
         }).pipe(oneAtATime)
@@ -898,9 +912,14 @@ export class Sectionals extends Context.Service<Sectionals, {
         if (active.length === 0) yield* wake.close
         const ids = new Set(active.map((session) => session.id))
         for (const id of [...clocks.keys()]) if (!ids.has(id)) clocks.delete(id)
+        // One Section that cannot tick does not hold up the others.
         for (const session of active) {
-          const { expired } = yield* advance(session, now)
-          if (expired) yield* inTransaction(expire(session))
+          yield* Effect.gen(function*() {
+            const { expired } = yield* advance(session, now)
+            if (expired) yield* inTransaction(expire(session))
+          }).pipe(
+            Effect.catchCause((cause) => Effect.logError(`The Section ${session.id} could not tick: ${Cause.pretty(cause)}`))
+          )
         }
       }).pipe(
         oneAtATime,

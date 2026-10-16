@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
 import { DifficultyBand } from "./difficulty.ts"
 import { EndedBy, Named, PracticeClock, Selection, SelectionInvalid, ServedView, SessionId } from "./Practice.ts"
@@ -82,13 +82,15 @@ export class SectionalReport extends Schema.Class<SectionalReport>("gmat-prep/ap
   // Slots the Question Bank had nothing left to fill, not scored.
   unfilled: Schema.Int,
   repeats: Schema.Int,
-  // Of those, the ones a Paper Mark had made Seen.
-  paperRepeats: Schema.Int,
+  // Of those, the ones a Paper Mark had made Seen. Reports kept before Paper
+  // Marks have none.
+  paperRepeats: Schema.Int.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
   changes: Schema.Int,
   // The points Review & Edit gained (above 0) or lost (below 0).
   editPoints: Schema.Int,
-  // Scored on a line an Official Score calibrated.
-  calibrated: Schema.Boolean,
+  // Scored on a line an Official Score calibrated; reports kept before
+  // Official Scores were not.
+  calibrated: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
   // A key changed since the Section closed, and the report follows it.
   rescored: Schema.Boolean
 }) {}

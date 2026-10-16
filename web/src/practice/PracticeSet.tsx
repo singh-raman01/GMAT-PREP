@@ -402,8 +402,9 @@ const QuestionScreen = (
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (locked || event.altKey || event.ctrlKey || event.metaKey || isTyping(event.target)) return
-      // Keys typed in the calculator are its own.
-      if (event.target instanceof Element && event.target.closest(".calculator") !== null) return
+      // Keys typed in the calculator, or in the Mistake Type control, are
+      // their own: Enter there does not move on.
+      if (event.target instanceof Element && event.target.closest(".calculator, .mistakes") !== null) return
       const label = event.key.toUpperCase()
       if (
         !answered && lettered !== undefined && label.length === 1 &&
@@ -465,6 +466,7 @@ const QuestionScreen = (
             headingRef={debriefHeading}
             parts={parts}
             mistakes={current.mistakes}
+            onFailure={onFailure}
           />
           {!locked && (
             <div className="actions debrief-actions">
@@ -563,7 +565,7 @@ const SkipLabels: Record<ItemRef["reason"], string> = {
   undecided: "Held until the Mock Reserve is decided",
   checking: "Not in the Question Bank yet",
   withdrawn: "Withdrawn from the Question Bank",
-  "in-section": "In your Sectional, until it ends"
+  "in-section": "In your Sectional or Mock, until it ends"
 }
 
 // The book's items the set leaves out, and why.
@@ -699,6 +701,7 @@ const ResultRow = (
                 timed={view.timed}
                 parts={review.served.question.parts}
                 mistakes={review.served.mistakes}
+                onFailure={onFailure}
               />
             )}
           </>

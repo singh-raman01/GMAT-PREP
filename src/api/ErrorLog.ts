@@ -67,12 +67,23 @@ export class ErrorLogFacets extends Schema.Class<ErrorLogFacets>("gmat-prep/api/
   statuses: Schema.Array(Counted)
 }) {}
 
+// How many entries a page lists, unless asked for more.
+export const ErrorLogPageSize = 50
+export const ErrorLogPageMax = 200
+
 export class ErrorLogView extends Schema.Class<ErrorLogView>("gmat-prep/api/ErrorLogView")({
-  // Those the filters keep, the latest miss first.
+  // A page of those the filters keep, the latest miss first.
   entries: Schema.Array(ErrorLogEntry),
+  // How many the filters keep.
+  matching: Schema.Int,
   // Every entry, before the filters.
   total: Schema.Int,
-  facets: ErrorLogFacets
+  // Entries left out while a running Sectional or Mock holds their
+  // Questions, as Practice leaves those out; they come back when it ends.
+  held: Schema.Int,
+  facets: ErrorLogFacets,
+  // The Profile's time zone, which the day filters and the times shown use.
+  timeZone: Schema.String
 }) {}
 
 export const ErrorLogFilters = {
@@ -87,7 +98,10 @@ export const ErrorLogFilters = {
   status: Schema.optional(ErrorStatus),
   // The latest miss's day, in the Profile's time zone, both included.
   from: Schema.optional(Day),
-  to: Schema.optional(Day)
+  to: Schema.optional(Day),
+  // The page: entries to pass over, and how many to list.
+  offset: Schema.optional(Schema.FiniteFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
+  limit: Schema.optional(Schema.FiniteFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: ErrorLogPageMax })))
 }
 export type ErrorLogFilters = Schema.Struct<typeof ErrorLogFilters>["Type"]
 
@@ -124,8 +138,16 @@ export class ErrorLogEntryNotFound extends Schema.TaggedError<ErrorLogEntryNotFo
   { httpApiStatus: 404 }
 ) {}
 
+// A running Sectional or Mock holds the entry's Question, so it opens once
+// that ends.
+export class ErrorLogEntryHeld extends Schema.TaggedError<ErrorLogEntryHeld>()(
+  "ErrorLogEntryHeld",
+  {},
+  { httpApiStatus: 409 }
+) {}
+
 // A Mistake Type the Taxonomy lacks, or a Part that is not a wrong Part of
-// the entry's latest miss.
+// one of the entry's misses.
 export class MistakeTypeInvalid extends Schema.TaggedError<MistakeTypeInvalid>()(
   "MistakeTypeInvalid",
   { problem: Schema.String },
@@ -137,7 +159,11 @@ const entryParams = { params: { questionId: QuestionId } }
 export class ErrorLogApi extends HttpApiGroup.make("errorLog")
   .add(
     HttpApiEndpoint.get("list", "/", { query: ErrorLogFilters, success: ErrorLogView }),
-    HttpApiEndpoint.get("get", "/:questionId", { ...entryParams, success: ErrorLogDetail, error: ErrorLogEntryNotFound }),
+    HttpApiEndpoint.get("get", "/:questionId", {
+      ...entryParams,
+      success: ErrorLogDetail,
+      error: [ErrorLogEntryNotFound, ErrorLogEntryHeld]
+    }),
     // Sets a wrong Part's Mistake Type, stored as the Learner's.
     HttpApiEndpoint.post("setMistakeType", "/:questionId/mistake-type", {
       ...entryParams,
