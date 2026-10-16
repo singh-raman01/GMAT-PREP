@@ -2,6 +2,7 @@ import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
 import { BookId } from "./Books.ts"
 import { CuratorSession } from "./Curator.ts"
+import { PartKind } from "./parts.ts"
 import { StimulusView } from "./Stimulus.ts"
 
 // The Review Queue: Questions held for the Curator, each with every reason,
@@ -74,6 +75,8 @@ export class ApproachView extends Schema.Class<ApproachView>("gmat-prep/api/Appr
 }) {}
 
 export class OptionNoteView extends Schema.Class<OptionNoteView>("gmat-prep/api/OptionNoteView")({
+  // The Part it is for, by position.
+  part: Schema.Int,
   label: Schema.String,
   trapNote: Schema.String,
   mistakeType: Schema.String,
@@ -81,10 +84,27 @@ export class OptionNoteView extends Schema.Class<OptionNoteView>("gmat-prep/api/
 }) {}
 
 export class KeyOverrideView extends Schema.Class<KeyOverrideView>("gmat-prep/api/KeyOverrideView")({
+  // The Part whose key it replaced, by position.
+  part: Schema.Int,
   previousKey: Schema.NullOr(Schema.String),
   newKey: Schema.String,
   reason: Schema.String,
   createdAt: Schema.Number
+}) {}
+
+export const KeyBasis = Schema.Literals(["book", "computed", "override"])
+
+// One way a Question is answered: a choice of five, a statement's pair, a
+// menu in a sentence, or a column of a Two-Part Analysis.
+export class ReviewPart extends Schema.Class<ReviewPart>("gmat-prep/api/ReviewPart")({
+  position: Schema.Int,
+  kind: PartKind,
+  // A statement, a sentence with {{blank}}, or a column heading; null for a
+  // single choice, whose question is the stem.
+  prompt: Schema.NullOr(Schema.String),
+  options: Schema.Array(Schema.Struct({ label: Schema.String, text: Schema.String })),
+  key: Schema.NullOr(Schema.String),
+  keyBasis: Schema.NullOr(KeyBasis)
 }) {}
 
 export class QuestionView extends Schema.Class<QuestionView>("gmat-prep/api/QuestionView")({
@@ -94,9 +114,11 @@ export class QuestionView extends Schema.Class<QuestionView>("gmat-prep/api/Ques
   // What it asks about: a passage, a table, a chart, a figure or tabs.
   stimulus: Schema.NullOr(StimulusView),
   stem: Schema.String,
-  options: Schema.Array(Schema.Struct({ label: Schema.String, text: Schema.String })),
+  parts: Schema.Array(ReviewPart),
+  // Each Part's key, joined, such as C or A,B,A; see keys.ts.
   key: Schema.NullOr(Schema.String),
-  keyBasis: Schema.NullOr(Schema.Literals(["book", "computed", "override"])),
+  // override when the Curator chose any Part's key.
+  keyBasis: Schema.NullOr(KeyBasis),
   status: QuestionStatus,
   bookLabel: Schema.NullOr(Schema.String),
   // The explanation its Approaches are written with, as the Book prints it.
@@ -160,6 +182,11 @@ export class KeyNotAnOption extends Schema.TaggedError<KeyNotAnOption>()(
   { options: Schema.Array(Schema.String) },
   { httpApiStatus: 422 }
 ) {}
+
+// An option's letter.
+export const OptionLabel = Schema.String.check(
+  Schema.makeFilter((label: string) => /^[A-H]$/.test(label), { description: "an option's letter, A to H" })
+)
 
 export const KeyOverrideReason = Schema.String.check(
   Schema.makeFilter((reason: string) => reason.trim().length >= 3 && reason.trim().length <= 500, {
@@ -238,7 +265,12 @@ export class ReviewApi extends HttpApiGroup.make("review")
     // through the Publish Gate.
     HttpApiEndpoint.post("overrideKey", "/review/:id/key", {
       ...decided,
-      payload: Schema.Struct({ key: Schema.Literals(["A", "B", "C", "D", "E"]), reason: KeyOverrideReason }),
+      payload: Schema.Struct({
+        // The Part whose key it replaces, by position; the first when absent.
+        part: Schema.optional(Schema.Int),
+        key: OptionLabel,
+        reason: KeyOverrideReason
+      }),
       error: [ReviewItemNotFound, ReviewItemNotOpen, KeyNotAnOption]
     })
   )

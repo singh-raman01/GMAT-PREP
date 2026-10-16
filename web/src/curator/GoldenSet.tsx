@@ -1,5 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useId, useRef, useState } from "react"
 import { type GoldenCandidate, type GoldenReport, type GoldenView, TagAgreementNeeded } from "../../../src/api/Golden.ts"
+import { partKeys } from "../../../src/api/keys.ts"
 import type { TaxonomyView } from "../../../src/api/Taxonomy.ts"
 import { skillsFor } from "../../../src/api/taxonomyRules.ts"
 import { call } from "../api.ts"
@@ -327,7 +328,7 @@ const Candidate = (
       <div className="question-body">
         {candidate.stimulus !== null && <StimulusDetails stimulus={candidate.stimulus} />}
         <RichText source={candidate.stem} />
-        <PartsWithKeys parts={candidate.parts} joinedKey={candidate.key} />
+        <PartsWithKeys parts={candidate.parts} keys={partKeys(candidate.key, candidate.parts.length)} />
       </div>
       <p className="quiet">
         {candidate.approved ? "Your Skills" : "The model's Skills"}: {skillName(candidate.primarySkill)}

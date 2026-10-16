@@ -19,6 +19,7 @@ const route = (settings: Partial<GateInput["approaches"][number]> = {}): GateInp
 })
 
 const note = (label: string, settings: Partial<GateInput["notes"][number]> = {}): GateInput["notes"][number] => ({
+  part: 0,
   label,
   mistakeType: "calculation-slip",
   trapPattern: null,
@@ -33,7 +34,7 @@ const passing: GateInput = {
   linkReasons: [],
   enriched: true,
   key: "C",
-  optionLabels: ["A", "B", "C", "D", "E"],
+  parts: [{ labels: ["A", "B", "C", "D", "E"] }],
   primarySkill: "quant.number-properties.remainders",
   secondarySkills: [],
   difficultyEstimate: 0.2,
@@ -131,6 +132,33 @@ describe("The Publish Gate", () => {
     expect(codes({ ...passing, enriched: false })).toEqual(["not-enriched"])
     const noKey = { code: "no-key" as const, detail: "No key." }
     expect(gateReasons(taxonomy, { ...passing, linkReasons: [noKey], key: null, approaches: [], notes: [] })).toEqual([noKey])
+  })
+
+  test("a Question with several Parts needs every Part's key from the solves and Approaches, and a note for each wrong option", () => {
+    const statements: GateInput = {
+      ...passing,
+      questionType: "di.ta",
+      hasStimulus: true,
+      primarySkill: "di.displays.tables",
+      key: "A,B,A",
+      parts: [{ labels: ["A", "B"] }, { labels: ["A", "B"] }, { labels: ["A", "B"] }],
+      solverAnswers: ["A,B,A", "A,B,A", "A,B,A"],
+      approaches: [route({ strategy: "di.strategy.read-and-compute", answer: "A,B,A" })],
+      notes: [note("B", { part: 0 }), note("A", { part: 1 }), note("B", { part: 2 })]
+    }
+    expect(gateReasons(taxonomy, statements)).toEqual([])
+    expect(gateReasons(taxonomy, { ...statements, solverAnswers: ["A,B,A", "A,B,B", "A,B,A"] })).toEqual([{
+      code: "solver-disagreement",
+      detail: "Independent solves answered A,B,A; A,B,B and A,B,A; the key is A,B,A."
+    }])
+    expect(gateReasons(taxonomy, { ...statements, notes: statements.notes.slice(0, 2) })).toEqual([{
+      code: "option-notes",
+      detail: "No note for the wrong choice B in Part 3."
+    }])
+    expect(gateReasons(taxonomy, { ...statements, notes: [...statements.notes, note("B", { part: 1 })] })).toEqual([{
+      code: "option-notes",
+      detail: "A note treats the key of Part 2, B, as a wrong choice."
+    }])
   })
 
   test("a Reading Comprehension Question with no passage is held, whatever linking found", () => {
