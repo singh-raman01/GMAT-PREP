@@ -676,6 +676,19 @@ describe("Releasing the Mock Reserve", () => {
       expect(yield* shown(yield* learner("Asha"))).toBe(3)
     })))
 
+  test("a passage is released by the size the Reserve table shows, its published Questions", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const seeded = yield* seedBook("Verbal Review", [1, 2, 3, 4].map((n) => rc(n, { reserve: true })))
+      const db = yield* Db
+      // A Key Override sent the fourth back for its checks.
+      yield* db.update(questions).set({ status: "draft" }).where(eq(questions.id, seeded.ids.get(4)!)).pipe(Effect.orDie)
+      const admin = yield* curator
+      expect((yield* admin.bank.reserve()).find((each) => each.id === "verbal")).toMatchObject({ held: 3, released: 0 })
+      const after = yield* admin.bank.releaseReserve({ payload: { section: "verbal", count: 3 } })
+      expect(after.find((each) => each.id === "verbal")).toMatchObject({ held: 0, released: 3 })
+      expect(yield* releasedOf([...seeded.ids.values()])).toBe(4)
+    })))
+
   test("a passage in the Reserve that a later Question takes past every slot is released", () =>
     runWithWorkers(Effect.gen(function*() {
       const seeded = yield* seedBook("Verbal Review", [1, 2, 3, 4, 5].map((n) => rc(n, { reserve: true })))

@@ -516,14 +516,15 @@ const useWide = () => {
 const Passage = ({ source, position }: { readonly source: string; readonly position: number }) => {
   const title = useId()
   const wide = useWide()
-  // Open for the first Question of a passage; folded for the next ones.
+  // Open for the first Question of a passage; folded for the next ones. The
+  // fold changes while rendering the next Question, so the passage never shows
+  // open first.
   const [open, setOpen] = useState(true)
-  const shown = useRef({ source, position })
-  useEffect(() => {
-    if (shown.current.position === position) return
-    setOpen(shown.current.source !== source)
-    shown.current = { source, position }
-  }, [source, position])
+  const [shown, setShown] = useState({ source, position })
+  if (shown.position !== position) {
+    setShown({ source, position })
+    setOpen(shown.source !== source)
+  }
   if (wide) {
     return (
       <section className="passage" aria-labelledby={title} tabIndex={0}>

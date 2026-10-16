@@ -51,7 +51,7 @@ The rest wait in the Review Queue, each with every reason:
 - a missing note on a wrong choice;
 - a book's difficulty label two bands from the estimate.
 
-You can publish past a solver's doubt or a difficulty mismatch, change the key with a reason (the question's Approaches and notes are written again and it is checked again), keep a near match as a Variant or merge it into the other question, or withdraw it. Fixing the Book Map checks each question again, and questions it no longer covers leave the bank. The book's page shows what became of every question it held.
+You can publish past a solver's doubt or a difficulty mismatch, change the key with a reason (the question's Approaches and notes are written again and it is checked again), keep a near match as a Variant or merge it into the other question, move a question about a passage another edition reprints to the other question's passage when they are the same passage, or withdraw it. Fixing the Book Map checks each question again, and questions it no longer covers leave the bank. The book's page shows what became of every question it held.
 
 A quarter of each book's questions is held back for Mocks, spread over question types and difficulty bands, with a passage's questions kept together, whichever book they come from. A passage that grows or shrinks past what a Mock could serve is released. The Books screen shows how many each Section holds back and can release some into Practice Sets, a passage at a time; release cannot be undone. It also lists Skills with fewer than 15 questions.
 

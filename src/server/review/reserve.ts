@@ -19,8 +19,8 @@ export interface ReserveUnit {
   readonly id: string
   // Its Questions from the Book being decided, which count toward its share.
   readonly size: number
-  // A passage's Questions from every Book, not withdrawn, which a Blueprint
-  // slot would take; its size when absent.
+  // A passage's Questions from every Book that a Blueprint slot would take
+  // (see countsInPassage); its size when absent.
   readonly whole?: number
   // The type of its Questions, or of one of them for a passage, whose
   // Questions differ in type within one Blueprint group.
@@ -128,7 +128,7 @@ const decideReserve = (bookId: string) =>
       .where(eq(questions.status, "published"))
     // Every Question about these passages, from any Book: a passage decided
     // anywhere keeps that decision, released or not, and a slot would take
-    // all its Questions not withdrawn.
+    // the Questions that count in it.
     const passageIds = [...new Set(rows.flatMap((row) => (row.stimulusId === null ? [] : [row.stimulusId])))]
     const onPassages = passageIds.length === 0 ? [] : yield* db.select({
       stimulusId: questions.stimulusId,
@@ -138,9 +138,10 @@ const decideReserve = (bookId: string) =>
     }).from(questions).where(inArray(questions.stimulusId, passageIds))
     const passageDecision = new Map<string, { readonly reserve: boolean; readonly released: boolean }>()
     const passageSize = new Map<string, number>()
-    for (const row of onPassages) {
+    // A Question still in the Bank decides for its passage before a withdrawn one.
+    for (const row of onPassages.toSorted((a, b) => Number(a.status === "withdrawn") - Number(b.status === "withdrawn"))) {
       const id = row.stimulusId!
-      if (row.status !== "withdrawn") passageSize.set(id, (passageSize.get(id) ?? 0) + 1)
+      if (countsInPassage(row)) passageSize.set(id, (passageSize.get(id) ?? 0) + 1)
       if (row.reserve !== null && !passageDecision.has(id)) {
         passageDecision.set(id, { reserve: row.reserve, released: row.releasedAt !== null })
       }
@@ -187,9 +188,16 @@ const decideReserve = (bookId: string) =>
     return joined
   })
 
-// Releases each passage in the Reserve whose Questions, from every Book and
-// not withdrawn, no longer fit a Blueprint slot, as one that gained Questions
-// from a later Book or lost one the Curator withdrew: no Mock could serve it.
+// The Questions a passage's size counts: those published, and those decided
+// before that are being checked again, as after a Key Override. A Question
+// waiting for its first decision, such as a near match the Curator has not
+// settled, counts once it is published.
+const countsInPassage = (row: { readonly status: string; readonly reserve: boolean | null }) =>
+  row.status === "published" || (row.status !== "withdrawn" && row.reserve !== null)
+
+// Releases each passage in the Reserve whose Questions, from every Book, no
+// longer fit a Blueprint slot, as one that gained Questions from a later
+// Book or lost one the Curator withdrew: no Mock could serve it.
 export const releaseUnfitting = Effect.gen(function*() {
   const db = yield* Db
   const now = yield* Clock.currentTimeMillis
@@ -200,7 +208,10 @@ export const releaseUnfitting = Effect.gen(function*() {
     questionType: questions.questionType,
     size: count()
   }).from(questions)
-    .where(and(inArray(questions.stimulusId, held), ne(questions.status, "withdrawn")))
+    .where(and(
+      inArray(questions.stimulusId, held),
+      or(eq(questions.status, "published"), and(ne(questions.status, "withdrawn"), isNotNull(questions.reserve)))
+    ))
     .groupBy(questions.stimulusId)
   const unfitting = passages.filter((passage) => !fitsSlot(passage.questionType, passage.size))
     .map((passage) => passage.stimulusId!)
