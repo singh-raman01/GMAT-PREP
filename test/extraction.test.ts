@@ -225,10 +225,13 @@ describe("Extracting Problem Solving Questions", () => {
         yield* confirmAndExtract(curator, proposed.book.id, rangesOf(proposed))
         const items = yield* curator.api.review.list()
         const merged = yield* curator.api.review.merge({ params: { id: byNumber(items, 8).id } })
-        expect(merged).toMatchObject({ status: "decided", decision: "merged", question: null })
+        expect(merged).toMatchObject({ status: "decided", decision: "merged" })
         expect(yield* curator.api.review.list()).toHaveLength(2)
         const db = yield* Db
         const first = yield* bankItem(proposed.book.id, 1)
+        // The merged Question stays, withdrawn, with a record of the merge.
+        const [twin] = yield* db.select().from(questions).where(eq(questions.id, merged.question!.id)).pipe(Effect.orDie)
+        expect(twin).toMatchObject({ status: "withdrawn", mergedInto: first.question.id })
         const joined = yield* db.select().from(sources).where(eq(sources.questionId, first.question.id))
           .orderBy(asc(sources.number)).pipe(Effect.orDie)
         expect(joined.map((source) => source.number)).toEqual([1, 8])

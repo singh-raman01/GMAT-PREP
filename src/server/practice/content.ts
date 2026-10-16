@@ -26,6 +26,9 @@ export interface StoredQuestion {
   readonly stem: string
   readonly primarySkill: string | null
   readonly difficulty: number
+  // Whether its Approaches and Trap Notes are written for its current key
+  // and explanation; after a change they wait to be written again.
+  readonly enrichment: string
   readonly parts: ReadonlyArray<{
     readonly position: number
     readonly prompt: string | null
@@ -88,6 +91,7 @@ export const storedQuestions = (ids: ReadonlyArray<string>) =>
         stem: question.stem,
         primarySkill: question.primarySkill,
         difficulty: Number(value),
+        enrichment: question.enrichment,
         parts: partRows.filter((part) => part.questionId === question.id).map((part) => ({
           position: part.position,
           prompt: part.prompt,
@@ -123,10 +127,18 @@ export const namesOf = (taxonomy: TaxonomyView): Names => {
   return { named: (id) => new Named({ id, name: names.get(id) ?? id }) }
 }
 
-// The Question as a Learner sees it, with where a Book prints it: in the
-// Book the set follows, else its first Source.
-export const practiceQuestion = (question: StoredQuestion, names: Names, bookId: string | null) => {
-  const source = question.sources.find((each) => each.bookId === bookId) ?? question.sources[0]
+// The Question as a Learner sees it, with where a Book prints it: the place
+// the set serves it at, else its first place in the Book the set follows,
+// else its first Source.
+export const practiceQuestion = (
+  question: StoredQuestion,
+  names: Names,
+  bookId: string | null,
+  place?: { readonly set: string; readonly number: number }
+) => {
+  const inBook = question.sources.filter((each) => each.bookId === bookId)
+  const source = inBook.find((each) => place !== undefined && each.set === place.set && each.number === place.number) ??
+    inBook[0] ?? question.sources[0]
   return new PracticeQuestion({
     id: QuestionId.make(question.id),
     section: names.named(question.section),
@@ -142,10 +154,11 @@ export const practiceQuestion = (question: StoredQuestion, names: Names, bookId:
 }
 
 // The Trap Note for each wrong option picked, and the Approaches that reach
-// the current key, fastest first.
+// the current key, fastest first. Trap Notes written before a key change are
+// left out until they are written again.
 export const debriefOf = (question: StoredQuestion, selection: Selection, names: Names) => {
   const keys = question.parts.map((part) => ({ position: part.position, key: part.key }))
-  const trapNotes = question.parts.flatMap((part) => {
+  const trapNotes = question.enrichment !== "done" ? [] : question.parts.flatMap((part) => {
     const picked = selection.find((each) => each.part === part.position)?.choice
     if (picked === undefined || picked === part.key) return []
     const position = part.options.findIndex((option) => option.label === picked)

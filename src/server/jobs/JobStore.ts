@@ -1,5 +1,5 @@
 import { and, desc, eq, gt, sql } from "drizzle-orm"
-import { Clock, Context, Effect, Layer, Option, Schema } from "effect"
+import { Cause, Clock, Context, Effect, Layer, Option, Schema } from "effect"
 import {
   JobId,
   JobNotChangeable,
@@ -237,6 +237,18 @@ export class JobStore extends Context.Service<JobStore, {
           }
         })
 
+      // What a job's kind does once the job is cancelled or fails. Its own
+      // failure is logged, never the Curator's or the worker's.
+      const afterStop = (id: string) =>
+        Effect.gen(function*() {
+          const current = yield* row(id)
+          const kind = current === undefined ? undefined : kinds.get(current.kind)
+          if (current === undefined || kind?.stopped === undefined) return
+          const params = decodeJson(kind.params, current.params)
+          if (Option.isNone(params)) return
+          yield* kind.stopped(params.value).pipe(Effect.provideService(Db, db))
+        }).pipe(Effect.catchCause((cause) => Effect.logError(`A stopped job's follow-up failed: ${Cause.pretty(cause)}`)))
+
       const cancel = (id: JobId) =>
         change(id, (current, now): Decision<JobNotChangeable> => {
           switch (current.status) {
@@ -255,7 +267,7 @@ export class JobStore extends Context.Service<JobStore, {
             default:
               return notChangeable(current)
           }
-        })
+        }).pipe(Effect.tap((job) => (job.status === "cancelled" ? afterStop(id) : Effect.void)))
 
       const latestRevision = db.select({ revision: sql<number>`coalesce(max(${jobs.revision}), 0)` }).from(jobs).pipe(
         Effect.map((rows) => rows[0]?.revision ?? 0),
@@ -360,7 +372,10 @@ export class JobStore extends Context.Service<JobStore, {
               .where(and(ours(id, workerId), eq(jobs.revision, current.revision)))
               .returning({ id: jobs.id })
               .pipe(Effect.orDie)
-            if (updated.length > 0) return "ended" as const
+            if (updated.length > 0) {
+              if (changes.status === "cancelled" || changes.status === "failed") yield* afterStop(id)
+              return "ended" as const
+            }
           }
         })
 

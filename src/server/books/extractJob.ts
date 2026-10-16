@@ -297,6 +297,9 @@ export const BookExtraction: JobKind<typeof Params.Type, typeof Checkpoint.Type>
   label: (params) => `Extracting ${params.title}`,
   start: () => ({ stage: "read", setsLinked: 0 }),
   stepsTotal: () => null,
+  // A run that ends early still decides the Reserve for what it published,
+  // so those Questions do not wait out of Practice Sets.
+  stopped: (params) => assignReserve(params.bookId).pipe(Effect.orDie, Effect.asVoid),
   step: ({ jobId, params, checkpoint, stepsDone }) =>
     checkpoint.stage === "read"
       ? readStep(jobId, params, stepsDone)

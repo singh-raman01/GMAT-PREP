@@ -1,9 +1,9 @@
-import { and, eq, isNull } from "drizzle-orm"
+import { and, eq, isNull, notInArray, or } from "drizzle-orm"
 import { Clock, Effect } from "effect"
 import { fitsSlot } from "../../api/blueprint.ts"
 import { bandOf, type DifficultyBand } from "../../api/difficulty.ts"
 import { Db } from "../db/Database.ts"
-import { books, questions, sources } from "../db/schema.ts"
+import { books, jobs, questions, sources } from "../db/schema.ts"
 
 // The Mock Reserve (ADR 0008): a quarter of each Section's Questions from
 // each Book, held back for Mocks. Membership is decided per unit, so an RC
@@ -132,18 +132,20 @@ const decideReserve = (bookId: string) =>
     return joined
   })
 
-// Decides the Reserve for every extracted Book with published Questions not
-// decided yet, such as one another Book's run published.
+// Decides the Reserve for every Book whose run has ended, finished or not,
+// with published Questions not decided yet, such as one another Book's run
+// or a refresh published. A Book whose run goes on decides at its end.
 export const assignUndecided = Effect.gen(function*() {
   const db = yield* Db
   const rows = yield* db.selectDistinct({ bookId: sources.bookId }).from(sources)
     .innerJoin(questions, eq(questions.id, sources.questionId))
     .innerJoin(books, eq(books.id, sources.bookId))
+    .leftJoin(jobs, eq(jobs.id, books.jobId))
     .where(and(
       eq(sources.merged, false),
       eq(questions.status, "published"),
       isNull(questions.reserve),
-      eq(books.status, "extracted")
+      or(eq(books.status, "extracted"), isNull(jobs.id), notInArray(jobs.status, ["queued", "running", "paused"]))
     ))
   let joined = 0
   for (const row of rows) joined += yield* assignReserve(row.bookId)

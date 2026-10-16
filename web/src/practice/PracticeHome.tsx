@@ -99,10 +99,10 @@ const choiceOf = (form: Form): { readonly choice: PracticeChoice } | { readonly 
 
 const previewText = (preview: PracticePreview, mode: Mode) => {
   const held = preview.heldForMocks > 0
-    ? ` ${preview.heldForMocks} ${preview.heldForMocks === 1 ? "is" : "are"} held for Mocks.`
+    ? ` ${preview.heldForMocks} ${preview.heldForMocks === 1 ? "is" : "are"} held back for Mocks.`
     : ""
   const missing = preview.unavailable > 0
-    ? ` ${preview.unavailable} ${preview.unavailable === 1 ? "is" : "are"} not in the Question Bank yet.`
+    ? ` ${preview.unavailable} ${preview.unavailable === 1 ? "is" : "are"} not in the Question Bank.`
     : ""
   if (preview.questions === 0) return `No Questions to practise with these choices.${held}${missing}`
   if (mode === "book") {
@@ -273,9 +273,11 @@ const StartForm = (
     switch (result.failure._tag) {
       case "NoQuestionsMatch":
         return setProblem(
-          result.failure.heldForMocks > 0
-            ? "Every Question in that range is held for Mocks or not in the Question Bank yet."
-            : "No Questions match these choices. Try fewer filters."
+          chosen.choice.kind === "filters"
+            ? "No Questions match these choices. Try fewer filters."
+            : result.failure.heldForMocks > 0 || result.failure.unavailable > 0
+            ? "Every item in that range is held back for Mocks or not in the Question Bank."
+            : "That range has no items. Check the item numbers against the book."
         )
       case "FiltersInvalid":
         return setProblem(result.failure.problems.join(" "))
@@ -291,9 +293,15 @@ const StartForm = (
   const types = (section === undefined ? shownSections : [section]).flatMap((each) =>
     each.questionTypes.filter((type) => type.questions > 0).map((type) => ({ ...type, section: each.name }))
   )
-  const skills = (section === undefined ? shownSections : [section]).flatMap((each) =>
-    each.skills.map((skill) => ({ ...skill, section: each.name }))
-  )
+  // A Skill used in several Sections, as Quantitative Skills are in Data
+  // Insights, is listed once with all its Questions.
+  const skills = [
+    ...(section === undefined ? shownSections : [section]).flatMap((each) => each.skills).reduce(
+      (merged, skill) =>
+        merged.set(skill.id, { ...skill, questions: (merged.get(skill.id)?.questions ?? 0) + skill.questions }),
+      new Map<string, { readonly id: string; readonly name: string; readonly questions: number }>()
+    ).values()
+  ]
   const book = options.books.find((each) => each.id === form.bookId)
   const set = book?.sets.find((each) => each.name === form.set)
 
@@ -355,7 +363,7 @@ const StartForm = (
                 <select id={ids.skill} value={form.skill} onChange={(event) => change({ skill: event.target.value })}>
                   <option value="">Any</option>
                   {skills.map((skill) => (
-                    <option key={`${skill.section}-${skill.id}`} value={skill.id}>{skill.name} ({skill.questions})</option>
+                    <option key={skill.id} value={skill.id}>{skill.name} ({skill.questions})</option>
                   ))}
                 </select>
               </div>
@@ -454,7 +462,10 @@ const StartForm = (
                 </div>
               </div>
             )}
-            <p className="hint">Questions held for Mocks are skipped and listed, so the book's numbering still lines up.</p>
+            <p className="hint">
+              Items held for Mocks or not in the Question Bank are skipped and listed, so the book's numbering still
+              lines up.
+            </p>
           </div>
         )}
 

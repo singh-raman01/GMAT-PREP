@@ -1,6 +1,7 @@
 import type { Effect } from "effect"
 import { useCallback, useEffect, useId, useRef, useState } from "react"
 import {
+  type ItemRef,
   type PracticeOutOfStep,
   type PracticeResult,
   type PracticeView,
@@ -104,6 +105,14 @@ const QuestionScreen = (
     questionHeading.current?.focus()
   }, [current.position])
 
+  // Once the Question is answered, focus moves to the Debrief, whose heading
+  // says how it went. A set opened already answered leaves focus alone.
+  const wasAnswered = useRef(answered)
+  useEffect(() => {
+    if (answered && !wasAnswered.current) debriefHeading.current?.focus()
+    wasAnswered.current = answered
+  }, [answered])
+
   const chosen = answered ? current.response!.selection.find((each) => each.part === part.position)?.choice : picked
 
   // Sends one change to the set and shows the set as the server returns it.
@@ -144,8 +153,7 @@ const QuestionScreen = (
             selection: [{ part: part.position, choice: picked }],
             guessed
           }
-        }),
-      () => requestAnimationFrame(() => debriefHeading.current?.focus())
+        })
     )
   }
 
@@ -212,6 +220,7 @@ const QuestionScreen = (
           End set
         </button>
       </div>
+      {current.position === 0 && <Skipped view={view} />}
       <h1 ref={questionHeading} tabIndex={-1} className="question-count">
         Question {current.position + 1} of {view.total}
       </h1>
@@ -226,7 +235,7 @@ const QuestionScreen = (
       <div className="question-body">
         <RichText source={question.stem} />
         {part.prompt !== null && <RichText source={part.prompt} />}
-        <fieldset className="answer-options" disabled={answered || busy}>
+        <fieldset className="answer-options" disabled={answered}>
           <legend className="visually-hidden">Answer choices</legend>
           {part.options.map((option) => {
             const isPicked = chosen === option.label
@@ -337,6 +346,35 @@ const AnsweredOptions = ({ served }: { readonly served: ServedView }) => {
   )
 }
 
+const SkipLabels: Record<ItemRef["reason"], string> = {
+  reserve: "Held for Mocks",
+  undecided: "Held until the Mock Reserve is decided",
+  checking: "Not in the Question Bank yet",
+  withdrawn: "Withdrawn from the Question Bank"
+}
+
+// The book's items the set leaves out, and why.
+const Skipped = ({ view }: { readonly view: PracticeView }) => {
+  const items = [...view.heldForMocks, ...view.unavailable]
+  if (items.length === 0) return null
+  const reasons = (Object.keys(SkipLabels) as Array<ItemRef["reason"]>).filter((reason) =>
+    items.some((item) => item.reason === reason)
+  )
+  return (
+    <div className="held-note">
+      <p>This set leaves out some of the book's items.</p>
+      <ul>
+        {reasons.map((reason) => (
+          <li key={reason}>
+            {SkipLabels[reason]}: {items.filter((item) => item.reason === reason).map((item) => `${item.set} ${item.number}`)
+              .join(", ")}.
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 const resultText = (result: PracticeResult) =>
   result.correct === null ? "Not answered" : result.correct ? "Right" : "Wrong"
 
@@ -359,16 +397,7 @@ const SetSummary = (
           : `${right} of ${answered.length} right${unanswered > 0 ? `, ${unanswered} left unanswered` : ""}.`}
         {view.results.length < view.total && ` The set ended after ${view.results.length} of ${view.total} Questions.`}
       </p>
-      {view.heldForMocks.length > 0 && (
-        <p className="held-note">
-          Held for Mocks, so not in this set: {view.heldForMocks.map((item) => `${item.set} ${item.number}`).join(", ")}.
-        </p>
-      )}
-      {view.unavailable.length > 0 && (
-        <p className="held-note">
-          Not in the Question Bank yet: {view.unavailable.map((item) => `${item.set} ${item.number}`).join(", ")}.
-        </p>
-      )}
+      <Skipped view={view} />
       <ol className="set-results">
         {view.results.map((result) => (
           <ResultRow key={result.position} view={view} result={result} onFailure={onFailure} />

@@ -1,20 +1,25 @@
 import { describe, expect, test } from "bun:test"
-import { and, eq, isNull } from "drizzle-orm"
+import { and, eq, inArray, isNull } from "drizzle-orm"
 import { Clock, Effect, Option } from "effect"
 import { TestClock } from "effect/testing"
 import type { BookId } from "../src/api/Books.ts"
 import type { PracticeChoice, PracticeView } from "../src/api/Practice.ts"
 import type { QuestionId } from "../src/api/Review.ts"
 import { Db } from "../src/server/db/Database.ts"
+import { BookExtraction } from "../src/server/books/extractJob.ts"
 import {
+  books,
   difficulty,
   parts,
   questions,
   responses,
   reviewItems,
   servedQuestions,
-  sessions
+  sessions,
+  sources
 } from "../src/server/db/schema.ts"
+import { JobStore } from "../src/server/jobs/JobStore.ts"
+import { AllJobKinds } from "../src/server/jobs/kinds/index.ts"
 import { FakeLlm } from "../src/server/llm/LlmTransport.ts"
 import { ratedResponses } from "../src/server/ratings/rated.ts"
 import { releaseOrder } from "../src/server/review/reserve.ts"
@@ -572,3 +577,239 @@ describe("Releasing the Mock Reserve", () => {
       expect(error).toMatchObject({ _tag: "UnknownSection", section: "physics" })
     })))
 })
+
+// Puts a Question in the Review Queue as a repeat of another, as a Book Map
+// fix's check would.
+const holdAsRepeat = (questionId: string, of: string, itemId: string) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const now = yield* Clock.currentTimeMillis
+    yield* db.update(questions).set({ status: "held", relatedQuestionId: of }).where(eq(questions.id, questionId))
+      .pipe(Effect.orDie)
+    yield* db.insert(reviewItems).values({
+      id: itemId,
+      questionId,
+      reasons: JSON.stringify([{ code: "near-match", detail: "Close to the other item." }]),
+      relatedQuestionId: of,
+      status: "open",
+      createdAt: now
+    }).pipe(Effect.orDie)
+  })
+
+describe("When the Question Bank changes under a set", () => {
+  test("Questions whose Reserve decision is still to come stay out, and a run that stops makes the decision", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const seeded = yield* seedBook("Quant Review", numbered(8))
+      const db = yield* Db
+      // As while the Book's run goes on: published, the Reserve not decided.
+      yield* db.update(questions).set({ reserve: null, reserveDecidedAt: null })
+        .where(inArray(questions.id, [...seeded.ids.values()])).pipe(Effect.orDie)
+      const store = yield* JobStore
+      const run = yield* store.create(BookExtraction, { bookId: seeded.bookId, title: "Quant Review", mapVersion: 1 }, 1)
+      yield* db.update(books).set({ status: "extracting", jobId: run.id }).where(eq(books.id, seeded.bookId))
+        .pipe(Effect.orDie)
+      const asha = yield* learner("Asha")
+      expect(yield* preview(asha, filters({ size: 50 }))).toMatchObject({ questions: 0 })
+      const inOrder = yield* preview(asha, book(seeded.bookId))
+      expect(inOrder).toMatchObject({ questions: 0, heldForMocks: 8 })
+
+      // The Curator cancels the run: what it published gets its decision.
+      yield* store.cancel(run.id)
+      const decided = yield* db.select({ reserve: questions.reserve }).from(questions)
+        .where(inArray(questions.id, [...seeded.ids.values()])).pipe(Effect.orDie)
+      expect(decided.filter((row) => row.reserve === null)).toHaveLength(0)
+      expect(decided.filter((row) => row.reserve === true)).toHaveLength(2)
+      expect(yield* preview(asha, filters({ size: 50 }))).toMatchObject({ questions: 6 })
+    }), AllJobKinds))
+
+  test("a planned Question merged into one the set already has leaves the set, which ends when nothing is left", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const seeded = yield* seedBook("Quant Review", numbered(2))
+      const asha = yield* learner("Asha")
+      const started = yield* asha.api.practice.start({ payload: { choice: book(seeded.bookId) } })
+      expect(started.total).toBe(2)
+      // Item 2, planned but not served, is merged into item 1, on screen.
+      yield* holdAsRepeat(seeded.ids.get(2)!, seeded.ids.get(1)!, "item-planned")
+      yield* (yield* curator).review.merge({ params: { id: "item-planned" as never } })
+      const answered = yield* answer(asha, started, "C")
+      const ended = yield* asha.api.practice.next({ params: { id: answered.id }, payload: { position: 1 } })
+      expect(ended).toMatchObject({ status: "finished", total: 1 })
+      expect(ended.results).toHaveLength(1)
+    })))
+
+  test("a planned Question merged into one the set lacks gives way to it", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const seeded = yield* seedBook("Quant Review", numbered(3))
+      const asha = yield* learner("Asha")
+      const started = yield* asha.api.practice.start({
+        payload: { choice: book(seeded.bookId, { set: "Problem Solving", from: 1, to: 2 }) }
+      })
+      yield* holdAsRepeat(seeded.ids.get(2)!, seeded.ids.get(3)!, "item-planned")
+      yield* (yield* curator).review.merge({ params: { id: "item-planned" as never } })
+      yield* answer(asha, started, "C")
+      const next = yield* asha.api.practice.next({ params: { id: started.id }, payload: { position: 1 } })
+      expect(next.current?.question.id).toBe(seeded.ids.get(3)! as QuestionId)
+      const db = yield* Db
+      const [twin] = yield* db.select().from(questions).where(eq(questions.id, seeded.ids.get(2)!)).pipe(Effect.orDie)
+      expect(twin).toMatchObject({ status: "withdrawn", mergedInto: seeded.ids.get(3)! })
+      const [item] = yield* db.select().from(reviewItems).where(eq(reviewItems.id, "item-planned")).pipe(Effect.orDie)
+      expect(item).toMatchObject({ decision: "merged", questionId: seeded.ids.get(2)! })
+    })))
+
+  test("history with a merged Question counts for the Question it joined", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const seeded = yield* seedBook("Quant Review", numbered(2))
+      const asha = yield* learner("Asha")
+      const started = yield* asha.api.practice.start({
+        payload: { choice: book(seeded.bookId, { set: "Problem Solving", from: 2, to: 2 }) }
+      })
+      // Asha misses item 2 and Bookmarks it; it is then merged into item 1.
+      yield* answer(asha, started, "A")
+      yield* asha.api.practice.bookmark({
+        params: { id: started.id },
+        payload: { questionId: seeded.ids.get(2)! as QuestionId, bookmarked: true }
+      })
+      yield* holdAsRepeat(seeded.ids.get(2)!, seeded.ids.get(1)!, "item-twin")
+      yield* (yield* curator).review.merge({ params: { id: "item-twin" as never } })
+      expect(yield* preview(asha, filters({ status: "missed" }))).toMatchObject({ questions: 1 })
+      expect(yield* preview(asha, filters({ status: "unseen" }))).toMatchObject({ questions: 0 })
+      const marked = yield* asha.api.practice.start({ payload: { choice: filters({ status: "bookmarked" }) } })
+      expect(marked.current).toMatchObject({ question: { id: seeded.ids.get(1)! }, bookmarked: true })
+    })))
+
+  test("a Bookmark is the Profile's: a later set shows it, and clearing it there clears it", () =>
+    runWithWorkers(Effect.gen(function*() {
+      yield* seedBook("Quant Review", numbered(3))
+      const asha = yield* learner("Asha")
+      const first = yield* asha.api.practice.start({ payload: { choice: filters({ size: 1 }) } })
+      const marked = first.current!.question.id
+      yield* asha.api.practice.bookmark({ params: { id: first.id }, payload: { questionId: marked, bookmarked: true } })
+      yield* asha.api.practice.finish({ params: { id: first.id } })
+      const second = yield* asha.api.practice.start({ payload: { choice: filters({ status: "bookmarked" }) } })
+      expect(second.current).toMatchObject({ question: { id: marked }, bookmarked: true })
+      const cleared = yield* asha.api.practice.bookmark({
+        params: { id: second.id },
+        payload: { questionId: marked, bookmarked: false }
+      })
+      expect(cleared.current?.bookmarked).toBe(false)
+      expect(yield* preview(asha, filters({ status: "bookmarked" }))).toMatchObject({ questions: 0 })
+      // The first set's summary agrees.
+      expect((yield* asha.api.practice.get({ params: { id: first.id } })).results[0]?.bookmarked).toBe(false)
+    })))
+
+  test("Trap Notes written for a key since changed wait to be written again", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const seeded = yield* seedBook("Quant Review", [{ number: 1, key: "C" }])
+      const asha = yield* learner("Asha")
+      const started = yield* asha.api.practice.start({ payload: { choice: filters() } })
+      const questionId = seeded.ids.get(1)!
+      const db = yield* Db
+      const now = yield* Clock.currentTimeMillis
+      yield* db.update(questions).set({ status: "held" }).where(eq(questions.id, questionId)).pipe(Effect.orDie)
+      yield* db.insert(reviewItems).values({
+        id: "item-key",
+        questionId,
+        reasons: JSON.stringify([{ code: "solver-disagreement", detail: "Solvers say B." }]),
+        relatedQuestionId: null,
+        status: "open",
+        createdAt: now
+      }).pipe(Effect.orDie)
+      yield* (yield* curator).review.overrideKey({
+        params: { id: "item-key" as never },
+        payload: { key: "B", reason: "Erratum" }
+      })
+      const debrief = (yield* answer(asha, started, "D")).current!.debrief!
+      expect(debrief.keys).toEqual([{ part: 0, key: "B" }])
+      expect(debrief.trapNotes).toEqual([])
+      expect(debrief.approaches).toEqual([])
+    })))
+})
+
+describe("Book order", () => {
+  test("a Question the Book prints twice shows the item the set serves it at", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const seeded = yield* seedBook("Official Guide", [{ number: 3, set: "Chapter 1", page: 3 }])
+      const db = yield* Db
+      const now = yield* Clock.currentTimeMillis
+      // The same Question, linked earlier from the Book's review set.
+      yield* db.insert(sources).values({
+        id: crypto.randomUUID(),
+        questionId: seeded.ids.get(3)!,
+        bookId: seeded.bookId,
+        set: "Review",
+        number: 7,
+        page: 40,
+        bookKey: "C",
+        explanation: null,
+        explanationAnswer: null,
+        merged: true,
+        mapVersion: 1,
+        createdAt: now - 1000
+      }).pipe(Effect.orDie)
+      const asha = yield* learner("Asha")
+      const started = yield* asha.api.practice.start({ payload: { choice: book(seeded.bookId, { set: "Chapter 1" }) } })
+      expect(started.current?.question.source).toMatchObject({ set: "Chapter 1", number: 3, page: 3 })
+    })))
+
+  test("on a page two sets share, the set that started first comes first", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const seeded = yield* seedBook("Official Guide", [
+        { number: 28, set: "Set A", page: 4 },
+        { number: 29, set: "Set A", page: 5 },
+        { number: 30, set: "Set A", page: 5 },
+        { number: 1, set: "Set B", page: 5 },
+        { number: 2, set: "Set B", page: 6 }
+      ])
+      const asha = yield* learner("Asha")
+      const started = yield* asha.api.practice.start({ payload: { choice: book(seeded.bookId) } })
+      const { served } = yield* answerAll(asha, started)
+      const numberOf = new Map([...seeded.ids].map(([number, id]) => [id, number]))
+      expect(served.map((id) => numberOf.get(id))).toEqual([28, 29, 30, 1, 2])
+    })))
+
+  test("skipped items say why, and a set's range counts every item it prints", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const seeded = yield* seedBook("Official Guide", [
+        { number: 1 },
+        { number: 2, status: "withdrawn" },
+        { number: 3, status: "held" },
+        { number: 4, reserve: true },
+        { number: 5 }
+      ])
+      const asha = yield* learner("Asha")
+      const started = yield* asha.api.practice.start({ payload: { choice: book(seeded.bookId) } })
+      expect(started.unavailable).toMatchObject([{ number: 2, reason: "withdrawn" }, { number: 3, reason: "checking" }])
+      expect(started.heldForMocks).toMatchObject([{ number: 4, reason: "reserve" }])
+      const options = yield* asha.api.practice.options()
+      expect(options.books[0]?.sets).toEqual([{ name: "Problem Solving", first: 1, last: 5, questions: 3 }])
+    })))
+})
+
+describe("Sets and submits", () => {
+  test("every set is listed", () =>
+    runWithWorkers(Effect.gen(function*() {
+      yield* seedBook("Quant Review", numbered(3))
+      const asha = yield* learner("Asha")
+      for (let i = 0; i < 22; i++) {
+        const set = yield* asha.api.practice.start({ payload: { choice: filters({ size: 1 }) } })
+        yield* asha.api.practice.finish({ params: { id: set.id } })
+      }
+      expect(yield* asha.api.practice.list()).toHaveLength(22)
+    })))
+
+  test("a sequence number used again for another Question or answer is refused", () =>
+    runWithWorkers(Effect.gen(function*() {
+      yield* seedBook("Quant Review", numbered(2))
+      const asha = yield* learner("Asha")
+      const started = yield* asha.api.practice.start({ payload: { choice: filters({ size: 2 }) } })
+      yield* answer(asha, started, "C", { seq: 1 })
+      // The same submit again is recorded once; another with its number is not.
+      expect((yield* answer(asha, started, "C", { seq: 1 })).current?.response?.selection).toEqual([{ part: 0, choice: "C" }])
+      const changed = yield* answer(asha, started, "A", { seq: 1 }).pipe(Effect.flip)
+      expect(changed).toMatchObject({ _tag: "PracticeOutOfStep", reason: "not-current" })
+      const second = yield* asha.api.practice.next({ params: { id: started.id }, payload: { position: 1 } })
+      const stale = yield* answer(asha, second, "A", { seq: 1 }).pipe(Effect.flip)
+      expect(stale).toMatchObject({ _tag: "PracticeOutOfStep", reason: "not-current" })
+    })))
+})
+

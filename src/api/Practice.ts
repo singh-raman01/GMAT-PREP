@@ -62,9 +62,15 @@ export class Named extends Schema.Class<Named>("gmat-prep/api/Named")({
   name: Schema.String
 }) {}
 
+// A Book's item a set skips, and why: its Question is in the Mock Reserve or
+// waits for that decision, or it is not in the Question Bank, being checked
+// or withdrawn.
+export const SkipReason = Schema.Literals(["reserve", "undecided", "checking", "withdrawn"])
+
 export class ItemRef extends Schema.Class<ItemRef>("gmat-prep/api/ItemRef")({
   set: Schema.String,
-  number: Schema.Int
+  number: Schema.Int,
+  reason: SkipReason
 }) {}
 
 export class PracticePart extends Schema.Class<PracticePart>("gmat-prep/api/PracticePart")({

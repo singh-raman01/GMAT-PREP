@@ -1,4 +1,4 @@
-import { asc, eq, inArray, sql } from "drizzle-orm"
+import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm"
 import { Effect, Schema } from "effect"
 import { PartChoice, type Selection } from "../../api/Practice.ts"
 import { Db } from "../db/Database.ts"
@@ -42,38 +42,63 @@ export const keysOf = (questionIds: ReadonlyArray<string>) =>
     return keys
   })
 
+// Where a Question's history counts: the Question the Curator merged it
+// into, following a merge of that one too, else itself. Served Questions and
+// Responses are facts and keep the id they were recorded with.
+export const mergeTargets = Effect.gen(function*() {
+  const db = yield* Db
+  const rows = yield* db.select({ id: questions.id, into: questions.mergedInto }).from(questions)
+    .where(isNotNull(questions.mergedInto))
+  const into = new Map(rows.map((row) => [row.id, row.into!] as const))
+  return (id: string) => {
+    let at = id
+    for (let hops = 0; hops < 100 && into.has(at); hops++) at = into.get(at)!
+    return at
+  }
+})
+
 // A Question is Seen by a Profile once a Session has served it to them.
 export const seenBy = (profileId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
+    const resolve = yield* mergeTargets
     const rows = yield* db.selectDistinct({ questionId: servedQuestions.questionId }).from(servedQuestions)
       .innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
       .where(eq(sessions.profileId, profileId))
+    return new Set(rows.map((row) => resolve(row.questionId)))
+  })
+
+// The Questions a Profile has Bookmarked.
+export const bookmarkedBy = (profileId: string) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const rows = yield* db.select({ questionId: bookmarks.questionId }).from(bookmarks)
+      .where(eq(bookmarks.profileId, profileId))
     return new Set(rows.map((row) => row.questionId))
   })
 
-// The Profile's history: what it has Seen, Bookmarked in any Session, and
-// missed, meaning its latest Response is wrong against the current key.
+// The Profile's history: what it has Seen, Bookmarked, and missed, meaning
+// its latest Response is wrong against the current key.
 export const historyOf = (profileId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
+    const resolve = yield* mergeTargets
     const seen = yield* seenBy(profileId)
-    const marked = yield* db.selectDistinct({ questionId: bookmarks.questionId }).from(bookmarks)
-      .innerJoin(sessions, eq(sessions.id, bookmarks.sessionId))
-      .where(eq(sessions.profileId, profileId))
     const answers = yield* db.select({ questionId: responses.questionId, selection: responses.selection }).from(responses)
       .where(eq(responses.profileId, profileId))
       .orderBy(asc(responses.createdAt), asc(sql`${responses}.rowid`))
-    const latest = new Map(answers.map((answer) => [answer.questionId, answer.selection] as const))
+    const latest = new Map(answers.map((answer) => [resolve(answer.questionId), answer.selection] as const))
     const keys = yield* keysOf([...latest.keys()])
     const missed = new Set(
       [...latest].filter(([questionId, selection]) => !isCorrect(readSelection(selection), keys.get(questionId) ?? []))
         .map(([questionId]) => questionId)
     )
-    return { seen, bookmarked: new Set(marked.map((row) => row.questionId)), missed } satisfies History
+    return { seen, bookmarked: yield* bookmarkedBy(profileId), missed } satisfies History
   })
 
-// Every published Question as Practice Sets choose among them.
+// Every published Question as Practice Sets choose among them. The set
+// screen shows one Part and no Stimulus yet, so a Question with several
+// Parts waits for a later version.
 export const publishedPool = Effect.gen(function*() {
   const db = yield* Db
   const rows = yield* db.select({
@@ -87,7 +112,7 @@ export const publishedPool = Effect.gen(function*() {
     releasedAt: questions.releasedAt
   }).from(questions)
     .leftJoin(difficulty, eq(difficulty.questionId, questions.id))
-    .where(eq(questions.status, "published"))
+    .where(and(eq(questions.status, "published"), singlePart))
     .orderBy(asc(questions.createdAt), asc(sql`${questions}.rowid`))
   return rows.map((row): PoolQuestion => ({
     id: row.id,
@@ -96,10 +121,13 @@ export const publishedPool = Effect.gen(function*() {
     primarySkill: row.primarySkill,
     secondarySkills: JSON.parse(row.secondarySkills) as ReadonlyArray<string>,
     difficulty: Number(row.difficulty),
-    reserve: row.reserve === true,
+    reserve: row.reserve,
     released: row.releasedAt !== null
   }))
 })
+
+// A Question with exactly one Part.
+export const singlePart = sql`(select count(*) from ${parts} where ${parts.questionId} = ${questions.id}) = 1`
 
 // One Question's current Difficulty.
 export const difficultyOf = (questionId: string) =>
