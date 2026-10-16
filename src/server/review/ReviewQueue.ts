@@ -42,7 +42,7 @@ import { JobStore } from "../jobs/JobStore.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { runGate } from "./gate.ts"
 import { QuestionRefresh, RefreshCap } from "./refreshJob.ts"
-import { assignUndecided } from "./reserve.ts"
+import { assignUndecided, releaseUnfitting } from "./reserve.ts"
 import { drafts } from "./stranded.ts"
 import { stimulusViews } from "../stimuli/stimuli.ts"
 
@@ -314,6 +314,9 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
       // Reserve decision now; one published while the run goes on waits for
       // the run's end.
       const decideReserve = assignUndecided.pipe(Effect.provideService(Db, db), Effect.orDie)
+      // A passage in the Reserve that loses a Question may no longer fit a
+      // Blueprint slot.
+      const releaseShrunk = releaseUnfitting.pipe(Effect.provideService(Db, db), Effect.orDie)
 
       // Questions that went back to draft are checked again by a job, which
       // can write new Approaches and notes.
@@ -340,6 +343,7 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
         inTransaction(Effect.gen(function*() {
           const row = yield* openItem(id, isQuestion)
           yield* setQuestionStatus(row.questionId!, "withdrawn")
+          yield* releaseShrunk
           return yield* decide(row, "withdrawn")
         })).pipe(Effect.flatMap(viewOf), oneAtATime)
 
@@ -423,6 +427,7 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
             const now = yield* Clock.currentTimeMillis
             yield* db.update(questions).set({ status: "withdrawn", mergedInto: target, updatedAt: now })
               .where(eq(questions.id, row.questionId!)).pipe(Effect.orDie)
+            yield* releaseShrunk
             yield* recheckSources(target).pipe(Effect.provideService(Db, db), Effect.orDie)
             yield* refresh([target], "Checking a merged Question again")
             return updated

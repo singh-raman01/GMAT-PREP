@@ -5,7 +5,7 @@ import { setKey } from "../../api/bookMapRules.ts"
 import { GoldenReport } from "../../api/Golden.ts"
 import { tagQuestion } from "../books/enrichment.ts"
 import { type Candidate, linkSet } from "../books/linking.ts"
-import { decodeReading, type PageReading, readPageAfresh, readsGroup } from "../books/readings.ts"
+import { decodeReading, type PageReading, readPageAfresh, readsGroup, storedReading } from "../books/readings.ts"
 import { Db } from "../db/Database.ts"
 import { bookMaps, books, goldenQuestions, goldenRunReadings, goldenRuns, goldenRunTags, sources } from "../db/schema.ts"
 import type { JobKind } from "../jobs/JobKind.ts"
@@ -114,30 +114,83 @@ const latestRanges = (bookId: string) =>
     return { ranges: map === undefined ? [] : decodeRanges(map.ranges), pageCount: book?.pageCount ?? 0 }
   })
 
-// How many pages before its question a passage may start.
+// How many pages before its question a passage or an MSR set may start,
+// when the Book's own readings do not say.
 const PassageReach = 3
 
-// The pages to read again: each golden Question's own page, the pages before
-// it where its passage may start, and every page of its set's answer key and
-// explanations.
+// Whether a page's reading names the question in a passage or an MSR set's
+// source.
+const names = (reading: PageReading, number: number) =>
+  reading.role !== "questions"
+    ? false
+    : reading.group === "rc"
+    ? reading.value.passages.some((passage) => passage.text.trim() !== "" && passage.questions.includes(number))
+    : reading.group === "msr"
+    ? reading.value.sources.some((source) => source.questions.includes(number))
+    : reading.group === "ir"
+    ? reading.value.msr.sources.some((source) => source.questions.includes(number))
+    : false
+
+// The page where what a golden Question asks about starts, as the Book's own
+// readings give it: an RC passage, or the first of an MSR set's sources.
+// Going back from the Question's page within its set's ranges, it is the
+// first of the nearest run of pages that name the Question.
+const stimulusPage = (
+  bookId: string,
+  row: { readonly page: number; readonly number: number },
+  ranges: ReadonlyArray<MapRange>
+) =>
+  Effect.gen(function*() {
+    const pages = ranges.flatMap((range) =>
+      Array.from({ length: Math.max(0, Math.min(range.lastPage, row.page) - range.firstPage + 1) }, (_, i) => ({
+        page: range.firstPage + i,
+        group: range.group
+      }))
+    ).toSorted((a, b) => b.page - a.page)
+    let start: number | undefined
+    for (const { page, group } of pages) {
+      const reading = yield* storedReading(bookId, page, "questions", group)
+      const naming = Option.isSome(reading) && names(reading.value, row.number)
+      if (naming) start = page
+      else if (start !== undefined) break
+    }
+    return start
+  })
+
+// The pages to read again: each golden Question's own page, the pages from
+// where its passage or sources start, and every page of its set's answer key and
+// explanations. Only its own set's pages are read, so another set's
+// numbers never mix in; questionPages holds each set's question pages.
 const plan = (questionIds: ReadonlyArray<string> | undefined) => Effect.gen(function*() {
   const rows = yield* goldenRows(questionIds)
   const bookId = rows[0]?.bookId
-  if (bookId === undefined) return { bookId: undefined, reads: [] as ReadonlyArray<PlannedRead>, rows }
+  const questionPages = new Map<string, Map<number, TypeGroup>>()
+  if (bookId === undefined) return { bookId: undefined, reads: [] as ReadonlyArray<PlannedRead>, rows, questionPages }
   const { ranges, pageCount } = yield* latestRanges(bookId)
   const reads = new Map<string, PlannedRead>()
   const add = (read: PlannedRead) => {
     if (readsGroup(read.role, read.group)) reads.set(`${read.page}|${read.role}|${read.group}`, read)
   }
   for (const row of rows) {
-    const mine = ranges.filter((range) => setKey(range.set) === setKey(row.set))
-    const own = mine.find((range) => range.role === "questions" && range.firstPage <= row.page && row.page <= range.lastPage)
-    if (own !== undefined) add({ page: row.page, role: "questions", group: own.group })
-    // A passage starts on its question's page or up to a few pages before.
-    if (own !== undefined && own.group === "rc") {
-      for (let page = Math.max(own.firstPage, row.page - PassageReach); page < row.page; page++) {
-        add({ page, role: "questions", group: own.group })
-      }
+    const set = setKey(row.set)
+    const mine = ranges.filter((range) => setKey(range.set) === set)
+    const asked = mine.filter((range) => range.role === "questions")
+    const own = asked.find((range) => range.firstPage <= row.page && row.page <= range.lastPage)
+    if (own === undefined) continue
+    const pages = questionPages.get(set) ?? new Map<number, TypeGroup>()
+    questionPages.set(set, pages)
+    const question = (page: number) => {
+      const range = asked.find((each) => each.firstPage <= page && page <= each.lastPage)
+      if (range === undefined || !readsGroup("questions", range.group)) return
+      add({ page, role: "questions", group: range.group })
+      pages.set(page, range.group)
+    }
+    question(row.page)
+    // A passage or an MSR set's sources start on its question's page or
+    // before it.
+    if (own.group === "rc" || own.group === "msr" || own.group === "ir") {
+      const from = (yield* stimulusPage(bookId, row, asked)) ?? row.page - PassageReach
+      for (let page = Math.max(1, from); page < row.page; page++) question(page)
     }
     for (const range of mine.filter((each) => each.role === "answer-key" || each.role === "explanations")) {
       for (let page = range.firstPage; page <= Math.min(range.lastPage, pageCount); page++) {
@@ -148,7 +201,8 @@ const plan = (questionIds: ReadonlyArray<string> | undefined) => Effect.gen(func
   return {
     bookId,
     reads: [...reads.values()].toSorted((a, b) => RoleOrder[a.role] - RoleOrder[b.role] || a.page - b.page),
-    rows
+    rows,
+    questionPages
   }
 })
 
@@ -224,27 +278,27 @@ const reportStep = (params: typeof Params.Type) =>
     const planned = yield* plan(params.questionIds)
     const stored = yield* db.select().from(goldenRunReadings).where(eq(goldenRunReadings.runId, runId)).pipe(Effect.orDie)
     const taxonomy = (yield* Taxonomy).view
-    const fresh = (page: number, role: MapRole): ReadonlyArray<PageReading> =>
-      stored.filter((row) => row.page === page && row.role === role).flatMap((row) =>
+    const fresh = (page: number, role: MapRole, group: TypeGroup): ReadonlyArray<PageReading> =>
+      stored.filter((row) => row.page === page && row.role === role && row.group === group).flatMap((row) =>
         Option.toArray(decodeReading(row.role as MapRole, row.group as TypeGroup, row.items, taxonomy))
       )
     const { ranges, pageCount } = planned.bookId === undefined ? { ranges: [], pageCount: 0 } : yield* latestRanges(planned.bookId)
     const pagesOf = (set: string, role: MapRole) =>
-      ranges.filter((range) => setKey(range.set) === setKey(set) && range.role === role).flatMap((range) =>
-        Array.from({ length: Math.max(0, Math.min(range.lastPage, pageCount) - range.firstPage + 1) }, (_, i) => range.firstPage + i)
+      ranges.filter((range) => setKey(range.set) === set && range.role === role).flatMap((range) =>
+        Array.from(
+          { length: Math.max(0, Math.min(range.lastPage, pageCount) - range.firstPage + 1) },
+          (_, i) => [range.firstPage + i, range.group] as const
+        )
       )
-    // Each set linked again from the fresh readings.
+    // Each set linked again from the fresh readings of its own pages.
     const linked = new Map<string, ReadonlyArray<Candidate>>()
-    for (const set of new Set(planned.rows.map((row) => setKey(row.set)))) {
-      const pages = [
-        ...new Set(stored.filter((row) => row.role === "questions").map((row) => row.page).filter((page) =>
-          planned.rows.some((row) => setKey(row.set) === set && page <= row.page && page >= row.page - PassageReach)
-        ))
-      ].toSorted((a, b) => a - b)
+    for (const [set, pages] of planned.questionPages) {
       const items = linkSet({
-        questions: pages.flatMap((page) => fresh(page, "questions").map((reading) => ({ page, reading }))),
-        answers: pagesOf(set, "answer-key").flatMap((page) => fresh(page, "answer-key")),
-        explanations: pagesOf(set, "explanations").flatMap((page) => fresh(page, "explanations")),
+        questions: [...pages].toSorted(([a], [b]) => a - b).flatMap(([page, group]) =>
+          fresh(page, "questions", group).map((reading) => ({ page, reading }))
+        ),
+        answers: pagesOf(set, "answer-key").flatMap(([page, group]) => fresh(page, "answer-key", group)),
+        explanations: pagesOf(set, "explanations").flatMap(([page, group]) => fresh(page, "explanations", group)),
         labels: []
       })
       linked.set(set, items.filter((item): item is Candidate => item._tag === "Candidate"))
@@ -265,7 +319,9 @@ const reportStep = (params: typeof Params.Type) =>
       const again: GoldenTags | null = tagged === undefined || tagged.primarySkill === null
         ? null
         : {
-          questionType: found?.questionType ?? "",
+          // A Question not found again is reported as such; its type is not
+          // held against tag agreement too.
+          questionType: found?.questionType ?? row.expected.questionType,
           primarySkill: tagged.primarySkill,
           secondarySkills: JSON.parse(tagged.secondarySkills) as ReadonlyArray<string>
         }

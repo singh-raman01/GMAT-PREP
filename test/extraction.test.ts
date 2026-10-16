@@ -77,7 +77,7 @@ describe("Extracting Problem Solving Questions", () => {
           difficultySeed: 0,
           difficultyBasis: "estimate",
           enrichment: "done",
-          tagsPromptVersion: "tag-question@2"
+          tagsPromptVersion: "tag-question@3"
         })
         expect(first.key).toBe("C")
         const db = yield* Db

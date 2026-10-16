@@ -17,6 +17,7 @@ import {
   type Linked,
   linkCandidate,
   loadBank,
+  loadPassages,
   recordSkip,
   retireStale
 } from "./bankWrites.ts"
@@ -223,19 +224,37 @@ const linkStep = (params: typeof Params.Type, setsLinked: number, stepsDone: num
         banks.set(section, loaded)
         return loaded
       })
+    const passages = yield* loadPassages
     const counts: Record<Linked, number> = { created: 0, merged: 0, relinked: 0, unchanged: 0, skipped: 0 }
+    // Questions of other Books a repaired passage sent back to the Publish
+    // Gate, which this run does not check.
+    const sentBack = new Set<string>()
     for (const item of linked) {
       const reader = readers.get(item.page)
-      const outcome = item._tag === "Skip"
-        ? yield* recordSkip(params.bookId, set.name, params.mapVersion, item)
-        : yield* linkCandidate({
-          bookId: params.bookId,
-          set: set.name,
-          mapVersion: params.mapVersion,
-          candidate: item,
-          origin: { model: reader?.model ?? "", promptVersion: reader?.promptVersion ?? "" }
-        }, yield* bankFor(item.section))
-      counts[outcome] += 1
+      if (item._tag === "Skip") {
+        counts[yield* recordSkip(params.bookId, set.name, params.mapVersion, item)] += 1
+        continue
+      }
+      const outcome = yield* linkCandidate({
+        bookId: params.bookId,
+        set: set.name,
+        mapVersion: params.mapVersion,
+        candidate: item,
+        origin: { model: reader?.model ?? "", promptVersion: reader?.promptVersion ?? "" }
+      }, yield* bankFor(item.section), passages)
+      counts[outcome.linked] += 1
+      for (const id of outcome.sentBack) sentBack.add(id)
+    }
+    // Those that took a Source in the Book meanwhile are this run's to check.
+    const inBook = sentBack.size === 0 ? [] : yield* db.selectDistinct({ id: sources.questionId }).from(sources)
+      .where(and(eq(sources.bookId, params.bookId), inArray(sources.questionId, [...sentBack]))).pipe(Effect.orDie)
+    const unchecked = [...sentBack].filter((id) => !inBook.some((row) => row.id === id))
+    if (unchecked.length > 0) {
+      yield* queueJob(
+        QuestionRefresh,
+        { questionIds: unchecked, reason: `Checking Questions whose passage ${params.title} gave a readable text` },
+        RefreshCap
+      ).pipe(Effect.orDie)
     }
     const summary = [
       counts.created > 0 ? `${counts.created} new` : undefined,

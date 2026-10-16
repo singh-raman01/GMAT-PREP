@@ -97,7 +97,7 @@ const listing = (entries: ReadonlyArray<{ readonly id: string; readonly name: st
 
 // Tagging ------------------------------------------------------------------
 
-export const TagPromptVersion = "tag-question@2"
+export const TagPromptVersion = "tag-question@3"
 
 export const tagOutput = (taxonomy: TaxonomyView, questionType: string) => {
   const skill = oneOf(skillsFor(taxonomy, questionType).map((entry) => entry.id))
@@ -118,7 +118,7 @@ export const secondaryOnly = (primarySkill: string, secondarySkills: ReadonlyArr
 // Reasoning, and one secondary Skill says whether it asks for a value or a
 // yes or no.
 const dsRule =
-  `This is a Data Sufficiency question. Its primarySkill is the maths Skill it mainly tests. Its secondarySkills hold exactly one of di.sufficiency.value (it asks for a value or a choice) or di.sufficiency.yes-no (it asks a yes or no question), and at most one other maths Skill.`
+  `This is a Data Sufficiency question. Its primarySkill is the maths Skill it mainly tests. Its secondarySkills hold exactly one of di.sufficiency.value (it asks for a value or a choice) or di.sufficiency.yes-no (it asks a yes or no question), and at most one other Skill: a maths Skill, or di.displays.tables when the question is about a table.`
 
 export const tagQuestion = (jobId: string, taxonomy: TaxonomyView, question: QuestionText) =>
   Effect.gen(function*() {
@@ -149,7 +149,8 @@ ${listing(skillsFor(taxonomy, question.questionType))}`,
 
 // Solving ------------------------------------------------------------------
 
-export const SolvePromptVersion = "solve-question@1"
+// Version 2 quotes what a question asks about, such as its passage.
+export const SolvePromptVersion = "solve-question@2"
 
 export const SolveOutput = Schema.Struct({ work: Schema.String, answer: Letter })
 
@@ -204,7 +205,8 @@ ${ask}`,
 
 // Approaches and wrong-option notes -----------------------------------------
 
-export const ApproachesPromptVersion = "write-approaches@1"
+// Version 2 quotes what a question asks about, such as its passage.
+export const ApproachesPromptVersion = "write-approaches@2"
 
 export const approachesOutput = (taxonomy: TaxonomyView, questionType: string) => {
   const strategy = oneOf(strategiesFor(taxonomy, questionType).map((entry) => entry.id))

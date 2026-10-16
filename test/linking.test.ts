@@ -3,10 +3,15 @@ import {
   type Candidate,
   candidateProblems,
   DsOptions,
+  dsStem,
   linkSet,
   type LinkedItem,
+  NearMatch,
+  nearText,
   optionNamed,
-  settledType
+  settledType,
+  similarity,
+  trigrams
 } from "../src/server/books/linking.ts"
 import type { PageReading } from "../src/server/books/readings.ts"
 
@@ -219,5 +224,171 @@ describe("A printed answer", () => {
     expect(optionNamed(menu, "m")).toBe("C")
     expect(optionNamed(lettered(["more than", "most"]), "mo")).toBeUndefined()
     expect(optionNamed(menu, "twice")).toBeUndefined()
+  })
+})
+
+describe("The verbal type rules", () => {
+  const argument = "Officials say the new bus route will cut traffic downtown, because many drivers will take the bus."
+  const cr = (asked: string, type: string) => settledType("cr", `${argument}\n\n${asked}`, type)
+
+  test("leave a right reading alone when the question only mentions support or a method", () => {
+    const stands: ReadonlyArray<readonly [string, string]> = [
+      ["Each of the following, if true, undermines the evidence offered in support of the conclusion EXCEPT:", "verbal.cr-weaken"],
+      ["Each of the following, if true, weakens the support for the officials' prediction EXCEPT:", "verbal.cr-weaken"],
+      ["Each of the following is supported by the information above EXCEPT:", "verbal.cr-inference"],
+      ["The statements above, if true, most strongly support each of the following EXCEPT:", "verbal.cr-inference"],
+      ["Each of the following would be useful to know in judging the support for the conclusion EXCEPT:", "verbal.cr-evaluate"],
+      ["Which of the following points to a flaw in the method of reasoning used above?", "verbal.cr-flaw"],
+      ["The method of reasoning above is most vulnerable to criticism on the grounds that it", "verbal.cr-flaw"]
+    ]
+    for (const [asked, type] of stands) expect(cr(asked, type)).toBe(type)
+  })
+
+  test("swap strengthen and weaken only for an EXCEPT question read as the opposite task", () => {
+    expect(cr("Each of the following, if true, would support the officials' claim EXCEPT:", "verbal.cr-weaken"))
+      .toBe("verbal.cr-strengthen")
+    expect(cr("Each of the following, if true, undermines the evidence offered in support of the conclusion EXCEPT:", "verbal.cr-strengthen"))
+      .toBe("verbal.cr-weaken")
+    expect(cr("Each of the following, if true, strengthens the argument EXCEPT:", "verbal.cr-evaluate")).toBe("verbal.cr-evaluate")
+  })
+
+  test("catch other wordings of boldface and of passage questions about new facts", () => {
+    expect(cr("In the argument, the two bolded portions play which of the following roles?", "verbal.cr-inference"))
+      .toBe("verbal.cr-structure")
+    expect(cr("In the argument above, the two portions in bold-faced type play which roles?", "verbal.cr-inference"))
+      .toBe("verbal.cr-structure")
+    expect(settledType("rc", "Which of the following, if it were true, would most weaken the author's claim?", "verbal.rc-inference"))
+      .toBe("verbal.rc-application")
+    expect(settledType("rc", "Which of the following, if accurate, would most strengthen the scientists' hypothesis?", "verbal.rc-inference"))
+      .toBe("verbal.rc-application")
+  })
+
+  test("read only the question when the stem has no blank line before it", () => {
+    expect(settledType(
+      "cr",
+      "The mayor's plan, which critics say proceeds by guesswork, will fail. Which of the following most weakens the conclusion?",
+      "verbal.cr-weaken"
+    )).toBe("verbal.cr-weaken")
+  })
+})
+
+describe("Linking passages", () => {
+  const rcPage = (
+    passages: ReadonlyArray<{ readonly text: string; readonly questions: ReadonlyArray<number> }>,
+    items: ReadonlyArray<{ readonly number: number; readonly stem: string; readonly type: string; readonly topic?: string }>
+  ): PageReading => ({
+    role: "questions",
+    group: "rc",
+    value: {
+      passages: passages.map((passage) => ({ ...passage, questions: [...passage.questions] })),
+      questions: items.map((item) => ({
+        number: item.number,
+        stem: item.stem,
+        options: choices.map((choice) => ({ ...choice, text: `${choice.text} about ${item.topic ?? "it"}` })),
+        type: item.type,
+        difficulty: null
+      }))
+    }
+  } as PageReading)
+  const key = (numbers: ReadonlyArray<number>) => keyPage(numbers.map((number) => [number, "C"] as const))
+
+  test("numbering that starts again with each passage records the second passage's questions as skips", () => {
+    for (const topic of ["glaciers", "bees"]) {
+      const linked = linkSet({
+        questions: [
+          {
+            page: 10,
+            reading: rcPage([{ text: "Passage one about bees.", questions: [1, 2] }], [
+              { number: 1, stem: "The primary purpose of the passage is to", type: "verbal.rc-main-idea", topic: "bees" },
+              { number: 2, stem: "According to the passage, bees", type: "verbal.rc-detail", topic: "bees" }
+            ])
+          },
+          {
+            page: 11,
+            reading: rcPage([{ text: "Passage two about glaciers.", questions: [1, 2] }], [
+              // With choices worded alike or not, it is another item.
+              { number: 1, stem: "The primary purpose of the passage is to", type: "verbal.rc-main-idea", topic },
+              { number: 2, stem: "The author mentions moraines in order to", type: "verbal.rc-structure", topic }
+            ])
+          }
+        ],
+        answers: [key([1, 2])],
+        explanations: [],
+        labels: []
+      })
+      expect(linked.filter((item) => item.page === 11).map((item) => [item._tag, item.number])).toEqual([["Skip", 1], ["Skip", 2]])
+      expect(candidates(linked).map((item) => item.stimulus)).toEqual([
+        { kind: "passage", body: "Passage one about bees." },
+        { kind: "passage", body: "Passage one about bees." }
+      ])
+    }
+  })
+
+  test("a question two passages on its page name is held, naming both; the nearest page's passage wins otherwise", () => {
+    const linked = linkSet({
+      questions: [
+        {
+          page: 19,
+          reading: rcPage([{ text: "An earlier passage that also names eight.", questions: [8] }], [])
+        },
+        {
+          page: 20,
+          reading: rcPage([
+            { text: "First passage, which the book says serves 5 to 8.", questions: [5, 6, 7, 8] },
+            { text: "Second passage, serving 8 to 10.", questions: [8, 9, 10] }
+          ], [
+            { number: 7, stem: "The first passage suggests that bees", type: "verbal.rc-inference" },
+            { number: 8, stem: "The second passage suggests that glaciers", type: "verbal.rc-inference" }
+          ])
+        }
+      ],
+      answers: [key([7, 8])],
+      explanations: [],
+      labels: []
+    })
+    const [seven, eight] = candidates(linked)
+    expect(seven).toMatchObject({ stimulus: { kind: "passage", body: "First passage, which the book says serves 5 to 8." }, rival: null })
+    expect(candidateProblems(seven!)).toEqual([])
+    expect(candidateProblems(eight!)).toEqual([{
+      code: "structure",
+      detail: 'Two passages on its page name it: "First passage, which the book says serves 5…" and "Second passage, serving 8 to 10.".'
+    }])
+  })
+
+  test("a passage read with no text names no question", () => {
+    const linked = linkSet({
+      questions: [{
+        page: 30,
+        reading: rcPage([{ text: "  ", questions: [21, 22] }], [
+          { number: 21, stem: "The author mentions the council chiefly in order to", type: "verbal.rc-structure" }
+        ])
+      }],
+      answers: [key([21])],
+      explanations: [],
+      labels: []
+    })
+    const [only] = candidates(linked)
+    expect(only?.stimulus).toBeNull()
+    expect(candidateProblems(only!)).toEqual([{ code: "structure", detail: "The readings do not say which passage it asks about." }])
+  })
+})
+
+describe("Data Sufficiency near matches", () => {
+  test("leave the five fixed choices out, so different questions are not near matches", () => {
+    const pairs: ReadonlyArray<readonly [string, ReadonlyArray<string>, string, ReadonlyArray<string>]> = [
+      ["What is the value of x?", ["2x + 3 = 11", "x^2 = 16"], "What is the value of x?", ["x + y = 5", "x - y = 1"]],
+      ["Is x > y?", ["x - y > 0", "y < 0"], "Is x > y?", ["x/y > 1", "y > 0"]]
+    ]
+    for (const [q1, s1, q2, s2] of pairs) {
+      const near = (question: string, statements: ReadonlyArray<string>) =>
+        trigrams(nearText("di.ds", dsStem(question, statements), [{ prompt: null, options: DsOptions }]))
+      expect(similarity(near(q1, s1), near(q2, s2))).toBeLessThan(NearMatch)
+    }
+    // A copy with other numbers still is one.
+    const copy = similarity(
+      trigrams(nearText("di.ds", dsStem("What is the value of x?", ["2x + 3 = 11", "x^2 = 16"]), [{ prompt: null, options: DsOptions }])),
+      trigrams(nearText("di.ds", dsStem("What is the value of x?", ["3x + 2 = 14", "x^2 = 25"]), [{ prompt: null, options: DsOptions }]))
+    )
+    expect(copy).toBeGreaterThanOrEqual(NearMatch)
   })
 })

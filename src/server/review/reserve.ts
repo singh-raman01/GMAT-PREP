@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, notInArray, or } from "drizzle-orm"
+import { and, count, eq, inArray, isNotNull, isNull, ne, notInArray, or } from "drizzle-orm"
 import { Clock, Effect } from "effect"
 import { fitsSlot, groupOf } from "../../api/blueprint.ts"
 import { bandOf, type DifficultyBand } from "../../api/difficulty.ts"
@@ -11,11 +11,17 @@ import { books, jobs, questions, sources, stimuli } from "../db/schema.ts"
 // a Section Blueprint slot can join. Each Question Type and Difficulty Band
 // gets its share, and within one the units are taken in the order of their
 // text's hash, so the same Book always gives the same Reserve. A unit is
-// decided once; later Questions from the Book make up any shortfall.
+// decided once; later Questions from the Book make up any shortfall. A
+// passage's decision holds for its Questions from every Book, and a passage
+// in the Reserve that no longer fits a slot is released.
 
 export interface ReserveUnit {
   readonly id: string
+  // Its Questions from the Book being decided, which count toward its share.
   readonly size: number
+  // A passage's Questions from every Book, not withdrawn, which a Blueprint
+  // slot would take; its size when absent.
+  readonly whole?: number
   // The type of its Questions, or of one of them for a passage, whose
   // Questions differ in type within one Blueprint group.
   readonly questionType: string
@@ -60,9 +66,10 @@ const sum = (values: Iterable<number>) => [...values].reduce((total, value) => t
 // their share, so units decided before never push the Reserve past it.
 export const reserveDecisions = (units: ReadonlyArray<ReserveUnit>): ReadonlyMap<string, boolean> => {
   const decisions = new Map<string, boolean>()
-  const fitting = units.filter((unit) => fitsSlot(unit.questionType, unit.size))
+  const fits = (unit: ReserveUnit) => fitsSlot(unit.questionType, unit.whole ?? unit.size)
+  const fitting = units.filter(fits)
   for (const unit of units) {
-    if (unit.reserve === null && !fitsSlot(unit.questionType, unit.size)) decisions.set(unit.id, false)
+    if (unit.reserve === null && !fits(unit)) decisions.set(unit.id, false)
   }
   const stratumOf = (unit: ReserveUnit) => `${shareOf(unit)}|${unit.band}`
   const sizes = new Map<string, number>()
@@ -95,7 +102,7 @@ export const reserveDecisions = (units: ReadonlyArray<ReserveUnit>): ReadonlyMap
 // Decides the Reserve for a Book's published Questions not decided yet: the
 // Questions the Book itself brought, not those it only added a Source to.
 // A passage's published Questions are one unit, and one published after the
-// passage was decided takes its decision.
+// passage was decided, in this Book or another, takes its decision.
 export const assignReserve = (bookId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
@@ -119,29 +126,51 @@ const decideReserve = (bookId: string) =>
       .innerJoin(sources, and(eq(sources.questionId, questions.id), eq(sources.bookId, bookId), eq(sources.merged, false)))
       .leftJoin(stimuli, eq(stimuli.id, questions.stimulusId))
       .where(eq(questions.status, "published"))
+    // Every Question about these passages, from any Book: a passage decided
+    // anywhere keeps that decision, released or not, and a slot would take
+    // all its Questions not withdrawn.
+    const passageIds = [...new Set(rows.flatMap((row) => (row.stimulusId === null ? [] : [row.stimulusId])))]
+    const onPassages = passageIds.length === 0 ? [] : yield* db.select({
+      stimulusId: questions.stimulusId,
+      status: questions.status,
+      reserve: questions.reserve,
+      releasedAt: questions.releasedAt
+    }).from(questions).where(inArray(questions.stimulusId, passageIds))
+    const passageDecision = new Map<string, { readonly reserve: boolean; readonly released: boolean }>()
+    const passageSize = new Map<string, number>()
+    for (const row of onPassages) {
+      const id = row.stimulusId!
+      if (row.status !== "withdrawn") passageSize.set(id, (passageSize.get(id) ?? 0) + 1)
+      if (row.reserve !== null && !passageDecision.has(id)) {
+        passageDecision.set(id, { reserve: row.reserve, released: row.releasedAt !== null })
+      }
+    }
     const members = Map.groupBy(rows, (row) => row.stimulusId ?? row.id)
     const sections = new Map<string, Array<ReserveUnit>>()
     let joined = 0
-    const decide = (ids: ReadonlyArray<string>, reserve: boolean) =>
+    const decide = (ids: ReadonlyArray<string>, reserve: boolean, released = false) =>
       Effect.gen(function*() {
         // A Question decided meanwhile keeps that decision.
-        const decided = yield* db.update(questions).set({ reserve, reserveDecidedAt: now })
+        const decided = yield* db.update(questions)
+          .set({ reserve, reserveDecidedAt: now, ...(released ? { releasedAt: now } : {}) })
           .where(and(inArray(questions.id, [...ids]), isNull(questions.reserve))).returning({ id: questions.id })
         if (reserve) joined += decided.length
       })
     for (const [id, unit] of members) {
       const first = unit[0]!
-      const reserve = unit.find((row) => row.reserve !== null)?.reserve ?? null
+      const passage = first.stimulusId === null ? undefined : passageDecision.get(first.stimulusId)
+      const reserve = passage?.reserve ?? unit.find((row) => row.reserve !== null)?.reserve ?? null
       // A passage decided before takes in the Questions published since.
       if (reserve !== null) {
         const undecided = unit.filter((row) => row.reserve === null).map((row) => row.id)
-        if (undecided.length > 0) yield* decide(undecided, reserve)
+        if (undecided.length > 0) yield* decide(undecided, reserve, passage?.released ?? false)
       }
       const seed = unit.reduce((total, row) => total + (row.seed ?? 0), 0) / unit.length
       const units = sections.get(first.section) ?? []
       units.push({
         id,
         size: unit.length,
+        ...(first.stimulusId === null ? {} : { whole: passageSize.get(first.stimulusId) ?? unit.length }),
         questionType: first.questionType,
         band: bandOf(seed),
         hash: first.stimulusHash ?? first.hash,
@@ -154,8 +183,33 @@ const decideReserve = (bookId: string) =>
         yield* decide(members.get(id)!.map((row) => row.id), reserve)
       }
     }
+    yield* releaseUnfitting
     return joined
   })
+
+// Releases each passage in the Reserve whose Questions, from every Book and
+// not withdrawn, no longer fit a Blueprint slot, as one that gained Questions
+// from a later Book or lost one the Curator withdrew: no Mock could serve it.
+export const releaseUnfitting = Effect.gen(function*() {
+  const db = yield* Db
+  const now = yield* Clock.currentTimeMillis
+  const held = db.selectDistinct({ stimulusId: questions.stimulusId }).from(questions)
+    .where(and(isNotNull(questions.stimulusId), eq(questions.reserve, true), isNull(questions.releasedAt)))
+  const passages = yield* db.select({
+    stimulusId: questions.stimulusId,
+    questionType: questions.questionType,
+    size: count()
+  }).from(questions)
+    .where(and(inArray(questions.stimulusId, held), ne(questions.status, "withdrawn")))
+    .groupBy(questions.stimulusId)
+  const unfitting = passages.filter((passage) => !fitsSlot(passage.questionType, passage.size))
+    .map((passage) => passage.stimulusId!)
+  if (unfitting.length > 0) {
+    yield* db.update(questions).set({ releasedAt: now })
+      .where(and(inArray(questions.stimulusId, unfitting), eq(questions.reserve, true), isNull(questions.releasedAt)))
+  }
+  return unfitting.length
+})
 
 // Decides the Reserve for every Book whose run has ended, finished or not,
 // with published Questions not decided yet, such as one another Book's run
@@ -174,6 +228,7 @@ export const assignUndecided = Effect.gen(function*() {
     ))
   let joined = 0
   for (const row of rows) joined += yield* assignReserve(row.bookId)
+  yield* db.transaction(() => releaseUnfitting)
   return joined
 })
 

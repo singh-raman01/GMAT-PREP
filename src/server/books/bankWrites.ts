@@ -4,7 +4,7 @@ import { sha256 } from "../access/tokens.ts"
 import { Db } from "../db/Database.ts"
 import { parseCell } from "../../api/dataset.ts"
 import { joinedKey } from "../../api/keys.ts"
-import { normalizeText } from "../../api/richText.ts"
+import { normalizeText, renderProblem } from "../../api/richText.ts"
 import {
   books,
   bookSkips,
@@ -24,7 +24,9 @@ import {
   candidateProblems,
   comparableText,
   type ContentDraft,
+  isPassageRender,
   NearMatch,
+  nearText,
   type Reason,
   type ReasonCode,
   similarity,
@@ -43,10 +45,11 @@ import {
 // the Publish Gate decide whether it is published or held.
 
 // A Question as compared with new items. A passage's Questions are compared
-// only with Questions on the same passage.
+// only with Questions on the same passage, or on a passage nearly like it.
 export interface BankEntry {
   readonly id: string
   readonly hash: string
+  // Of its near-match text; see nearText.
   readonly trigrams: ReadonlySet<string>
   readonly key: string | null
   readonly stimulusId: string | null
@@ -59,6 +62,8 @@ export const loadBank = (section: string) =>
     const rows = yield* db.select({
       id: questions.id,
       hash: questions.normalizedHash,
+      questionType: questions.questionType,
+      stem: questions.stem,
       text: questions.normalizedText,
       stimulusId: questions.stimulusId
     }).from(questions)
@@ -73,7 +78,7 @@ export const loadBank = (section: string) =>
     return rows.map((row): BankEntry => ({
       id: row.id,
       hash: row.hash,
-      trigrams: trigrams(row.text),
+      trigrams: trigrams(row.questionType === "di.ds" ? nearText(row.questionType, row.stem, []) : row.text),
       key: joinedKey((keys.get(row.id) ?? []).map((part) => part.key)),
       stimulusId: row.stimulusId
     }))
@@ -161,21 +166,85 @@ const insertContent = (
     return id
   })
 
-// The stored Stimulus with this content, or a new one.
-const stimulusFor = (draft: StimulusDraft, now: number, figure: FigureSource | undefined) =>
+// A stored passage as compared with a new one.
+export interface PassageEntry {
+  readonly id: string
+  readonly trigrams: ReadonlySet<string>
+}
+
+// Every stored passage, other than an MSR set's tabs, for finding one a new
+// passage nearly copies.
+export const loadPassages = Effect.gen(function*() {
+  const db = yield* Db
+  const rows = yield* db.select({ id: stimuli.id, body: stimuli.body }).from(stimuli)
+    .where(and(eq(stimuli.kind, "passage"), isNull(stimuli.parentId)))
+    .pipe(Effect.orDie)
+  return rows.map((row): PassageEntry => ({ id: row.id, trigrams: trigrams(normalizeText(row.body)) }))
+})
+
+// The stored Stimulus with this content, or a new one. The same passage from
+// two Books compares by its normalized text, and the text shown is one that
+// renders: a stored passage that does not takes this reading's text when it
+// does. shown is the Stimulus as Learners will see it, and repaired says the
+// stored text was replaced.
+const stimulusFor = (
+  draft: StimulusDraft,
+  now: number,
+  figure: FigureSource | undefined,
+  passages: Array<PassageEntry>
+) =>
   Effect.gen(function*() {
     const db = yield* Db
     const hash = stimulusHash(draft, figure)
-    const [found] = yield* db.select({ id: stimuli.id }).from(stimuli)
+    const [found] = yield* db.select({ id: stimuli.id, body: stimuli.body }).from(stimuli)
       .where(and(eq(stimuli.normalizedHash, hash), isNull(stimuli.parentId))).limit(1)
-    if (found !== undefined) return { id: found.id, hash }
-    if (draft.kind !== "tabs") return { id: yield* insertContent(draft, hash, now, figure), hash }
+    if (found !== undefined) {
+      if (draft.kind !== "passage") return { id: found.id, hash, shown: draft, repaired: false }
+      const repaired = renderProblem(found.body) !== undefined && renderProblem(draft.body) === undefined
+      if (repaired) yield* db.update(stimuli).set({ body: draft.body }).where(eq(stimuli.id, found.id))
+      return { id: found.id, hash, shown: { ...draft, body: repaired ? draft.body : found.body }, repaired }
+    }
+    if (draft.kind !== "tabs") {
+      const id = yield* insertContent(draft, hash, now, figure)
+      if (draft.kind === "passage") passages.push({ id, trigrams: trigrams(normalizeText(draft.body)) })
+      return { id, hash, shown: draft, repaired: false }
+    }
     const id = crypto.randomUUID()
     yield* db.insert(stimuli).values({ id, kind: "tabs", body: "", normalizedHash: hash, createdAt: now })
     for (const [position, tab] of draft.tabs.entries()) {
       yield* insertContent(tab, contentHash(tab, figure), now, figure, { parentId: id, position, title: tab.title })
     }
-    return { id, hash }
+    return { id, hash, shown: draft, repaired: false }
+  })
+
+// Stored passages a passage nearly copies, the closest first, as another
+// edition's or a rescan's reading of it with a word changed would.
+const nearPassages = (stimulusId: string, body: string, passages: ReadonlyArray<PassageEntry>) => {
+  const pieces = trigrams(normalizeText(body))
+  return passages.filter((entry) => entry.id !== stimulusId)
+    .map((entry) => ({ id: entry.id, score: similarity(pieces, entry.trigrams) }))
+    .filter((entry) => entry.score >= NearMatch)
+    .toSorted((a, b) => b.score - a.score)
+}
+
+// After a passage's stored text was repaired, its Questions held only because
+// it did not render go back to the Publish Gate. Returns those with no
+// Source in the Book, which its run will not check.
+const passageRepaired = (stimulusId: string, bookId: string) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const held = yield* db.select({ id: questions.id, linkReasons: questions.linkReasons, related: questions.relatedQuestionId })
+      .from(questions).where(and(eq(questions.stimulusId, stimulusId), ne(questions.status, "withdrawn")))
+    const sentBack: Array<string> = []
+    for (const question of held) {
+      const reasons = readLinkReasons(question.linkReasons)
+      if (!reasons.some(isPassageRender)) continue
+      yield* settle(question.id, reasons.filter((reason) => !isPassageRender(reason)), question.related, { regate: true })
+      const [inBook] = yield* db.select({ id: sources.id }).from(sources)
+        .where(and(eq(sources.questionId, question.id), eq(sources.bookId, bookId))).limit(1)
+      if (inBook === undefined) sentBack.push(question.id)
+    }
+    return sentBack
   })
 
 export type Linked = "created" | "merged" | "relinked" | "unchanged" | "skipped"
@@ -332,6 +401,15 @@ const stillInBank = (id: string) =>
     return row !== undefined && row.status !== "withdrawn"
   })
 
+// What linking an item did, and the Questions it sent back to the Publish
+// Gate that have no Source in the Book, which its run will not check.
+export interface LinkOutcome {
+  readonly linked: Linked
+  readonly sentBack: ReadonlyArray<string>
+}
+
+const percent = (score: number) => `${Math.round(score * 100)}%`
+
 export const linkCandidate = (
   input: {
     readonly bookId: string
@@ -342,19 +420,43 @@ export const linkCandidate = (
     // For an item that needs a figure: the band of its page, kept as an image.
     readonly figure?: FigureSource
   },
-  bank: Array<BankEntry>
-): Effect.Effect<Linked, never, Db> =>
+  bank: Array<BankEntry>,
+  passages: Array<PassageEntry>
+): Effect.Effect<LinkOutcome, never, Db> =>
   Effect.gen(function*() {
     const db = yield* Db
     const { bookId, set, mapVersion, candidate, origin } = input
     const now = yield* Clock.currentTimeMillis
     return yield* db.transaction(() =>
       Effect.gen(function*() {
+        // What it asks about, as Learners will see it. A Question about a
+        // passage, table or chart is the same Question only about the same
+        // one.
+        const stimulus = candidate.stimulus === null
+          ? null
+          : yield* stimulusFor(candidate.stimulus, now, input.figure, passages)
+        const sentBack = stimulus?.repaired === true ? yield* passageRepaired(stimulus.id, bookId) : []
+        const done = (linked: Linked): LinkOutcome => ({ linked, sentBack })
+        const problems = candidateProblems(candidate, stimulus?.shown ?? null)
+        const text = comparableText(candidate.stem, candidate.parts)
+        const hash = sha256(stimulus === null ? text : `${stimulus.hash}|${text}`)
+
         const [source] = yield* db.select().from(sources)
           .where(and(eq(sources.bookId, bookId), eq(sources.page, candidate.page), eq(sources.number, candidate.number)))
         if (source !== undefined) {
+          const [question] = yield* db.select({
+            stimulusId: questions.stimulusId,
+            text: questions.normalizedText,
+            linkReasons: questions.linkReasons,
+            related: questions.relatedQuestionId
+          }).from(questions).where(eq(questions.id, source.questionId))
+          // A Book Map fix can find what the Question's own item asks about,
+          // or another one.
+          const stimulusChanged = !source.merged && question !== undefined &&
+            question.stimulusId !== (stimulus?.id ?? null)
           const changed = source.bookKey !== candidate.key || source.explanation !== candidate.explanation ||
-            source.explanationAnswer !== candidate.explanationAnswer || source.bookLabel !== candidate.label
+            source.explanationAnswer !== candidate.explanationAnswer || source.bookLabel !== candidate.label ||
+            stimulusChanged
           const explainedBefore = changed ? yield* explanationOf(source.questionId) : undefined
           yield* db.update(sources)
             .set({
@@ -366,7 +468,7 @@ export const linkCandidate = (
               mapVersion
             })
             .where(eq(sources.id, source.id))
-          if (!changed) return "unchanged" as const
+          if (!changed) return done("unchanged")
           // Whether the explanation the Approaches are written with, or the
           // answer it reaches, changed: this item's may not be the one used.
           const explanationChanged = !sameExplanation(explainedBefore!, yield* explanationOf(source.questionId))
@@ -375,19 +477,38 @@ export const linkCandidate = (
           if (source.merged) {
             if (source.bookKey !== candidate.key) yield* recheckSources(source.questionId)
             if (explanationChanged) {
-              const [question] = yield* db.select({ linkReasons: questions.linkReasons, related: questions.relatedQuestionId })
+              const [after] = yield* db.select({ linkReasons: questions.linkReasons, related: questions.relatedQuestionId })
                 .from(questions).where(eq(questions.id, source.questionId))
-              if (question !== undefined) {
-                yield* settle(source.questionId, readLinkReasons(question.linkReasons), question.related, { content: true })
+              if (after !== undefined) {
+                yield* settle(source.questionId, readLinkReasons(after.linkReasons), after.related, { content: true })
               }
             }
-            return "relinked" as const
+            return done("relinked")
           }
           // The Question's own item: its key and label follow the Book,
-          // unless the Curator overrode the key, and its reasons are worked
-          // out again, keeping the repeats the Curator has not settled.
+          // unless the Curator overrode the key, what it asks about follows
+          // the readings, and its reasons are worked out again, keeping the
+          // repeats the Curator has not settled.
           yield* db.update(questions).set({ bookLabel: candidate.label, updatedAt: now })
             .where(eq(questions.id, source.questionId))
+          const repeats = readLinkReasons(question?.linkReasons ?? "[]").filter((reason) => RepeatCodes.has(reason.code))
+          let related = question?.related ?? null
+          if (stimulusChanged) {
+            const moved = sha256(stimulus === null ? question!.text : `${stimulus.hash}|${question!.text}`)
+            yield* db.update(questions).set({ stimulusId: stimulus?.id ?? null, normalizedHash: moved })
+              .where(eq(questions.id, source.questionId))
+            const entry = bank.find((each) => each.id === source.questionId)
+            if (entry !== undefined) bank.splice(bank.indexOf(entry), 1, { ...entry, hash: moved, stimulusId: stimulus?.id ?? null })
+            // The same Question may already be in the Bank about it.
+            const twin = bank.find((each) => each.hash === moved && each.id !== source.questionId)
+            if (twin !== undefined && !repeats.some((reason) => reason.code === "near-match")) {
+              repeats.push({
+                code: "near-match",
+                detail: "It has the same words as another Question about the same passage: the same Question, or a Variant?"
+              })
+              related = twin.id
+            }
+          }
           const own = yield* keyOf(source.questionId)
           let keyChanged = false
           for (const part of own.parts) {
@@ -396,27 +517,22 @@ export const linkCandidate = (
             keyChanged = true
             yield* db.update(parts).set({ key, keyBasis: key === null ? null : "book" }).where(eq(parts.id, part.id))
           }
-          const [question] = yield* db.select({ linkReasons: questions.linkReasons, related: questions.relatedQuestionId })
-            .from(questions).where(eq(questions.id, source.questionId))
-          const repeats = readLinkReasons(question?.linkReasons ?? "[]").filter((reason) => RepeatCodes.has(reason.code))
           // A key the Curator overrode settles every question about the key.
-          const problems = candidateProblems(candidate).filter((reason) => !own.overridden || !KeyCodes.has(reason.code))
+          const kept = problems.filter((reason) => !own.overridden || !KeyCodes.has(reason.code))
           yield* settle(
             source.questionId,
-            [...problems, ...repeats, ...yield* sourceKeyReasons(source.questionId)],
-            question?.related ?? null,
-            { content: keyChanged || explanationChanged, regate: source.bookLabel !== candidate.label }
+            [...kept, ...repeats, ...yield* sourceKeyReasons(source.questionId)],
+            related,
+            {
+              // The Approaches quote what it asks about.
+              content: keyChanged || explanationChanged || stimulusChanged,
+              regate: source.bookLabel !== candidate.label || stimulusChanged
+            }
           )
-          return "relinked" as const
+          return done("relinked")
         }
 
-        // A Question about a passage, table or chart is the same Question
-        // only about the same one.
-        const stimulus = candidate.stimulus === null ? null : yield* stimulusFor(candidate.stimulus, now, input.figure)
-        const text = comparableText(candidate.stem, candidate.parts)
-        const hash = sha256(stimulus === null ? text : `${stimulus.hash}|${text}`)
-        const pieces = trigrams(text)
-        const problems = candidateProblems(candidate)
+        const pieces = trigrams(nearText(candidate.questionType, candidate.stem, candidate.parts))
         // An item whose text may be wrong, or that needs a figure, is never
         // joined to another unseen: junk transcriptions look alike, and the
         // same words can ask about a different figure.
@@ -456,7 +572,7 @@ export const linkCandidate = (
               yield* settle(exact.id, readLinkReasons(question.linkReasons), question.related, { content: true })
             }
           }
-          return "merged" as const
+          return done("merged")
         }
         // The same Question, which had no key: it takes this Book's key and
         // goes back through the Publish Gate.
@@ -473,7 +589,7 @@ export const linkCandidate = (
             .filter((reason) => reason.code !== "no-key" && reason.code !== "source-key")
           yield* settle(exact.id, [...kept, ...yield* sourceKeyReasons(exact.id)], question?.related ?? null, { content: true })
           bank.splice(bank.indexOf(exact), 1, { ...exact, key: candidate.key })
-          return "merged" as const
+          return done("merged")
         }
 
         const reasons: Array<Reason> = [...problems]
@@ -494,20 +610,48 @@ export const linkCandidate = (
           )
           related = exact.id
         } else {
-          let best: { readonly id: string; readonly score: number } | undefined
+          // Questions about the same Stimulus, or about a stored passage this
+          // one nearly copies, each with how alike the passages are.
+          const near = stimulus === null || stimulus.shown.kind !== "passage"
+            ? []
+            : nearPassages(stimulus.id, stimulus.shown.body, passages)
+          const about = new Map<string | null, number>([
+            [stimulus?.id ?? null, 1],
+            ...near.map((each) => [each.id, each.score] as const)
+          ])
+          let best: { readonly id: string; readonly score: number; readonly passage: number } | undefined
           for (const entry of bank) {
-            if (entry.stimulusId !== (stimulus?.id ?? null)) continue
+            const passage = about.get(entry.stimulusId)
+            if (passage === undefined) continue
             const score = similarity(pieces, entry.trigrams)
-            if (score >= NearMatch && (best === undefined || score > best.score)) best = { id: entry.id, score }
+            if (score >= NearMatch && (best === undefined || score > best.score)) best = { id: entry.id, score, passage }
           }
           if (best !== undefined) {
             reasons.push({
               code: "near-match",
-              detail: best.score > 0.999
+              detail: best.passage < 1
+                ? `It is ${best.score > 0.999 ? "worded like" : `${percent(best.score)} like`} another Question, whose passage is ${
+                  percent(best.passage)
+                } like its own: a Variant, or the same Question?`
+                : best.score > 0.999
                 ? "It is another Question with different numbers: a Variant, or the same Question?"
-                : `It is ${Math.round(best.score * 100)}% like another Question: a Variant, or the same Question?`
+                : `It is ${percent(best.score)} like another Question: a Variant, or the same Question?`
             })
             related = best.id
+          } else if (near[0] !== undefined) {
+            // No Question like it, but its passage nearly copies one in the
+            // Question Bank: the Curator says whether it is the same passage.
+            const closest = near[0]
+            const other = bank.filter((entry) => entry.stimulusId === closest.id)
+              .map((entry) => ({ id: entry.id, score: similarity(pieces, entry.trigrams) }))
+              .toSorted((a, b) => b.score - a.score)[0]
+            if (other !== undefined) {
+              reasons.push({
+                code: "near-match",
+                detail: `Its passage is ${percent(closest.score)} like the passage of another Question: the same passage, or another?`
+              })
+              related = other.id
+            }
           }
         }
 
@@ -554,7 +698,7 @@ export const linkCandidate = (
         }
         yield* addSource(questionId, false)
         bank.push({ id: questionId, hash, trigrams: pieces, key: candidate.key, stimulusId: stimulus?.id ?? null })
-        return "created" as const
+        return done("created")
       })
     ).pipe(Effect.orDie)
   })

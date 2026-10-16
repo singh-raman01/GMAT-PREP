@@ -495,7 +495,7 @@ const QuestionScreen = (
       </p>
       {question.stimulus === null ? work : (
         <div className="with-stimulus">
-          <StimulusPane stimulus={question.stimulus} />
+          <StimulusPane stimulus={question.stimulus} position={current.position} />
           <div className="beside-stimulus">{work}</div>
         </div>
       )}

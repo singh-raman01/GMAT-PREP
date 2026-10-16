@@ -29,6 +29,7 @@ const note = (label: string, settings: Partial<GateInput["notes"][number]> = {})
 // A Problem Solving Question that passes every check.
 const passing: GateInput = {
   questionType: "quant.ps",
+  hasStimulus: false,
   linkReasons: [],
   enriched: true,
   key: "C",
@@ -130,6 +131,13 @@ describe("The Publish Gate", () => {
     expect(codes({ ...passing, enriched: false })).toEqual(["not-enriched"])
     const noKey = { code: "no-key" as const, detail: "No key." }
     expect(gateReasons(taxonomy, { ...passing, linkReasons: [noKey], key: null, approaches: [], notes: [] })).toEqual([noKey])
+  })
+
+  test("a Reading Comprehension Question with no passage is held, whatever linking found", () => {
+    const reading = { ...passing, questionType: "verbal.rc-detail", primarySkill: "verbal.reading.stated-info" }
+    expect(gateReasons(taxonomy, { ...reading, hasStimulus: false }).filter((reason) => reason.code === "structure"))
+      .toEqual([{ code: "structure", detail: "The readings do not say which passage it asks about." }])
+    expect(gateReasons(taxonomy, { ...reading, hasStimulus: true }).filter((reason) => reason.code === "structure")).toEqual([])
   })
 })
 
