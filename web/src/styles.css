@@ -1618,6 +1618,17 @@ input[type="file"]::file-selector-button {
   font-size: var(--step-0);
 }
 
+/* Ending a set another tab holds asks first, on a line of its own. */
+.end-elsewhere {
+  flex: 1 1 100%;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.end-elsewhere p {
+  margin: 0;
+}
+
 .practice-start,
 .practice-fields {
   display: grid;
@@ -1698,6 +1709,118 @@ input.number-input {
 }
 
 .set-end {
+  font-size: var(--step-0);
+}
+
+.set-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 1.5rem;
+  font-size: var(--step-0);
+}
+
+/* The time left: digits that keep their width as they count down. */
+.timer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+  font-size: var(--step-0);
+}
+
+.timer-time {
+  font-size: var(--step-2);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.timer-low {
+  color: var(--alert);
+}
+
+.clock-note {
+  max-width: 68ch;
+  margin-top: 0.5rem;
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+.held-elsewhere {
+  display: grid;
+  justify-items: start;
+  gap: 0.75rem;
+  max-width: 68ch;
+  margin: 1rem 0;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.paused {
+  margin-top: 1.5rem;
+}
+
+.timed-choice {
+  margin-top: 1.25rem;
+}
+
+.target-times {
+  display: grid;
+  gap: 1.25rem;
+  max-width: 52rem;
+}
+
+.target-section {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.target-section legend {
+  margin-bottom: 0.5rem;
+  padding: 0;
+  font-weight: 700;
+}
+
+.target-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+  gap: 0.75rem 1.5rem;
+}
+
+.score-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rule);
+  max-width: 52rem;
+}
+
+.score-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 1rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.score-section {
+  flex: 0 1 16rem;
+  font-weight: 700;
+}
+
+.score-value {
+  font-size: var(--step-3);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.score-facts {
+  flex: 1 1 12rem;
+  color: var(--pencil);
   font-size: var(--step-0);
 }
 

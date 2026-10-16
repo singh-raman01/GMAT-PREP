@@ -9,10 +9,20 @@ import { RichText } from "../RichText.tsx"
 
 const keyText = (debrief: Debrief) => debrief.keys.map((key) => key.key ?? "unknown").join(", ")
 
+// Why an answer leaves the scores alone, when it does.
+const unratedText = (response: ResponseView, timed: boolean) =>
+  !timed
+    ? " Untimed, so this answer does not change your scores."
+    : response.timedOut
+    ? " Time ran out, so this Question does not change your scores."
+    : " You had seen this Question before, so this answer does not change your scores."
+
 export const DebriefPanel = (
-  { debrief, response, headingRef }: {
+  { debrief, response, timed, headingRef }: {
     readonly debrief: Debrief
     readonly response: ResponseView | null
+    // Whether the set was timed.
+    readonly timed: boolean
     readonly headingRef?: Ref<HTMLHeadingElement>
   }
 ) => {
@@ -22,12 +32,14 @@ export const DebriefPanel = (
       <h2 id={titleId} ref={headingRef} tabIndex={-1}>
         {response === null
           ? `Not answered. The answer is ${keyText(debrief)}.`
+          : response.timedOut
+          ? `Time ran out. The answer is ${keyText(debrief)}.`
           : debrief.correct
           ? `Right, the answer is ${keyText(debrief)}.`
           : `Not this time. The answer is ${keyText(debrief)}.`}
       </h2>
       <p className="debrief-facts">
-        {response !== null && (
+        {response !== null && !response.timedOut && (
           <>
             You took {spokenDuration(response.timeSpentMs)}
             {response.guessed ? " and marked it as a guess" : ""}.{" "}
@@ -35,7 +47,7 @@ export const DebriefPanel = (
         )}
         {debrief.skill === null ? "" : `${debrief.skill.name}, `}
         {bandNames[debrief.band].toLowerCase()} difficulty.
-        {response !== null && !response.rated && " Untimed, so this answer does not change your scores."}
+        {response !== null && !response.rated && unratedText(response, timed)}
       </p>
 
       {debrief.trapNotes.map((note) => (

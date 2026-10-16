@@ -511,8 +511,18 @@ export const sessions = sqliteTable(
     // JSON: how the Session was chosen, the Questions planned in order, and
     // those held for Mocks.
     config: text("config").notNull(),
-    // active or finished
+    // active, paused or finished
     status: text("status").notNull(),
+    // A timed Session's clock (ADR 0009): its limit, the elapsed time as last
+    // saved and when, and whether time was lost to a stop.
+    timeLimitMs: integer("time_limit_ms"),
+    elapsedMs: integer("elapsed_ms").notNull().default(0),
+    clockSavedAt: integer("clock_saved_at"),
+    interrupted: integer("interrupted", { mode: "boolean" }).notNull().default(false),
+    // The device that holds the Session; null when any may act on it.
+    holder: text("holder"),
+    // finished, or time when the clock ran out
+    endedBy: text("ended_by"),
     createdAt: integer("created_at").notNull(),
     finishedAt: integer("finished_at")
   },
@@ -527,7 +537,9 @@ export const servedQuestions = sqliteTable(
     position: integer("position").notNull(),
     // A Question with history is withdrawn, never deleted, so its facts stay.
     questionId: text("question_id").notNull().references(() => questions.id, { onDelete: "restrict" }),
-    servedAt: integer("served_at").notNull()
+    servedAt: integer("served_at").notNull(),
+    // In a timed Session, its clock when the Question was served.
+    servedElapsedMs: integer("served_elapsed_ms")
   },
   (t) => [primaryKey({ columns: [t.sessionId, t.position] }), index("served_questions_question").on(t.questionId)]
 )
@@ -578,3 +590,23 @@ export const difficulty = sqliteTable("difficulty", {
   value: real("value").notNull(),
   ratedResponses: integer("rated_responses").notNull()
 })
+
+// Section Score Estimates as they stood after each Rated Response: derived,
+// kept for the trend, and rebuildable.
+export const scoreEstimates = sqliteTable(
+  "score_estimates",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    section: text("section").notNull(),
+    at: integer("at").notNull(),
+    ability: real("ability").notNull(),
+    standardError: real("standard_error").notNull(),
+    score: integer("score").notNull(),
+    low: integer("low").notNull(),
+    high: integer("high").notNull(),
+    calibrated: integer("calibrated", { mode: "boolean" }).notNull(),
+    ratedResponses: integer("rated_responses").notNull()
+  },
+  (t) => [index("score_estimates_profile").on(t.profileId, t.section, t.at)]
+)

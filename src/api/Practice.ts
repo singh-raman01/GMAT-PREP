@@ -24,8 +24,13 @@ const ItemNumber = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))
 
 // Every filter left out matches everything. Skill matches a primary or a
 // secondary Skill, primary first.
+// A timed set gets the sum of its Questions' Target Times and shows the
+// Debriefs at the end; an untimed one shows each Debrief straight away.
+const Timed = Schema.optional(Schema.Boolean)
+
 export const FilterChoice = Schema.Struct({
   kind: Schema.Literal("filters"),
+  timed: Timed,
   section: Schema.optional(Schema.String),
   questionType: Schema.optional(Schema.String),
   skill: Schema.optional(Schema.String),
@@ -39,6 +44,7 @@ export type FilterChoice = typeof FilterChoice.Type
 // optionally from one item number to another.
 export const BookChoice = Schema.Struct({
   kind: Schema.Literal("book"),
+  timed: Timed,
   bookId: BookId,
   set: Schema.optional(Schema.String),
   from: Schema.optional(ItemNumber),
@@ -127,13 +133,16 @@ export class Debrief extends Schema.Class<Debrief>("gmat-prep/api/Debrief")({
 }) {}
 
 export class ResponseView extends Schema.Class<ResponseView>("gmat-prep/api/ResponseView")({
-  selection: Selection,
+  // Empty for a time-out.
+  selection: Schema.Array(PartChoice),
   guessed: Schema.Boolean,
   timeSpentMs: Schema.Int,
   // Against the current key.
   correct: Schema.Boolean,
   // Whether it moves Difficulty and Ability; never, in an untimed set.
-  rated: Schema.Boolean
+  rated: Schema.Boolean,
+  // Time ran out with the Question on screen, so it has no answer.
+  timedOut: Schema.Boolean
 }) {}
 
 export class ServedView extends Schema.Class<ServedView>("gmat-prep/api/ServedView")({
@@ -149,14 +158,27 @@ export class PracticeResult extends Schema.Class<PracticeResult>("gmat-prep/api/
   position: Schema.Int,
   questionId: QuestionId,
   questionType: Named,
-  // Null while the Question is unanswered.
+  // Null while the Question is unanswered, and in a timed set until it ends.
   correct: Schema.NullOr(Schema.Boolean),
   guessed: Schema.Boolean,
+  timedOut: Schema.Boolean,
   timeSpentMs: Schema.NullOr(Schema.Int),
   bookmarked: Schema.Boolean
 }) {}
 
-export const PracticeState = Schema.Literals(["active", "finished"])
+export const PracticeState = Schema.Literals(["active", "paused", "finished"])
+
+// How a set ended: the Learner finished it, or its time ran out.
+export const EndedBy = Schema.Literals(["finished", "time"])
+
+// A timed set's clock, as the server counts it.
+export class PracticeClock extends Schema.Class<PracticeClock>("gmat-prep/api/PracticeClock")({
+  limitMs: Schema.Int,
+  elapsedMs: Schema.Int,
+  remainingMs: Schema.Int,
+  // Time lost to a stop or a sleeping computer, which was not counted.
+  interrupted: Schema.Boolean
+}) {}
 
 export class PracticeView extends Schema.Class<PracticeView>("gmat-prep/api/PracticeView")({
   id: SessionId,
@@ -177,6 +199,10 @@ export class PracticeView extends Schema.Class<PracticeView>("gmat-prep/api/Prac
   current: Schema.NullOr(ServedView),
   // The sequence number the next submit carries.
   nextSeq: Schema.Int,
+  clock: Schema.NullOr(PracticeClock),
+  // Whether this device holds the set; another device can take it over.
+  heldHere: Schema.Boolean,
+  endedBy: Schema.NullOr(EndedBy),
   createdAt: Schema.Number,
   finishedAt: Schema.NullOr(Schema.Number)
 }) {}
@@ -189,8 +215,22 @@ export class PracticeSummary extends Schema.Class<PracticeSummary>("gmat-prep/ap
   total: Schema.Int,
   answered: Schema.Int,
   correct: Schema.Int,
+  endedBy: Schema.NullOr(EndedBy),
   createdAt: Schema.Number,
   finishedAt: Schema.NullOr(Schema.Number)
+}) {}
+
+// A Section Score Estimate from the Profile's Rated Responses: uncalibrated
+// until an Official Score is entered.
+export class ScoreEstimateView extends Schema.Class<ScoreEstimateView>("gmat-prep/api/ScoreEstimateView")({
+  section: Named,
+  ratedResponses: Schema.Int,
+  ability: Schema.Number,
+  standardError: Schema.Number,
+  score: Schema.Int,
+  low: Schema.Int,
+  high: Schema.Int,
+  calibrated: Schema.Boolean
 }) {}
 
 export class PracticePreview extends Schema.Class<PracticePreview>("gmat-prep/api/PracticePreview")({
@@ -199,7 +239,9 @@ export class PracticePreview extends Schema.Class<PracticePreview>("gmat-prep/ap
   // How many match, before the set size.
   matching: Schema.Int,
   heldForMocks: Schema.Int,
-  unavailable: Schema.Int
+  unavailable: Schema.Int,
+  // A timed set's time limit: its Questions' Target Times added up.
+  limitMs: Schema.NullOr(Schema.Int)
 }) {}
 
 const Counted = Schema.Struct({ id: Schema.String, name: Schema.String, questions: Schema.Int })
@@ -267,9 +309,17 @@ export class SelectionInvalid extends Schema.TaggedError<SelectionInvalid>()(
 export class PracticeOutOfStep extends Schema.TaggedError<PracticeOutOfStep>()(
   "PracticeOutOfStep",
   {
-    reason: Schema.Literals(["answered", "not-current", "not-answered", "no-more", "finished"]),
+    reason: Schema.Literals(["answered", "not-current", "not-answered", "no-more", "finished", "paused", "untimed"]),
     view: PracticeView
   },
+  { httpApiStatus: 409 }
+) {}
+
+// Another device holds the set. This one sees it read-only until it takes
+// it over.
+export class HeldElsewhere extends Schema.TaggedError<HeldElsewhere>()(
+  "HeldElsewhere",
+  { view: PracticeView },
   { httpApiStatus: 409 }
 ) {}
 
@@ -284,7 +334,7 @@ export class PracticeApi extends HttpApiGroup.make("practice")
       success: PracticePreview,
       error: [FiltersInvalid, BookNotFound]
     }),
-    // Starts an untimed set and serves its first Question.
+    // Starts a set, held by this device, and serves its first Question.
     HttpApiEndpoint.post("start", "/sets", {
       payload: Schema.Struct({ choice: PracticeChoice }),
       success: PracticeView,
@@ -294,7 +344,8 @@ export class PracticeApi extends HttpApiGroup.make("practice")
     HttpApiEndpoint.get("list", "/sets", { success: Schema.Array(PracticeSummary) }),
     HttpApiEndpoint.get("get", "/sets/:id", { ...setParams, success: PracticeView, error: PracticeNotFound }),
     // Records a Response to the Question on screen. A submit sent again with
-    // the same sequence number is recorded once.
+    // the same sequence number is recorded once. In a timed set the next
+    // Question is served at once, and the last one ends the set.
     HttpApiEndpoint.post("answer", "/sets/:id/answer", {
       ...setParams,
       payload: Schema.Struct({
@@ -304,7 +355,7 @@ export class PracticeApi extends HttpApiGroup.make("practice")
         guessed: Schema.Boolean
       }),
       success: PracticeView,
-      error: [PracticeNotFound, PracticeOutOfStep, SelectionInvalid]
+      error: [PracticeNotFound, PracticeOutOfStep, SelectionInvalid, HeldElsewhere]
     }),
     // Serves the Question at a position, once the one before it is answered.
     // Asking again for a position already served changes nothing.
@@ -312,15 +363,34 @@ export class PracticeApi extends HttpApiGroup.make("practice")
       ...setParams,
       payload: Schema.Struct({ position: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)) }),
       success: PracticeView,
-      error: [PracticeNotFound, PracticeOutOfStep]
+      error: [PracticeNotFound, PracticeOutOfStep, HeldElsewhere]
     }),
     HttpApiEndpoint.post("bookmark", "/sets/:id/bookmark", {
       ...setParams,
       payload: Schema.Struct({ questionId: QuestionId, bookmarked: Schema.Boolean }),
       success: PracticeView,
-      error: [PracticeNotFound, PracticeOutOfStep]
+      error: [PracticeNotFound, PracticeOutOfStep, HeldElsewhere]
     }),
-    HttpApiEndpoint.post("finish", "/sets/:id/finish", { ...setParams, success: PracticeView, error: PracticeNotFound }),
+    HttpApiEndpoint.post("finish", "/sets/:id/finish", {
+      ...setParams,
+      success: PracticeView,
+      error: [PracticeNotFound, HeldElsewhere]
+    }),
+    // A timed set's clock stops while it is paused, and the Question is hidden.
+    HttpApiEndpoint.post("pause", "/sets/:id/pause", {
+      ...setParams,
+      success: PracticeView,
+      error: [PracticeNotFound, PracticeOutOfStep, HeldElsewhere]
+    }),
+    HttpApiEndpoint.post("resume", "/sets/:id/resume", {
+      ...setParams,
+      success: PracticeView,
+      error: [PracticeNotFound, PracticeOutOfStep, HeldElsewhere]
+    }),
+    // This device takes the set over; the one that held it turns read-only.
+    HttpApiEndpoint.post("claim", "/sets/:id/claim", { ...setParams, success: PracticeView, error: PracticeNotFound }),
+    // The Profile's Section Score Estimates.
+    HttpApiEndpoint.get("scores", "/scores", { success: Schema.Array(ScoreEstimateView) }),
     // A served Question with its Response and Debrief, once answered or once
     // the set is over.
     HttpApiEndpoint.get("review", "/sets/:id/review/:position", {

@@ -12,7 +12,8 @@ import type {
 // Quant or Verbal Skills. A tag that names its Question Types in applies_to
 // fits only those.
 
-const sectionOf = (id: string) => id.slice(0, id.indexOf("."))
+// The Section a Question Type, Skill or other id belongs to, from its prefix.
+export const sectionOf = (id: string) => id.slice(0, id.indexOf("."))
 
 // Sections whose Skills a Question Type borrows besides its own.
 const Borrowed: Readonly<Record<string, ReadonlyArray<string>>> = {

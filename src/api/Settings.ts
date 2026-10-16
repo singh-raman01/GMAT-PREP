@@ -1,5 +1,6 @@
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
+import { TargetSecondsRange } from "./targetTimes.ts"
 import { CuratorSession } from "./Curator.ts"
 
 // The LLM tasks, each routed to the model the Curator picks for it.
@@ -113,6 +114,26 @@ export const ApiKey = Schema.String.check(
   })
 )
 
+export const TargetSeconds = Schema.Int.check(
+  Schema.isBetween({ minimum: TargetSecondsRange.minimum, maximum: TargetSecondsRange.maximum })
+)
+
+export class TargetTimeView extends Schema.Class<TargetTimeView>("gmat-prep/api/TargetTimeView")({
+  questionType: Schema.String,
+  name: Schema.String,
+  section: Schema.String,
+  sectionName: Schema.String,
+  seconds: Schema.Int,
+  // The Section's default, which the Question Type takes unless set.
+  sectionDefault: Schema.Int
+}) {}
+
+export class UnknownQuestionTypes extends Schema.TaggedError<UnknownQuestionTypes>()(
+  "UnknownQuestionTypes",
+  { questionTypes: Schema.Array(Schema.String) },
+  { httpApiStatus: 422 }
+) {}
+
 export class SettingsApi extends HttpApiGroup.make("settings")
   .add(
     HttpApiEndpoint.get("llm", "/settings/llm", {
@@ -128,6 +149,18 @@ export class SettingsApi extends HttpApiGroup.make("settings")
     }),
     HttpApiEndpoint.delete("removeApiKey", "/settings/api-key", {
       success: ApiKeyStatus
+    }),
+    HttpApiEndpoint.get("targetTimes", "/settings/target-times", {
+      success: Schema.Array(TargetTimeView)
+    }),
+    // Sets each listed Question Type's Target Time; one set to its Section's
+    // default follows that default again.
+    HttpApiEndpoint.put("saveTargetTimes", "/settings/target-times", {
+      payload: Schema.Struct({
+        times: Schema.Array(Schema.Struct({ questionType: Schema.String, seconds: TargetSeconds }))
+      }),
+      success: Schema.Array(TargetTimeView),
+      error: UnknownQuestionTypes
     })
   )
   .middleware(CuratorSession)
