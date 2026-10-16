@@ -13,6 +13,7 @@ export const QuestionId = Schema.String.pipe(Schema.brand("QuestionId"))
 export type QuestionId = typeof QuestionId.Type
 
 export const ReasonCode = Schema.Literals([
+  // Found when the Question is extracted and linked.
   "structure",
   "no-key",
   "key-conflict",
@@ -21,6 +22,13 @@ export const ReasonCode = Schema.Literals([
   "same-text-other-key",
   "near-match",
   "key-changed",
+  // Found by the Publish Gate after enrichment.
+  "tags",
+  "solver-disagreement",
+  "approach-misses-key",
+  "option-notes",
+  "difficulty",
+  // A page, not a Question.
   "unread-page"
 ])
 export type ReasonCode = typeof ReasonCode.Type
@@ -30,9 +38,10 @@ export class ReviewReason extends Schema.Class<ReviewReason>("gmat-prep/api/Revi
   detail: Schema.String
 }) {}
 
-// Reasons the Curator may publish past: a key a Book Map fix changed is
-// shown so the Curator looks again, and publishing accepts it.
-export const PublishableReasons: ReadonlySet<ReasonCode> = new Set(["key-changed"])
+// Reasons the Curator may publish past, having checked the Question: that
+// the Book's key stands though a solver disagreed, or that the Difficulty
+// estimate and the Book Label differ. Publishing never changes the key.
+export const PublishableReasons: ReadonlySet<ReasonCode> = new Set(["key-changed", "solver-disagreement", "difficulty"])
 
 export const QuestionStatus = Schema.Literals(["draft", "held", "published", "withdrawn"])
 export type QuestionStatus = typeof QuestionStatus.Type

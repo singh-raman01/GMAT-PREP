@@ -3,10 +3,12 @@ import m0 from "./20261016072200_init/migration.sql" with { type: "text" }
 import m1 from "./20261016073406_curator_settings_jobs/migration.sql" with { type: "text" }
 import m2 from "./20261016083559_books/migration.sql" with { type: "text" }
 import m3 from "./20261016090415_question_bank/migration.sql" with { type: "text" }
+import m4 from "./20261016093310_enrichment/migration.sql" with { type: "text" }
 
 export const bundledMigrations: ReadonlyArray<{ readonly name: string; readonly sql: string }> = [
   { name: "20261016072200_init", sql: m0 },
   { name: "20261016073406_curator_settings_jobs", sql: m1 },
   { name: "20261016083559_books", sql: m2 },
   { name: "20261016090415_question_bank", sql: m3 },
+  { name: "20261016093310_enrichment", sql: m4 },
 ]
