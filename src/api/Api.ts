@@ -5,6 +5,7 @@ import { BooksApi } from "./Books.ts"
 import { CuratorAccessApi, CuratorSessionApi } from "./Curator.ts"
 import { GoldenApi } from "./Golden.ts"
 import { JobsApi } from "./Jobs.ts"
+import { PracticeApi } from "./Practice.ts"
 import { ProfilesApi, SessionApi } from "./Profiles.ts"
 import { ReviewApi } from "./Review.ts"
 import { SettingsApi } from "./Settings.ts"
@@ -33,6 +34,7 @@ export class Api extends HttpApi.make("gmat-prep")
   .add(ProfilesApi)
   .add(SessionApi)
   .add(TaxonomyApi)
+  .add(PracticeApi)
   .add(CuratorAccessApi)
   .add(CuratorSessionApi)
   .add(SettingsApi)

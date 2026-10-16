@@ -1,7 +1,8 @@
 import { and, asc, eq } from "drizzle-orm"
 import { Clock, Effect } from "effect"
 import type { TaxonomyView } from "../../api/Taxonomy.ts"
-import { type Band, bandOf, labelDifficulty, tagProblems } from "../../api/taxonomyRules.ts"
+import { bandOf, type DifficultyBand, labelDifficulty } from "../../api/difficulty.ts"
+import { tagProblems } from "../../api/taxonomyRules.ts"
 import { holdForReview, readLinkReasons, UnsureCodes } from "../books/bankWrites.ts"
 import { ApproachSeconds, shownTextProblem, SolverRuns } from "../books/enrichment.ts"
 import type { Reason } from "../books/linking.ts"
@@ -24,7 +25,7 @@ export interface GateInput {
   readonly primarySkill: string | null
   readonly secondarySkills: ReadonlyArray<string>
   readonly difficultyEstimate: number | null
-  readonly bookLabel: Band | null
+  readonly bookLabel: DifficultyBand | null
   readonly solverAnswers: ReadonlyArray<string>
   readonly approaches: ReadonlyArray<{
     readonly strategy: string
@@ -42,7 +43,7 @@ export interface GateInput {
   }>
 }
 
-const BandRank: Record<Band, number> = { easy: 0, medium: 1, hard: 2 }
+const BandRank: Record<DifficultyBand, number> = { easy: 0, medium: 1, hard: 2 }
 
 const listed = (items: ReadonlyArray<string>) =>
   items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`
@@ -170,7 +171,7 @@ export const gateInputOf = (questionId: string) =>
       primarySkill: question.primarySkill,
       secondarySkills: JSON.parse(question.secondarySkills) as ReadonlyArray<string>,
       difficultyEstimate: question.difficultyEstimate,
-      bookLabel: question.bookLabel as Band | null,
+      bookLabel: question.bookLabel as DifficultyBand | null,
       solverAnswers: solves.map((solve) => solve.answer),
       approaches: routes,
       notes: notes.map((note) => ({

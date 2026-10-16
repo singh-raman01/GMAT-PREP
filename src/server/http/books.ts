@@ -44,6 +44,8 @@ export const BankHandlers = HttpApiBuilder.group(
     const taxonomy = yield* Taxonomy
     return handlers.handleAll({
       thinSkills: () => bank.thinSkills,
+      reserve: () => bank.reserve,
+      releaseReserve: ({ payload }) => bank.release(payload.section, payload.count),
       taxonomy: () => Effect.succeed(taxonomy.view)
     })
   })

@@ -25,6 +25,7 @@ import { KeyCodes, readLinkReasons, recheckSources, RepeatCodes, UnsureCodes } f
 import { Db } from "../db/Database.ts"
 import {
   approaches,
+  bookmarks,
   books,
   goldenQuestions,
   keyOverrides,
@@ -41,7 +42,7 @@ import { JobStore } from "../jobs/JobStore.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { runGate } from "./gate.ts"
 import { QuestionRefresh, RefreshCap } from "./refreshJob.ts"
-import { assignReserve } from "./reserve.ts"
+import { assignUndecided } from "./reserve.ts"
 import { drafts } from "./stranded.ts"
 
 // The Curator's decisions on held Questions and unread pages. A Question the
@@ -305,18 +306,10 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
           )
         })
 
-      // A Question published after its Book's run joins the Reserve now; one
-      // published during the run waits for the run's end.
-      const reserveFor = (questionId: string) =>
-        Effect.gen(function*() {
-          const [own] = yield* db.select({ bookId: sources.bookId, status: books.status }).from(sources)
-            .innerJoin(books, eq(books.id, sources.bookId))
-            .where(and(eq(sources.questionId, questionId), eq(sources.merged, false)))
-            .pipe(Effect.orDie)
-          if (own?.status === "extracted") {
-            yield* assignReserve(own.bookId).pipe(Effect.provideService(Db, db), Effect.orDie)
-          }
-        })
+      // A Question published after its Book's run, finished or not, gets its
+      // Reserve decision now; one published while the run goes on waits for
+      // the run's end.
+      const decideReserve = assignUndecided.pipe(Effect.provideService(Db, db), Effect.orDie)
 
       // Questions that went back to draft are checked again by a job, which
       // can write new Approaches and notes.
@@ -335,7 +328,7 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
           const blocking = readReasons(row.reasons).filter((reason) => !PublishableReasons.has(reason.code))
           if (blocking.length > 0) return yield* new CannotPublish({ reasons: blocking })
           yield* setQuestionStatus(row.questionId!, "published")
-          yield* reserveFor(row.questionId!)
+          yield* decideReserve
           return yield* decide(row, "published")
         })).pipe(Effect.flatMap(viewOf), oneAtATime)
 
@@ -363,16 +356,18 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
             .where(eq(questions.id, row.questionId!)).pipe(Effect.orDie)
           yield* db.update(reviewItems).set({ relatedQuestionId: null }).where(eq(reviewItems.id, row.id)).pipe(Effect.orDie)
           const outcome = yield* runGate(row.questionId!, taxonomy).pipe(Effect.provideService(Db, db), Effect.orDie)
-          if (outcome === "published") yield* reserveFor(row.questionId!)
+          if (outcome === "published") yield* decideReserve
           const [updated] = yield* db.select().from(reviewItems).where(eq(reviewItems.id, row.id)).pipe(Effect.orDie)
           return updated!
         })).pipe(Effect.flatMap(viewOf), oneAtATime)
 
-      // The same Question: its Sources join the related one, and it goes.
-      // Items and Questions that pointed at it point at the related one now,
-      // and the related one is checked again if its Sources now disagree. A
-      // Key Override goes with the Sources it settled; a golden-set approval,
-      // which is of the Question's own item, goes with the Question.
+      // The same Question: its Sources join the related one, and it is
+      // withdrawn, marked as merged into it, so a Learner's history with it
+      // counts for the related one and its facts stay (ADR 0005). Items and
+      // Questions that pointed at it point at the related one now, and so do
+      // Bookmarks; the related one is checked again if its Sources now
+      // disagree. A Key Override goes with the Sources it settled; a
+      // golden-set approval, which is of the Question's own item, goes.
       const keyOf = (questionId: string) =>
         db.select({ id: parts.id, key: parts.key, keyBasis: parts.keyBasis }).from(parts)
           .where(and(eq(parts.questionId, questionId), eq(parts.position, 0)))
@@ -409,8 +404,21 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
               .pipe(Effect.orDie)
             yield* db.update(questions).set({ relatedQuestionId: target })
               .where(eq(questions.relatedQuestionId, row.questionId!)).pipe(Effect.orDie)
-            const updated = yield* decide(row, "merged", { questionId: null })
-            yield* db.delete(questions).where(eq(questions.id, row.questionId!)).pipe(Effect.orDie)
+            const updated = yield* decide(row, "merged")
+            yield* db.delete(goldenQuestions).where(eq(goldenQuestions.questionId, row.questionId!)).pipe(Effect.orDie)
+            // A Profile that marked both keeps one Bookmark.
+            yield* db.delete(bookmarks).where(and(
+              eq(bookmarks.questionId, row.questionId!),
+              inArray(
+                bookmarks.profileId,
+                db.select({ profileId: bookmarks.profileId }).from(bookmarks).where(eq(bookmarks.questionId, target))
+              )
+            )).pipe(Effect.orDie)
+            yield* db.update(bookmarks).set({ questionId: target }).where(eq(bookmarks.questionId, row.questionId!))
+              .pipe(Effect.orDie)
+            const now = yield* Clock.currentTimeMillis
+            yield* db.update(questions).set({ status: "withdrawn", mergedInto: target, updatedAt: now })
+              .where(eq(questions.id, row.questionId!)).pipe(Effect.orDie)
             yield* recheckSources(target).pipe(Effect.provideService(Db, db), Effect.orDie)
             yield* refresh([target], "Checking a merged Question again")
             return updated

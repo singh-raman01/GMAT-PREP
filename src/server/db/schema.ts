@@ -256,6 +256,11 @@ export const questions = sqliteTable(
     // Whether the Question belongs to the Mock Reserve; null until decided.
     reserve: integer("reserve", { mode: "boolean" }),
     reserveDecidedAt: integer("reserve_decided_at"),
+    // When the Curator released a Reserve Question into Practice Sets; one-way.
+    releasedAt: integer("released_at"),
+    // The Question the Curator merged this one into. A merged Question stays,
+    // withdrawn, and a Learner's history with it counts for that Question.
+    mergedInto: text("merged_into"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull()
   },
@@ -490,3 +495,86 @@ export const goldenRunTags = sqliteTable(
   },
   (t) => [primaryKey({ columns: [t.runId, t.questionId] })]
 )
+
+// Sessions and what they record. Served Questions and Responses are facts:
+// written once, never edited (ADR 0005).
+
+// One sitting of a Mock, a Sectional or a Practice Set.
+export const sessions = sqliteTable(
+  "sessions",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    // practice, for now
+    kind: text("kind").notNull(),
+    timed: integer("timed", { mode: "boolean" }).notNull(),
+    // JSON: how the Session was chosen, the Questions planned in order, and
+    // those held for Mocks.
+    config: text("config").notNull(),
+    // active or finished
+    status: text("status").notNull(),
+    createdAt: integer("created_at").notNull(),
+    finishedAt: integer("finished_at")
+  },
+  (t) => [index("sessions_profile").on(t.profileId, t.status)]
+)
+
+// Each Question a Session served, in order; what made it Seen.
+export const servedQuestions = sqliteTable(
+  "served_questions",
+  {
+    sessionId: text("session_id").notNull().references(() => sessions.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    // A Question with history is withdrawn, never deleted, so its facts stay.
+    questionId: text("question_id").notNull().references(() => questions.id, { onDelete: "restrict" }),
+    servedAt: integer("served_at").notNull()
+  },
+  (t) => [primaryKey({ columns: [t.sessionId, t.position] }), index("served_questions_question").on(t.questionId)]
+)
+
+export const responses = sqliteTable(
+  "responses",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    sessionId: text("session_id").notNull().references(() => sessions.id, { onDelete: "cascade" }),
+    questionId: text("question_id").notNull().references(() => questions.id, { onDelete: "restrict" }),
+    // The client's sequence number in the Session: a submit sent twice is
+    // recorded once.
+    seq: integer("seq").notNull(),
+    // JSON array of { part, choice }: what was selected for each Part.
+    selection: text("selection").notNull(),
+    timeSpentMs: integer("time_spent_ms").notNull(),
+    guessed: integer("guessed", { mode: "boolean" }).notNull(),
+    // first, edit, retry or time-out
+    kind: text("kind").notNull(),
+    supersedes: text("supersedes"),
+    createdAt: integer("created_at").notNull()
+  },
+  (t) => [
+    uniqueIndex("responses_session_seq").on(t.sessionId, t.seq),
+    index("responses_profile_question").on(t.profileId, t.questionId)
+  ]
+)
+
+// A Profile's Bookmarks: one per Question, whichever set marked it, so a
+// Bookmark can be cleared from any set that shows the Question.
+export const bookmarks = sqliteTable(
+  "bookmarks",
+  {
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    questionId: text("question_id").notNull().references(() => questions.id, { onDelete: "cascade" }),
+    // The set it was marked in.
+    sessionId: text("session_id").references(() => sessions.id, { onDelete: "set null" }),
+    createdAt: integer("created_at").notNull()
+  },
+  (t) => [primaryKey({ columns: [t.profileId, t.questionId] })]
+)
+
+// Derived and rebuildable: a Question's current Difficulty, moved from its
+// seed by Rated Responses. A Question without a row is at its seed.
+export const difficulty = sqliteTable("difficulty", {
+  questionId: text("question_id").primaryKey().references(() => questions.id, { onDelete: "cascade" }),
+  value: real("value").notNull(),
+  ratedResponses: integer("rated_responses").notNull()
+})

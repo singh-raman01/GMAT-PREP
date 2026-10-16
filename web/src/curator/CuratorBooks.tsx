@@ -1,5 +1,5 @@
 import { type ChangeEvent, type FormEvent, useCallback, useEffect, useId, useRef, useState } from "react"
-import { type SkillCount, ThinSkillThreshold } from "../../../src/api/Bank.ts"
+import { MaxRelease, type ReserveSection, type SkillCount, ThinSkillThreshold } from "../../../src/api/Bank.ts"
 import type { BookView } from "../../../src/api/Books.ts"
 import { call } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
@@ -20,6 +20,7 @@ export const CuratorBooks = ({ onLocked, onStopped, onNotice }: Props) => {
   const heading = useFocusOnMount<HTMLHeadingElement>()
   const [books, setBooks] = useState<ReadonlyArray<BookView>>()
   const [thinSkills, setThinSkills] = useState<ReadonlyArray<SkillCount>>([])
+  const [reserve, setReserve] = useState<ReadonlyArray<ReserveSection>>([])
   const mounted = useRef(true)
 
   const handle = useCallback(
@@ -38,6 +39,8 @@ export const CuratorBooks = ({ onLocked, onStopped, onNotice }: Props) => {
     setBooks(result.success)
     const thin = await call((client) => client.bank.thinSkills())
     if (mounted.current && thin._tag === "Success") setThinSkills(thin.success)
+    const held = await call((client) => client.bank.reserve())
+    if (mounted.current && held._tag === "Success") setReserve(held.success)
     if (first) {
       const revisions = result.success.flatMap((book) => (book.job === null ? [] : [book.job.revision]))
       setSince(revisions.length === 0 ? "now" : Math.max(...revisions))
@@ -99,6 +102,9 @@ export const CuratorBooks = ({ onLocked, onStopped, onNotice }: Props) => {
             </ul>
           )}
       </section>
+      {reserve.some((section) => section.held + section.released > 0) && (
+        <MockReserve sections={reserve} onChanged={setReserve} onLocked={onLocked} onStopped={onStopped} />
+      )}
       {thinSkills.length > 0 && (
         <section className="group" aria-labelledby="thin-skills-title">
           <h2 id="thin-skills-title">Skills with few Questions</h2>
@@ -117,6 +123,126 @@ export const CuratorBooks = ({ onLocked, onStopped, onNotice }: Props) => {
         </section>
       )}
     </>
+  )
+}
+
+// The Questions held back for Mocks, per Section, and releasing some of them
+// into Practice Sets.
+const MockReserve = (
+  { sections, onChanged, onLocked, onStopped }: {
+    readonly sections: ReadonlyArray<ReserveSection>
+    readonly onChanged: (sections: ReadonlyArray<ReserveSection>) => void
+    readonly onLocked: () => void
+    readonly onStopped: (error: { readonly _tag: string }) => void
+  }
+) => {
+  const ids = { section: useId(), count: useId(), hint: useId() }
+  const withReserve = sections.filter((section) => section.held > 0)
+  const [picked, setPicked] = useState(withReserve[0]?.id ?? "")
+  // The Section chosen, while it still holds Questions to release.
+  const section = withReserve.some((each) => each.id === picked) ? picked : withReserve[0]?.id ?? ""
+  const [count, setCount] = useState("10")
+  const [message, setMessage] = useState<{ readonly text: string; readonly problem: boolean }>()
+  const messageRef = useRef<HTMLParagraphElement>(null)
+  const busy = useRef(false)
+
+  const release = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const wanted = /^\d+$/.test(count.trim()) ? Number(count.trim()) : 0
+    if (wanted < 1 || wanted > MaxRelease) {
+      return setMessage({ text: `Release from 1 to ${MaxRelease} Questions.`, problem: true })
+    }
+    if (busy.current) return
+    busy.current = true
+    const result = await call((client) => client.bank.releaseReserve({ payload: { section, count: wanted } }))
+    busy.current = false
+    if (result._tag === "Success") {
+      const before = sections.find((each) => each.id === section)?.released ?? 0
+      const after = result.success.find((each) => each.id === section)
+      const released = (after?.released ?? before) - before
+      onChanged(result.success)
+      setMessage({
+        text: `Released ${released} ${after?.name ?? ""} ${released === 1 ? "Question" : "Questions"} into Practice Sets.`,
+        problem: false
+      })
+      // With nothing left to release, the form goes, and focus moves to what
+      // was done.
+      if (!result.success.some((each) => each.held > 0)) requestAnimationFrame(() => messageRef.current?.focus())
+      return
+    }
+    if (result.failure._tag === "CuratorNotUnlocked") return onLocked()
+    if (result.failure._tag === "UnknownSection") return setMessage({ text: "Choose a Section.", problem: true })
+    onStopped(result.failure)
+  }
+
+  return (
+    <section className="group" aria-labelledby="reserve-title">
+      <h2 id="reserve-title">Mock Reserve</h2>
+      <p className="group-about">
+        A quarter of each Section's Questions is held back so that Mocks serve Questions a Learner has not seen.
+        Practice Sets use a Reserve Question only once it is released, or once that Learner has seen it.
+      </p>
+      <table className="report">
+        <thead>
+          <tr>
+            <th scope="col">Section</th>
+            <th scope="col" className="report-count">Published</th>
+            <th scope="col" className="report-count">Held for Mocks</th>
+            <th scope="col" className="report-count">Released</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sections.map((each) => (
+            <tr key={each.id}>
+              <th scope="row">{each.name}</th>
+              <td className="report-count">{each.questions}</td>
+              <td className="report-count">{each.held}</td>
+              <td className="report-count">{each.released}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {withReserve.length > 0 && (
+        <form className="release-form" noValidate onSubmit={(event) => void release(event)}>
+          <div className="field">
+            <label htmlFor={ids.section}>Section</label>
+            <select id={ids.section} value={section} onChange={(event) => setPicked(event.target.value)}>
+              {withReserve.map((each) => <option key={each.id} value={each.id}>{each.name}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor={ids.count}>How many</label>
+            <input
+              id={ids.count}
+              className="number-input"
+              type="text"
+              inputMode="numeric"
+              autoComplete="off"
+              value={count}
+              aria-describedby={ids.hint}
+              onChange={(event) => setCount(event.target.value)}
+            />
+          </div>
+          <p id={ids.hint} className="hint">
+            Release cannot be undone: once a Learner may have seen a Question, it cannot be held back again. The
+            Questions released are spread over Question Types and Difficulty Bands.
+          </p>
+          <div className="actions">
+            <button type="submit" className="button button-quiet">Release into Practice Sets</button>
+          </div>
+        </form>
+      )}
+      {message !== undefined && (
+        <p
+          ref={messageRef}
+          tabIndex={-1}
+          className={message.problem ? "problem" : "saved"}
+          role={message.problem ? "alert" : "status"}
+        >
+          {message.text}
+        </p>
+      )}
+    </section>
   )
 }
 

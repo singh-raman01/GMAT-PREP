@@ -16,3 +16,13 @@ export const minutesAndSeconds = (millis: number) => {
 // When something ended: the time alone if it was the day it started.
 export const endedAt = (started: number, ended: number) =>
   new Date(started).toDateString() === new Date(ended).toDateString() ? clockTime(ended) : dayAndTime(ended)
+
+// A length of time in words: "45 seconds", "1 minute 30 seconds".
+export const spokenDuration = (millis: number) => {
+  const seconds = Math.max(0, Math.round(millis / 1000))
+  const minutes = Math.floor(seconds / 60)
+  const rest = seconds % 60
+  const unit = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`
+  if (minutes === 0) return unit(rest, "second")
+  return rest === 0 ? unit(minutes, "minute") : `${unit(minutes, "minute")} ${unit(rest, "second")}`
+}

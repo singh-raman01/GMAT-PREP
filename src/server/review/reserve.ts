@@ -1,9 +1,9 @@
-import { and, eq, isNull } from "drizzle-orm"
+import { and, eq, isNull, notInArray, or } from "drizzle-orm"
 import { Clock, Effect } from "effect"
 import { fitsSlot } from "../../api/blueprint.ts"
-import { type Band, bandOf } from "../../api/taxonomyRules.ts"
+import { bandOf, type DifficultyBand } from "../../api/difficulty.ts"
 import { Db } from "../db/Database.ts"
-import { books, questions, sources } from "../db/schema.ts"
+import { books, jobs, questions, sources } from "../db/schema.ts"
 
 // The Mock Reserve (ADR 0008): a quarter of each Section's Questions from
 // each Book, held back for Mocks. Membership is decided per unit, so an RC
@@ -17,7 +17,7 @@ export interface ReserveUnit {
   readonly id: string
   readonly size: number
   readonly questionType: string
-  readonly band: Band
+  readonly band: DifficultyBand
   // Orders units within a stratum, the same way every time.
   readonly hash: string
   // Decided before: in the Reserve or not; null when undecided.
@@ -132,20 +132,54 @@ const decideReserve = (bookId: string) =>
     return joined
   })
 
-// Decides the Reserve for every extracted Book with published Questions not
-// decided yet, such as one another Book's run published.
+// Decides the Reserve for every Book whose run has ended, finished or not,
+// with published Questions not decided yet, such as one another Book's run
+// or a refresh published. A Book whose run goes on decides at its end.
 export const assignUndecided = Effect.gen(function*() {
   const db = yield* Db
   const rows = yield* db.selectDistinct({ bookId: sources.bookId }).from(sources)
     .innerJoin(questions, eq(questions.id, sources.questionId))
     .innerJoin(books, eq(books.id, sources.bookId))
+    .leftJoin(jobs, eq(jobs.id, books.jobId))
     .where(and(
       eq(sources.merged, false),
       eq(questions.status, "published"),
       isNull(questions.reserve),
-      eq(books.status, "extracted")
+      or(eq(books.status, "extracted"), isNull(jobs.id), notInArray(jobs.status, ["queued", "running", "paused"]))
     ))
   let joined = 0
   for (const row of rows) joined += yield* assignReserve(row.bookId)
   return joined
 })
+
+// A held Reserve Question the Curator may release.
+export interface HeldQuestion {
+  readonly id: string
+  readonly questionType: string
+  readonly band: DifficultyBand
+  readonly hash: string
+}
+
+// Which held Questions to release, so that what stays held keeps its spread
+// across Question Types and Difficulty Bands: each comes from the stratum
+// holding the most, and within it, the last in hash order.
+export const releaseOrder = (held: ReadonlyArray<HeldQuestion>, count: number): ReadonlyArray<string> => {
+  const strata = new Map<string, Array<HeldQuestion>>()
+  for (const question of held) {
+    const key = `${question.questionType}|${question.band}`
+    strata.set(key, [...(strata.get(key) ?? []), question])
+  }
+  for (const members of strata.values()) members.sort((a, b) => b.hash.localeCompare(a.hash))
+  const keys = [...strata.keys()].toSorted()
+  const picked: Array<string> = []
+  while (picked.length < count) {
+    let fullest: Array<HeldQuestion> | undefined
+    for (const key of keys) {
+      const members = strata.get(key)!
+      if (members.length > (fullest?.length ?? 0)) fullest = members
+    }
+    if (fullest === undefined) break
+    picked.push(fullest.shift()!.id)
+  }
+  return picked
+}

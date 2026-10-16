@@ -591,6 +591,20 @@ The session did not discuss these. All are starting values that a rebuild can ch
 20. The plan-rebuilt and Review-Queue-changed events.
 21. Option tags never carry Time pressure; it comes only from Response timing.
 
+### Decisions made while building
+
+These came up while building a ticket. Like the starting values above, they can change without a data migration.
+
+1. Practice Sets (ticket 06): "missed" means the Profile's latest Response to the Question is wrong against the current key. A Skill filter matches the primary or a secondary Skill, primary first, and the "any" status serves unseen Questions before Seen ones. A book-order set lists the items it skips, and why: in the Mock Reserve, waiting for the Reserve decision, being checked, or withdrawn. "Practise 3 similar" starts with however many it finds when fewer than 3 qualify.
+2. Releasing the Mock Reserve takes each Question from the Question Type and Difficulty Band holding the most, so what stays held keeps its spread.
+3. A merged Question is withdrawn, never deleted, and records the Question it was merged into. A Learner's Seen, missed and Rated history with it counts for that Question, and Bookmarks move to it. A set that planned it serves that Question instead, unless the set has it already.
+4. A Book's explanation is an Approach only when it states the key, or states no letter and its own Book gives that key; so after a Key Override an explanation written for the old key is left out.
+5. A published Question waits out of Practice Sets until its Reserve decision is made, at the end of its Book's run, or when the run is cancelled or fails.
+6. A Bookmark belongs to the Profile and the Question, whichever set marked it.
+7. A planned Question that leaves the Question Bank while a set is open (withdrawn, held or sent back for checks) leaves the set; a set with nothing left to serve ends.
+8. Untimed time spent is wall-clock time from serving to answering, with no pauses recorded, so it says little about pace. Rules about slow answers, such as the Error Log's, read timed Responses only.
+9. Until the set screen shows Stimuli and several Parts, Practice Sets take single-Part Questions only.
+
 ### Taxonomy review notes
 
 The drafting pass for Mistake Types, Trap Patterns and Strategies left these judgement calls for review:

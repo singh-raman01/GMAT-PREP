@@ -90,11 +90,3 @@ export const tagProblems = (taxonomy: TaxonomyView, tags: QuestionTags): Readonl
   }
   return problems
 }
-
-// Difficulty Bands on the Difficulty scale.
-export type Band = "easy" | "medium" | "hard"
-
-export const bandOf = (difficulty: number): Band => (difficulty < -0.5 ? "easy" : difficulty > 0.5 ? "hard" : "medium")
-
-// A Book Label's place on the Difficulty scale.
-export const labelDifficulty: Readonly<Record<Band, number>> = { easy: -1, medium: 0, hard: 1 }

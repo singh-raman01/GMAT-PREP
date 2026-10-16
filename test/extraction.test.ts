@@ -32,7 +32,7 @@ import {
   waitFor,
   withModel
 } from "./bookFlow.ts"
-import { advanceUntil, runWithWorker, runWithWorkers, tempDataDir, TestWorkers } from "./harness.ts"
+import { advanceUntil, openInspectableBrowser, runWithWorker, runWithWorkers, tempDataDir, TestWorkers } from "./harness.ts"
 
 describe("Extracting Problem Solving Questions", () => {
   test("passing Questions are published on their own; the rest wait in the Review Queue with every reason", () =>
@@ -225,10 +225,13 @@ describe("Extracting Problem Solving Questions", () => {
         yield* confirmAndExtract(curator, proposed.book.id, rangesOf(proposed))
         const items = yield* curator.api.review.list()
         const merged = yield* curator.api.review.merge({ params: { id: byNumber(items, 8).id } })
-        expect(merged).toMatchObject({ status: "decided", decision: "merged", question: null })
+        expect(merged).toMatchObject({ status: "decided", decision: "merged" })
         expect(yield* curator.api.review.list()).toHaveLength(2)
         const db = yield* Db
         const first = yield* bankItem(proposed.book.id, 1)
+        // The merged Question stays, withdrawn, with a record of the merge.
+        const [twin] = yield* db.select().from(questions).where(eq(questions.id, merged.question!.id)).pipe(Effect.orDie)
+        expect(twin).toMatchObject({ status: "withdrawn", mergedInto: first.question.id })
         const joined = yield* db.select().from(sources).where(eq(sources.questionId, first.question.id))
           .orderBy(asc(sources.number)).pipe(Effect.orDie)
         expect(joined.map((source) => source.number)).toEqual([1, 8])
@@ -1364,6 +1367,32 @@ describe("The Question Bank", () => {
         expect(thin.every((skill) => skill.id.startsWith("quant.") && skill.questions < 15)).toBe(true)
         expect(thin.at(-1)?.id).toBe(first)
         expect(thin.length).toBeGreaterThan(10)
+      }),
+      AllJobKinds
+    ))
+
+  test("a Learner practises an extracted Book in order, past its Reserve Question and held items", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const proposed = yield* proposedBook(curator)
+        const id = proposed.book.id
+        yield* confirmAndExtract(curator, id, rangesOf(proposed))
+        const learner = yield* openInspectableBrowser
+        yield* learner.api.profiles.create({ payload: { name: "Asha" } })
+        const choice = { kind: "book", bookId: id } as const
+        const started = yield* learner.api.practice.start({ payload: { choice } })
+        expect(started.total).toBe(4)
+        expect(started.heldForMocks).toHaveLength(1)
+        expect(started.unavailable).toHaveLength(3)
+        expect(started.current?.question.source).toMatchObject({ bookTitle: "Practice Questions, First edition", page: 2 })
+
+        const reserve = yield* curator.api.bank.reserve()
+        expect(reserve.find((section) => section.id === "quant")).toMatchObject({ questions: 5, held: 1, released: 0 })
+        yield* curator.api.bank.releaseReserve({ payload: { section: "quant", count: 1 } })
+        const after = yield* learner.api.practice.preview({ payload: { choice } })
+        expect(after).toMatchObject({ questions: 5, heldForMocks: 0, unavailable: 3 })
       }),
       AllJobKinds
     ))

@@ -8,6 +8,7 @@ import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { WorkerSupervisor } from "../worker/WorkerSupervisor.ts"
 import { BankHandlers, BooksHandlers, GoldenHandlers, ReviewHandlers } from "./books.ts"
 import { CuratorHandlers, CuratorSessionLive } from "./curatorHandlers.ts"
+import { PracticeHandlers } from "./practice.ts"
 
 // Plain HTTP on localhost or a trusted LAN, so the cookie is not marked Secure.
 const cookieOptions = { httpOnly: true, secure: false, sameSite: "strict", path: "/" } as const
@@ -113,6 +114,7 @@ export const ApiRoutes = HttpApiBuilder.layer(Api).pipe(
     ProfilesHandlers,
     SessionHandlers,
     TaxonomyHandlers,
+    PracticeHandlers,
     CuratorHandlers,
     BooksHandlers,
     ReviewHandlers,
