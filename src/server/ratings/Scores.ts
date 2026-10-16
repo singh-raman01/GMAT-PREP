@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm"
+import { and, desc, eq, sql } from "drizzle-orm"
 import { Clock, Context, Effect, Layer } from "effect"
 import {
   type OfficialScoreInput,
@@ -7,15 +7,17 @@ import {
   OfficialScoreNotFound,
   OfficialScoreView,
   ScoreEstimates,
+  ScoreTrendView,
   TotalScoreView
 } from "../../api/Scores.ts"
 import { studyDayOf } from "../../api/studyDay.ts"
 import { Db } from "../db/Database.ts"
-import { officialScores, profiles } from "../db/schema.ts"
+import { officialScores, profiles, scoreEstimates } from "../db/schema.ts"
+import { trendOf } from "../analytics/views.ts"
 import { namesOf } from "../practice/content.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { scoreEstimatesOf, scoreEstimateView } from "./estimates.ts"
-import { calibrationOf, DayMs, dayNumber } from "./OfficialScores.ts"
+import { calibrationOf, DayMs, dayNumber, scoreLinesOf } from "./OfficialScores.ts"
 
 const viewOf = (used: ReadonlyMap<string, ReadonlyArray<string>>) => (row: typeof officialScores.$inferSelect) =>
   new OfficialScoreView({
@@ -37,6 +39,7 @@ export class Scores extends Context.Service<Scores, {
   list(profileId: string): Effect.Effect<ReadonlyArray<OfficialScoreView>>
   add(profileId: string, input: OfficialScoreInput): Effect.Effect<ReadonlyArray<OfficialScoreView>, OfficialScoreInFuture>
   remove(profileId: string, id: string): Effect.Effect<ReadonlyArray<OfficialScoreView>, OfficialScoreNotFound>
+  trend(profileId: string): Effect.Effect<ScoreTrendView>
 }>()("gmat-prep/server/Scores") {
   static readonly layer = Layer.effect(
     Scores,
@@ -100,7 +103,37 @@ export class Scores extends Context.Service<Scores, {
           return yield* list(profileId)
         })
 
-      return Scores.of({ estimates, list, add, remove })
+      // The kept Score Estimates as Abilities, shown on each Section's
+      // current line, and the Official Scores beside them.
+      const trend = (profileId: string) =>
+        Effect.gen(function*() {
+          const [profile] = yield* db.select({ timeZone: profiles.timeZone, rolloverHour: profiles.rolloverHour }).from(profiles)
+            .where(eq(profiles.id, profileId)).pipe(Effect.orDie)
+          const kept = yield* db.select({
+            section: scoreEstimates.section,
+            at: scoreEstimates.at,
+            ability: scoreEstimates.ability,
+            standardError: scoreEstimates.standardError,
+            order: sql<number>`${scoreEstimates}.rowid`
+          }).from(scoreEstimates).where(eq(scoreEstimates.profileId, profileId)).pipe(Effect.orDie)
+          const lines = yield* scoreLinesOf(profileId).pipe(Effect.provideService(Db, db), Effect.orDie)
+          const dayOf = (at: number) => studyDayOf(at, profile?.timeZone ?? "UTC", profile?.rolloverHour ?? 4)
+          const found = trendOf(kept.map((row) => ({ ...row, day: dayOf(row.at) })), lines)
+          const day = (number: number) => new Date(number * DayMs).toISOString().slice(0, 10)
+          return new ScoreTrendView({
+            sections: (["quant", "verbal", "di"] as const).flatMap((section) => {
+              const points = found.sections.get(section)
+              return points === undefined ? [] : [{
+                section: names.named(section),
+                points: points.map((point) => ({ day: day(point.day), score: point.score, low: point.low, high: point.high }))
+              }]
+            }),
+            total: found.total.map((point) => ({ day: day(point.day), score: point.score, low: point.low, high: point.high })),
+            official: yield* list(profileId)
+          })
+        })
+
+      return Scores.of({ estimates, list, add, remove, trend })
     })
   )
 }

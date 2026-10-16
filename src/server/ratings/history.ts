@@ -24,6 +24,9 @@ export interface RatedAnswer {
   readonly difficulty: number
   readonly correct: boolean
   readonly at: number
+  // The first Response's time in its set: an answer changed in Review &
+  // Edit took none of its own.
+  readonly timeSpentMs: number
 }
 
 // A Question the Curator merged into another counts as that one. A Withdrawn
@@ -68,6 +71,7 @@ export const ratedHistory = (profileId: string) =>
       kind: responses.kind,
       seq: responses.seq,
       selection: responses.selection,
+      timeSpentMs: responses.timeSpentMs,
       createdAt: responses.createdAt,
       ended: sql<number>`${sessions.status} = 'finished'`,
       // A Mock's Section counts as ended once the Mock is over, so the Score
@@ -89,6 +93,12 @@ export const ratedHistory = (profileId: string) =>
     }))
     const rated = ratedResponses(served, counted)
     const kept = counted.filter((fact) => rated.has(fact.id))
+    const firstTime = new Map<string, { seq: number; timeSpentMs: number }>()
+    for (const fact of counted) {
+      const key = `${fact.sessionId}|${fact.questionId}`
+      const found = firstTime.get(key)
+      if (found === undefined || fact.seq < found.seq) firstTime.set(key, { seq: fact.seq, timeSpentMs: fact.timeSpentMs })
+    }
     if (kept.length === 0) return [] as ReadonlyArray<RatedAnswer>
     const ids = [...new Set(kept.map((fact) => fact.questionId))]
     const rows = yield* db.select({
@@ -113,7 +123,8 @@ export const ratedHistory = (profileId: string) =>
         section: question.section,
         difficulty: Number(question.difficulty),
         correct: isCorrect(readSelection(fact.selection), keys.get(fact.questionId) ?? []),
-        at: fact.createdAt
+        at: fact.createdAt,
+        timeSpentMs: firstTime.get(`${fact.sessionId}|${fact.questionId}`)?.timeSpentMs ?? fact.timeSpentMs
       }]
     })
   })

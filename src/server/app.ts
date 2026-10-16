@@ -8,6 +8,7 @@ import { Generation } from "./generation/Generation.ts"
 import { JobFeed } from "./events/JobFeed.ts"
 import { ErrorLog } from "./learning/ErrorLog.ts"
 import { Retries } from "./learning/Retries.ts"
+import { Analytics } from "./analytics/Analytics.ts"
 import { SiblingsReport } from "./learning/SiblingsReport.ts"
 import { BookFileRoutes } from "./http/books.ts"
 import { EventsRoutes } from "./http/events.ts"
@@ -54,6 +55,7 @@ export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Layer.mergeAll(
   Generation.layer,
   Mocks.layer,
   Retries.layer,
+  Analytics.layer,
   Scores.layer,
   PaperMarks.layer,
   SiblingsReport.layer,

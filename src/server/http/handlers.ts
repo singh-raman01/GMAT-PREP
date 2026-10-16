@@ -20,6 +20,7 @@ import { MocksHandlers } from "./mocks.ts"
 import { PaperMarksHandlers } from "./paperMarks.ts"
 import { PracticeHandlers } from "./practice.ts"
 import { RetriesHandlers } from "./retries.ts"
+import { AnalyticsHandlers } from "./analytics.ts"
 import { ScoresHandlers } from "./scores.ts"
 import { SectionalsHandlers } from "./sectionals.ts"
 
@@ -134,6 +135,7 @@ export const ApiRoutes = HttpApiBuilder.layer(Api).pipe(
     PaperMarksHandlers,
     ErrorLogHandlers,
     RetriesHandlers,
+    AnalyticsHandlers,
     CuratorHandlers,
     BooksHandlers,
     ReviewHandlers,

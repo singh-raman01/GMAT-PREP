@@ -57,11 +57,13 @@ const BandOrder: ReadonlyArray<DifficultyBand> = ["easy", "medium", "hard"]
 // The Session kinds whose Responses can enter the Error Log.
 const Kinds = ["practice", "sectional", "mock-section"]
 
-type ShownSession = SessionFact & {
+export type ShownSession = SessionFact & {
   readonly timed: boolean
   readonly finished: boolean
   // A retry set's Retry Ladder steps; none for any other Session.
   readonly retry: ReadonlyArray<RetryItem>
+  // For a Mock's Section, its Mock.
+  readonly mockId: string | null
 }
 
 // A Study Day as a date.
@@ -87,6 +89,28 @@ interface Facts {
   readonly timeZone: string
   // Today's Study Day, in the Profile's time zone and rollover hour.
   readonly today: number
+  readonly dayOf: (at: number) => number
+  readonly targetMs: (questionId: string) => number
+}
+
+// What the analytics read of a Profile's history (docs/design.md,
+// "Analytics"): its Sessions with whether each shows how it went, every
+// Response, every miss with its Mistake Types as the Error Log shows them,
+// and the Questions answered.
+export interface LearningHistory {
+  readonly sessions: ReadonlyMap<string, ShownSession>
+  readonly responses: ReadonlyArray<ResponseFact>
+  readonly misses: ReadonlyArray<{
+    readonly miss: Miss
+    // Each wrong Part's Mistake Type, the Learner's where set.
+    readonly mistakeTypes: ReadonlyArray<string | null>
+  }>
+  readonly summaries: ReadonlyMap<string, QuestionSummary>
+  readonly resolve: (questionId: string) => string
+  readonly timeZone: string
+  readonly today: number
+  readonly dayOf: (at: number) => number
+  readonly targetMs: (questionId: string) => number
 }
 
 // An entry as plain data; its view is built only for the page shown.
@@ -128,6 +152,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
     change: { readonly responseId: string; readonly part: number; readonly mistakeType: string }
   ): Effect.Effect<ErrorLogEntry, ErrorLogEntryNotFound | MistakeTypeInvalid>
   retryState(profileId: string): Effect.Effect<RetryState>
+  history(profileId: string): Effect.Effect<LearningHistory>
 }>()("gmat-prep/server/ErrorLog") {
   static readonly layer = Layer.effect(
     ErrorLog,
@@ -167,6 +192,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             timed: row.timed,
             finished: row.status === "finished",
             retry: row.kind === "practice" ? retryListOf(row.retry) : [],
+            mockId: row.mockId,
             limitMs: row.timed ? row.timeLimitMs : null,
             shown: row.kind === "practice"
               ? !row.timed || row.status === "finished"
@@ -246,7 +272,12 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             labels,
             ladders,
             timeZone,
-            today: dayOf(yield* Clock.currentTimeMillis)
+            today: dayOf(yield* Clock.currentTimeMillis),
+            dayOf,
+            targetMs: (questionId: string) => {
+              const question = summaries.get(questionId)
+              return question === undefined ? 0 : questionFactOf(question, overrides).targetMs
+            }
           } satisfies Facts
         })
 
@@ -578,7 +609,23 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           } satisfies RetryState
         })
 
-      return ErrorLog.of({ list, get, setMistakeType, retryState })
+      const history = (profileId: string) =>
+        profileFacts(profileId).pipe(Effect.map((facts): LearningHistory => ({
+          sessions: facts.sessions,
+          responses: facts.responses,
+          misses: facts.misses.map((miss) => ({
+            miss,
+            mistakeTypes: miss.parts.map((part) => facts.labels.get(`${miss.responseId}:${part.part}`) ?? part.mistakeType)
+          })),
+          summaries: facts.summaries,
+          resolve: facts.resolve,
+          timeZone: facts.timeZone,
+          today: facts.today,
+          dayOf: facts.dayOf,
+          targetMs: facts.targetMs
+        })))
+
+      return ErrorLog.of({ list, get, setMistakeType, retryState, history })
     })
   )
 }
