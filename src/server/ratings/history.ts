@@ -1,4 +1,4 @@
-import { eq, inArray } from "drizzle-orm"
+import { eq, inArray, sql } from "drizzle-orm"
 import { Effect } from "effect"
 import { studyDayOf } from "../../api/studyDay.ts"
 import { Db } from "../db/Database.ts"
@@ -29,7 +29,8 @@ export const ratedHistory = (profileId: string) =>
       questionId: servedQuestions.questionId,
       sessionId: servedQuestions.sessionId,
       timed: sessions.timed,
-      at: servedQuestions.servedAt
+      at: servedQuestions.servedAt,
+      order: sql<number>`${servedQuestions}.rowid`
     }).from(servedQuestions)
       .innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
       .where(eq(sessions.profileId, profileId)))

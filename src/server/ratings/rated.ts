@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { Effect } from "effect"
 import { Db } from "../db/Database.ts"
 import { mergeTargets } from "../practice/history.ts"
@@ -17,6 +17,8 @@ export interface SeenEvent {
   readonly sessionId: string | null
   readonly timed: boolean
   readonly at: number
+  // The order it was recorded in, for servings in the same millisecond.
+  readonly order?: number
 }
 
 export interface ResponseFact {
@@ -33,10 +35,10 @@ export const ratedResponses = (
   seen: ReadonlyArray<SeenEvent>,
   facts: ReadonlyArray<ResponseFact>
 ): ReadonlySet<string> => {
-  // Two Sessions that served a Question at the same moment are told apart by
-  // id, so the answer never depends on the order rows are read in.
+  // Servings in the same millisecond are told apart by the order they were
+  // recorded in, so the answer never depends on the order rows are read in.
   const before = (a: SeenEvent, b: SeenEvent) =>
-    a.at < b.at || (a.at === b.at && (a.sessionId ?? "") < (b.sessionId ?? ""))
+    a.at < b.at || (a.at === b.at && (a.order ?? 0) < (b.order ?? 0))
   const firstSeen = new Map<string, SeenEvent>()
   for (const event of seen) {
     const earlier = firstSeen.get(event.questionId)
@@ -69,7 +71,8 @@ export const ratedAmong = (profileId: string, questionIds: ReadonlyArray<string>
       questionId: servedQuestions.questionId,
       sessionId: servedQuestions.sessionId,
       timed: sessions.timed,
-      at: servedQuestions.servedAt
+      at: servedQuestions.servedAt,
+      order: sql<number>`${servedQuestions}.rowid`
     }).from(servedQuestions)
       .innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
       .where(eq(sessions.profileId, profileId)))

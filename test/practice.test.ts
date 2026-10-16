@@ -469,6 +469,14 @@ describe("Rated Responses", () => {
     )
     expect([...rated]).toEqual(["q1-edit"])
   })
+
+  test("of two servings in the same millisecond, the one recorded first showed the Question first", () => {
+    const facts = [fact("untimed-answer", "untimed", "q1", 1), fact("timed-answer", "timed", "q1", 1)]
+    const untimedFirst = { ...served("q1", "untimed", false, 7), order: 1 }
+    const timedSecond = { ...served("q1", "timed", true, 7), order: 2 }
+    expect([...ratedResponses([untimedFirst, timedSecond], facts)]).toEqual([])
+    expect([...ratedResponses([timedSecond, untimedFirst], facts)]).toEqual([])
+  })
 })
 
 describe("Practise 3 similar", () => {
