@@ -1,3 +1,4 @@
+import type { ReasonCode } from "../../api/Review.ts"
 import { normalizeText, renderProblem } from "../../api/richText.ts"
 import type { PageReading, QuestionItem } from "./readings.ts"
 
@@ -8,17 +9,7 @@ import type { PageReading, QuestionItem } from "./readings.ts"
 export type Letter = "A" | "B" | "C" | "D" | "E"
 export type BookLabel = "easy" | "medium" | "hard"
 
-export type ReasonCode =
-  | "structure"
-  | "no-key"
-  | "key-conflict"
-  | "render"
-  | "figure"
-  | "same-text-other-key"
-  | "near-match"
-  | "key-changed"
-  | "source-key"
-  | "unread-page"
+export type { ReasonCode } from "../../api/Review.ts"
 
 export interface Reason {
   readonly code: ReasonCode

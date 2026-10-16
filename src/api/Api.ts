@@ -1,7 +1,9 @@
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
+import { BankApi } from "./Bank.ts"
 import { BooksApi } from "./Books.ts"
 import { CuratorAccessApi, CuratorSessionApi } from "./Curator.ts"
+import { GoldenApi } from "./Golden.ts"
 import { JobsApi } from "./Jobs.ts"
 import { ProfilesApi, SessionApi } from "./Profiles.ts"
 import { ReviewApi } from "./Review.ts"
@@ -37,4 +39,6 @@ export class Api extends HttpApi.make("gmat-prep")
   .add(JobsApi)
   .add(BooksApi)
   .add(ReviewApi)
+  .add(GoldenApi)
+  .add(BankApi)
 {}

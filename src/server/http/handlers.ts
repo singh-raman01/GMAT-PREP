@@ -6,7 +6,7 @@ import { CurrentProfile, NotUnlocked, ProfileCookie, ProfileSession } from "../.
 import { Profiles } from "../profiles/Profiles.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { WorkerSupervisor } from "../worker/WorkerSupervisor.ts"
-import { BooksHandlers, ReviewHandlers } from "./books.ts"
+import { BankHandlers, BooksHandlers, GoldenHandlers, ReviewHandlers } from "./books.ts"
 import { CuratorHandlers, CuratorSessionLive } from "./curatorHandlers.ts"
 
 // Plain HTTP on localhost or a trusted LAN, so the cookie is not marked Secure.
@@ -115,7 +115,9 @@ export const ApiRoutes = HttpApiBuilder.layer(Api).pipe(
     TaxonomyHandlers,
     CuratorHandlers,
     BooksHandlers,
-    ReviewHandlers
+    ReviewHandlers,
+    GoldenHandlers,
+    BankHandlers
   ]),
   Layer.provide([ProfileSessionLive, CuratorSessionLive])
 )

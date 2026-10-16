@@ -69,7 +69,10 @@ const configure = (extractionReadsImages = false) =>
       jsonMode: "json-schema",
       models: [
         { task: "book-map", model: "map-model" },
-        { task: "extraction", model: extractionReadsImages ? "vision-model" : "text-model" }
+        { task: "extraction", model: extractionReadsImages ? "vision-model" : "text-model" },
+        { task: "tagging", model: "text-model" },
+        { task: "solving", model: "text-model" },
+        { task: "approaches", model: "text-model" }
       ],
       prices: [
         { model: "map-model", inputPerMillion: 1, outputPerMillion: 4 },
@@ -349,8 +352,21 @@ describe("The cost preview", () => {
           projectedTokens: 14300
         })
         expect(extraction?.projectedCost).toBeCloseTo(9 * 0.0028 / 9 * 13, 12)
-        expect(preview.sampleTokens).toBe(11000)
-        expect(preview.projectedTokens).toBe(2640 + 14300)
+        // Two of the sample's Questions are enriched to cost enrichment: five
+        // calls each. The sample holds 13 Questions besides two Retired ones,
+        // so the Book's 24 pages with text hold about 31.
+        const enrichment = preview.steps[2]
+        expect(enrichment).toMatchObject({
+          name: "Enrichment",
+          unit: "question",
+          sampledPages: 2,
+          sampleTokens: 11000,
+          projectedPages: 31,
+          projectedTokens: 170500
+        })
+        expect(enrichment?.projectedCost).toBeCloseTo(10 * 0.0028 / 2 * 31, 12)
+        expect(preview.sampleTokens).toBe(22000)
+        expect(preview.projectedTokens).toBe(2640 + 14300 + 170500)
         const [sampleRequest] = yield* fake.requests
         expect(sampleRequest?.model).toBe("map-model")
         expect(quotedPages(sampleRequest!).map((page) => page.number)).toEqual([...preview.sampledPages])
@@ -358,7 +374,7 @@ describe("The cost preview", () => {
 
         // Nothing more runs until the Curator starts the full run.
         yield* advanceUntil(Effect.succeed(undefined), { step: "1 minute", maxSteps: 10 }).pipe(Effect.ignore)
-        expect(yield* fake.requests).toHaveLength(10)
+        expect(yield* fake.requests).toHaveLength(20)
         expect((yield* detailOf(curator.api, view.id)).book.status).toBe("previewed")
 
         const started = yield* curator.api.books.start({ params: { id: view.id }, payload: { spendCap: 0.05 } })
@@ -369,11 +385,115 @@ describe("The cost preview", () => {
         expect(again).toMatchObject({ _tag: "BookNotReady", status: "mapping" })
         yield* waitForStatus(curator.api, view.id, "map-proposed")
         // The full run surveyed all 24 pages with text in order, ten at a time.
-        const runRequests = (yield* fake.requests).slice(10)
+        const runRequests = (yield* fake.requests).slice(20)
         expect(runRequests.map((request) => quotedPages(request).length)).toEqual([10, 10, 4])
         expect(runRequests.flatMap((request) => quotedPages(request).map((page) => page.number))).toEqual(
           Array.from({ length: 25 }, (_, i) => i + 1).filter((number) => number !== 24)
         )
+      }),
+      AllJobKinds
+    ))
+
+  test("enrichment is costed by the sample Questions enriched, however many requests were tried", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure()
+        const fake = yield* FakeLlm
+        const isApproaches = (request: Effect.Success<typeof fake.requests>[number]) =>
+          (request.messages[0]?.content ?? "").includes("You write teaching material")
+        // The first Approaches request is rate limited and tried again.
+        let limited = false
+        yield* fake.respondWith((request) => {
+          if (isApproaches(request) && !limited) {
+            limited = true
+            return { status: 429, message: "slow down" }
+          }
+          return fakeBookModel(request)
+        })
+        const curator = yield* curatorBrowser
+        const book = yield* Effect.promise(() => makeBook({ psPages: 10 }))
+        const { book: view } = added(yield* upload(curator.cookie, book.bytes, { title: "Big Practice" }))
+        const previewed = yield* waitForStatus(curator.api, view.id, "previewed")
+        const enrichment = previewed.book.preview!.steps[2]!
+        expect(enrichment).toMatchObject({ costed: true, sampledPages: 2, projectedPages: 31 })
+        // Five calls a Question cost; the refused try cost nothing.
+        expect(enrichment.sampleCost).toBeCloseTo(10 * 0.0028, 12)
+        expect(enrichment.projectedCost).toBeCloseTo(10 * 0.0028 / 2 * 31, 12)
+      }),
+      AllJobKinds
+    ))
+
+  test("a sample that stops while enriching picks up at the Question it was on", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure()
+        const fake = yield* FakeLlm
+        const isApproaches = (request: Effect.Success<typeof fake.requests>[number]) =>
+          (request.messages[0]?.content ?? "").includes("You write teaching material")
+        // The API is down for Approaches until the reading pauses.
+        let down = true
+        yield* fake.respondWith((request) =>
+          isApproaches(request) && down ? { status: 503, message: "down" } : fakeBookModel(request)
+        )
+        const curator = yield* curatorBrowser
+        const book = yield* Effect.promise(() => makeBook({ psPages: 10 }))
+        const { book: view } = added(yield* upload(curator.cookie, book.bytes, { title: "Big Practice" }))
+        yield* advanceUntil(
+          detailOf(curator.api, view.id).pipe(Effect.map((detail) => (detail.book.job?.status === "paused" ? detail : undefined))),
+          { step: "1 second", maxSteps: 3000 }
+        )
+        down = false
+        const approachesBefore = (yield* fake.requests).filter(isApproaches).length
+        const previewed = yield* advanceUntil(
+          detailOf(curator.api, view.id).pipe(Effect.map((detail) => (detail.book.status === "previewed" ? detail : undefined))),
+          { step: "10 seconds", maxSteps: 3000 }
+        )
+        // Both sample Questions got their Approaches after the pause.
+        expect((yield* fake.requests).filter(isApproaches).length - approachesBefore).toBe(2)
+        expect(previewed.book.preview!.steps[2]).toMatchObject({ costed: true, sampledPages: 2 })
+      }),
+      AllJobKinds
+    ))
+
+  test("without models for enrichment, it is not costed and no cap is suggested, until it is costed again", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* (yield* Settings).saveLlm({
+          baseUrl: "https://api.example.com/v1",
+          jsonMode: "json-schema",
+          models: [{ task: "book-map", model: "map-model" }, { task: "extraction", model: "text-model" }],
+          prices: [
+            { model: "map-model", inputPerMillion: 1, outputPerMillion: 4 },
+            { model: "text-model", inputPerMillion: 2, outputPerMillion: 8 }
+          ],
+          readsImages: []
+        })
+        yield* (yield* ApiKeyStore).save("sk-test-12345678")
+        yield* surveyByHeading
+        const fake = yield* FakeLlm
+        const curator = yield* curatorBrowser
+        const book = yield* Effect.promise(() => makeBook({ psPages: 10 }))
+        const { book: view } = added(yield* upload(curator.cookie, book.bytes, { title: "Big Practice" }))
+        const previewed = yield* waitForStatus(curator.api, view.id, "previewed")
+        expect(previewed.book.preview?.steps[2]).toMatchObject({
+          name: "Enrichment",
+          sampledPages: 0,
+          projectedPages: 31,
+          projectedCost: 0,
+          costed: false
+        })
+        const sampleRequests = (yield* fake.requests).length
+
+        // Once the models are set, the sample is taken again; only the
+        // enrichment calls are new.
+        yield* configure()
+        yield* curator.api.books.readAgain({ params: { id: view.id } })
+        const costed = yield* waitForStatus(curator.api, view.id, "previewed")
+        expect(costed.book.preview?.steps[2]).toMatchObject({ sampledPages: 2, projectedPages: 31, costed: true })
+        expect((yield* fake.requests).length - sampleRequests).toBe(10)
+        // A preview with every step costed is not taken again.
+        const refused = yield* curator.api.books.readAgain({ params: { id: view.id } }).pipe(Effect.flip)
+        expect(refused).toMatchObject({ _tag: "BookNotReady" })
       }),
       AllJobKinds
     ))

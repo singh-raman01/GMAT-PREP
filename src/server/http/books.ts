@@ -16,6 +16,9 @@ import { CuratorCookie } from "../../api/Curator.ts"
 import { BookFiles } from "../books/BookFiles.ts"
 import { Books } from "../books/Books.ts"
 import { Curator } from "../curator/Curator.ts"
+import { Bank } from "../review/Bank.ts"
+import { Taxonomy } from "../taxonomy/Taxonomy.ts"
+import { Golden } from "../review/Golden.ts"
 import { ReviewQueue } from "../review/ReviewQueue.ts"
 
 export const BooksHandlers = HttpApiBuilder.group(
@@ -33,6 +36,33 @@ export const BooksHandlers = HttpApiBuilder.group(
   })
 )
 
+export const BankHandlers = HttpApiBuilder.group(
+  Api,
+  "bank",
+  Effect.fn(function*(handlers) {
+    const bank = yield* Bank
+    const taxonomy = yield* Taxonomy
+    return handlers.handleAll({
+      thinSkills: () => bank.thinSkills,
+      taxonomy: () => Effect.succeed(taxonomy.view)
+    })
+  })
+)
+
+export const GoldenHandlers = HttpApiBuilder.group(
+  Api,
+  "golden",
+  Effect.fn(function*(handlers) {
+    const golden = yield* Golden
+    return handlers.handleAll({
+      get: () => golden.get,
+      approve: ({ params, payload }) => golden.approve(params.questionId, payload),
+      remove: ({ params }) => golden.remove(params.questionId),
+      check: ({ payload }) => golden.check(payload.spendCap)
+    })
+  })
+)
+
 export const ReviewHandlers = HttpApiBuilder.group(
   Api,
   "review",
@@ -44,7 +74,11 @@ export const ReviewHandlers = HttpApiBuilder.group(
       withdraw: ({ params }) => queue.withdraw(params.id),
       keepAsVariant: ({ params }) => queue.keepAsVariant(params.id),
       merge: ({ params }) => queue.merge(params.id),
-      dismiss: ({ params }) => queue.dismiss(params.id)
+      dismiss: ({ params }) => queue.dismiss(params.id),
+      overrideKey: ({ params, payload }) => queue.overrideKey(params.id, payload.key, payload.reason),
+      checkAgain: ({ params }) => queue.checkAgain(params.id),
+      drafts: () => queue.drafts,
+      checkDrafts: () => queue.checkDrafts
     })
   })
 )

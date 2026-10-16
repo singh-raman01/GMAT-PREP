@@ -21,7 +21,6 @@ export const ReasonCode = Schema.Literals([
   "figure",
   "same-text-other-key",
   "near-match",
-  "key-changed",
   // Another Source of the Question gives another key.
   "source-key",
   // Found by the Publish Gate after enrichment.
@@ -29,7 +28,12 @@ export const ReasonCode = Schema.Literals([
   "solver-disagreement",
   "approach-misses-key",
   "option-notes",
+  // An Approach or a wrong-option note that cannot be shown: empty, not
+  // rendering, or with an expected time out of range.
+  "teaching-text",
   "difficulty",
+  // Enrichment has not run on it, as for a Question from before the gate.
+  "not-enriched",
   // A page, not a Question.
   "unread-page"
 ])
@@ -41,9 +45,9 @@ export class ReviewReason extends Schema.Class<ReviewReason>("gmat-prep/api/Revi
 }) {}
 
 // Reasons the Curator may publish past, having checked the Question: that
-// the Book's key stands though a solver disagreed, or that the Difficulty
-// estimate and the Book Label differ. Publishing never changes the key.
-export const PublishableReasons: ReadonlySet<ReasonCode> = new Set(["key-changed", "solver-disagreement", "difficulty"])
+// the key stands though a solver disagreed, or that the Difficulty estimate
+// and the Book Label differ. Publishing never changes the key.
+export const PublishableReasons: ReadonlySet<ReasonCode> = new Set(["solver-disagreement", "difficulty"])
 
 export const QuestionStatus = Schema.Literals(["draft", "held", "published", "withdrawn"])
 export type QuestionStatus = typeof QuestionStatus.Type
@@ -54,6 +58,32 @@ export class SourceView extends Schema.Class<SourceView>("gmat-prep/api/SourceVi
   set: Schema.String,
   number: Schema.Int,
   page: Schema.Int
+}) {}
+
+export class ApproachView extends Schema.Class<ApproachView>("gmat-prep/api/ApproachView")({
+  // A Strategy id from the Taxonomy.
+  strategy: Schema.String,
+  // Markdown with LaTeX.
+  steps: Schema.String,
+  expectedSeconds: Schema.Int,
+  validWhen: Schema.String,
+  // book for the Book's own explanation, llm for one the model wrote.
+  author: Schema.Literals(["book", "llm"]),
+  answer: Schema.NullOr(Schema.String)
+}) {}
+
+export class OptionNoteView extends Schema.Class<OptionNoteView>("gmat-prep/api/OptionNoteView")({
+  label: Schema.String,
+  trapNote: Schema.String,
+  mistakeType: Schema.String,
+  trapPattern: Schema.NullOr(Schema.String)
+}) {}
+
+export class KeyOverrideView extends Schema.Class<KeyOverrideView>("gmat-prep/api/KeyOverrideView")({
+  previousKey: Schema.NullOr(Schema.String),
+  newKey: Schema.String,
+  reason: Schema.String,
+  createdAt: Schema.Number
 }) {}
 
 export class QuestionView extends Schema.Class<QuestionView>("gmat-prep/api/QuestionView")({
@@ -67,9 +97,20 @@ export class QuestionView extends Schema.Class<QuestionView>("gmat-prep/api/Ques
   keyBasis: Schema.NullOr(Schema.Literals(["book", "computed", "override"])),
   status: QuestionStatus,
   bookLabel: Schema.NullOr(Schema.String),
-  // The first Source's explanation, as the Book prints it.
+  // The explanation its Approaches are written with, as the Book prints it.
   explanation: Schema.NullOr(Schema.String),
-  sources: Schema.Array(SourceView)
+  sources: Schema.Array(SourceView),
+  // What enrichment gave it: Skill ids, the Difficulty estimate, the
+  // independent solves' answers, its Approaches and its wrong-option notes.
+  primarySkill: Schema.NullOr(Schema.String),
+  secondarySkills: Schema.Array(Schema.String),
+  difficultyEstimate: Schema.NullOr(Schema.Number),
+  solverAnswers: Schema.Array(Schema.String),
+  approaches: Schema.Array(ApproachView),
+  optionNotes: Schema.Array(OptionNoteView),
+  keyOverrides: Schema.Array(KeyOverrideView),
+  // Approved for the golden set.
+  golden: Schema.Boolean
 }) {}
 
 export class ReviewItemView extends Schema.Class<ReviewItemView>("gmat-prep/api/ReviewItemView")({
@@ -82,7 +123,19 @@ export class ReviewItemView extends Schema.Class<ReviewItemView>("gmat-prep/api/
   related: Schema.NullOr(QuestionView),
   status: Schema.Literals(["open", "decided"]),
   decision: Schema.NullOr(Schema.Literals(["published", "withdrawn", "variant", "merged", "dismissed"])),
+  // Whether enrichment can be tried again for it: tagging, solving, or its
+  // Approaches and notes, after an unusable reply.
+  checkable: Schema.Boolean,
   createdAt: Schema.Number
+}) {}
+
+// Questions waiting for enrichment and the Publish Gate: those a job is
+// checking, those only a paused job will check, and those no job will check
+// until the Curator asks, as after a job was cancelled.
+export class DraftsView extends Schema.Class<DraftsView>("gmat-prep/api/DraftsView")({
+  checking: Schema.Int,
+  paused: Schema.Int,
+  stranded: Schema.Int
 }) {}
 
 export class ReviewItemNotFound extends Schema.TaggedError<ReviewItemNotFound>()(
@@ -96,6 +149,35 @@ export class ReviewItemNotFound extends Schema.TaggedError<ReviewItemNotFound>()
 export class ReviewItemNotOpen extends Schema.TaggedError<ReviewItemNotOpen>()(
   "ReviewItemNotOpen",
   { item: ReviewItemView },
+  { httpApiStatus: 409 }
+) {}
+
+// A Key Override names one of the Question's own options.
+export class KeyNotAnOption extends Schema.TaggedError<KeyNotAnOption>()(
+  "KeyNotAnOption",
+  { options: Schema.Array(Schema.String) },
+  { httpApiStatus: 422 }
+) {}
+
+export const KeyOverrideReason = Schema.String.check(
+  Schema.makeFilter((reason: string) => reason.trim().length >= 3 && reason.trim().length <= 500, {
+    description: "a reason of 3 to 500 characters"
+  })
+)
+
+// A merge would lose a key the Curator chose: the Question's key is a Key
+// Override that the related Question's key does not match.
+export class KeysDiffer extends Schema.TaggedError<KeysDiffer>()(
+  "KeysDiffer",
+  { key: Schema.String, relatedKey: Schema.NullOr(Schema.String) },
+  { httpApiStatus: 409 }
+) {}
+
+// The Question to merge into is still waiting for its checks, which could
+// overwrite what the merge gives it.
+export class MergeTargetChecking extends Schema.TaggedError<MergeTargetChecking>()(
+  "MergeTargetChecking",
+  {},
   { httpApiStatus: 409 }
 ) {}
 
@@ -128,15 +210,34 @@ export class ReviewApi extends HttpApiGroup.make("review")
       error: [ReviewItemNotFound, ReviewItemNotOpen]
     }),
     // A near match or same text: the same Question, so this one's Sources
-    // join the related Question and this one goes.
+    // join the related Question and this one goes, with any golden-set
+    // approval. Its Key Override goes with its Sources.
     HttpApiEndpoint.post("merge", "/review/:id/merge", {
+      ...decided,
+      error: [ReviewItemNotFound, ReviewItemNotOpen, KeysDiffer, MergeTargetChecking]
+    }),
+    // Tries again the enrichment an unusable reply left missing or wrong:
+    // tagging, solving, or the Approaches and notes. The Question leaves the
+    // queue while a job checks it, and comes back if it is held again.
+    HttpApiEndpoint.post("checkAgain", "/review/:id/check", {
       ...decided,
       error: [ReviewItemNotFound, ReviewItemNotOpen]
     }),
+    HttpApiEndpoint.get("drafts", "/drafts", { success: DraftsView }),
+    // Queues a job for the drafts no job would check.
+    HttpApiEndpoint.post("checkDrafts", "/drafts/check", { success: DraftsView }),
     // A page extraction could not read, once the Curator has dealt with it.
     HttpApiEndpoint.post("dismiss", "/review/:id/dismiss", {
       ...decided,
       error: [ReviewItemNotFound, ReviewItemNotOpen]
+    }),
+    // Replaces the key, with the Curator's reason. The Question's Approaches
+    // and wrong-option notes are written again for it, and it goes back
+    // through the Publish Gate.
+    HttpApiEndpoint.post("overrideKey", "/review/:id/key", {
+      ...decided,
+      payload: Schema.Struct({ key: Schema.Literals(["A", "B", "C", "D", "E"]), reason: KeyOverrideReason }),
+      error: [ReviewItemNotFound, ReviewItemNotOpen, KeyNotAnOption]
     })
   )
   .middleware(CuratorSession)

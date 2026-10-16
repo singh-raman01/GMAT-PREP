@@ -453,3 +453,40 @@ export const goldenQuestions = sqliteTable("golden_questions", {
   expected: text("expected").notNull(),
   approvedAt: integer("approved_at").notNull()
 })
+
+// Checks of the golden set against the current prompts and models: each
+// re-reads the golden Questions' pages and re-tags them, then reports.
+export const goldenRuns = sqliteTable("golden_runs", {
+  id: text("id").primaryKey(),
+  jobId: text("job_id").references(() => jobs.id, { onDelete: "set null" }),
+  createdAt: integer("created_at").notNull(),
+  finishedAt: integer("finished_at"),
+  // JSON: the report, once the run has finished.
+  report: text("report")
+})
+
+// A golden run's fresh readings, kept apart from the Book's own.
+export const goldenRunReadings = sqliteTable(
+  "golden_run_readings",
+  {
+    runId: text("run_id").notNull().references(() => goldenRuns.id, { onDelete: "cascade" }),
+    page: integer("page").notNull(),
+    role: text("role").notNull(),
+    group: text("group_name").notNull(),
+    items: text("items").notNull()
+  },
+  (t) => [primaryKey({ columns: [t.runId, t.page, t.role, t.group] })]
+)
+
+// A golden run's fresh tags, by Question.
+export const goldenRunTags = sqliteTable(
+  "golden_run_tags",
+  {
+    runId: text("run_id").notNull().references(() => goldenRuns.id, { onDelete: "cascade" }),
+    questionId: text("question_id").notNull(),
+    // Null when the tagging reply could not be used.
+    primarySkill: text("primary_skill"),
+    secondarySkills: text("secondary_skills").notNull()
+  },
+  (t) => [primaryKey({ columns: [t.runId, t.questionId] })]
+)

@@ -66,6 +66,9 @@ const Mappable: ReadonlySet<string> = new Set([
   "extracted"
 ])
 
+// The model tasks a Book's full run uses.
+const RunTasks = ["book-map", "extraction", "tagging", "solving", "approaches"] as const
+
 // The jobs of a Book's full run, which share its spend cap.
 const RunKinds = [BookMapping.kind, BookExtraction.kind]
 
@@ -146,7 +149,8 @@ export class Books extends Context.Service<Books, {
             return new BookReport({
               extracted: sum(() => true),
               merged: sum((outcome) => outcome.merged),
-              held: sum((outcome) => !outcome.merged && (outcome.status === "held" || outcome.status === "draft")),
+              held: sum((outcome) => !outcome.merged && outcome.status === "held"),
+              checking: sum((outcome) => !outcome.merged && outcome.status === "draft"),
               published: sum((outcome) => !outcome.merged && outcome.status === "published"),
               withdrawn: sum((outcome) => !outcome.merged && outcome.status === "withdrawn"),
               skippedGeometry: skipped("geometry"),
@@ -274,7 +278,13 @@ export class Books extends Context.Service<Books, {
           const job = yield* jobOf(row)
           const settled = job === undefined || job.status === "failed" || job.status === "cancelled" ||
             job.status === "done"
-          if ((row.status !== "added" && row.status !== "unreadable") || !settled) {
+          // A preview with a step it could not cost may be taken again.
+          const uncosted = row.status === "previewed" && row.preview !== null &&
+            Option.match(decodePreview(row.preview), {
+              onNone: () => false,
+              onSome: (preview) => preview.steps.some((step) => !step.costed)
+            })
+          if ((row.status !== "added" && row.status !== "unreadable" && !uncosted) || !settled) {
             return yield* new BookNotReady({ status: row.status as BookStatus })
           }
           if (job?.status === "failed") yield* store.cancel(JobId.make(job.id)).pipe(Effect.ignore)
@@ -308,12 +318,10 @@ export class Books extends Context.Service<Books, {
           if (row.status !== "previewed" && !restart) {
             return yield* new BookNotReady({ status: row.status as BookStatus })
           }
-          // The full run maps the Book, then extracts it.
+          // The full run maps the Book, extracts it and enriches its Questions.
           const llm = yield* settings.llm
           const hasKey = Option.isSome(yield* keys.read)
-          const missing = [
-            ...new Set([...missingSettings(llm, hasKey, "book-map"), ...missingSettings(llm, hasKey, "extraction")])
-          ]
+          const missing = [...new Set(RunTasks.flatMap((task) => missingSettings(llm, hasKey, task)))]
           if (missing.length > 0) return yield* new LlmNotConfigured({ missing })
           const spent = yield* runSpent(row.id)
           if (spendCap <= spent) return yield* new RunCapTooLow({ spent })

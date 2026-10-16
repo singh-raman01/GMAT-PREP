@@ -97,14 +97,19 @@ export type PageRoute = typeof PageRoute.Type
 // One step of the full run in the cost preview: what it took on the sample,
 // and what it would take on the pages the full run still reads.
 export class CostStep extends Schema.Class<CostStep>("gmat-prep/api/CostStep")({
-  // Such as "Book Map" or "Extraction".
+  // Such as "Book Map", "Extraction" or "Enrichment".
   name: Schema.String,
+  // What the step's counts count: pages, or for enrichment, Questions.
+  unit: Schema.Literals(["page", "question"]).pipe(Schema.withDecodingDefaultKey(Effect.succeed("page" as const))),
   sampledPages: Schema.Int,
   sampleTokens: Schema.Int,
   sampleCost: Schema.Number,
   projectedPages: Schema.Int,
   projectedTokens: Schema.Int,
-  projectedCost: Schema.Number
+  projectedCost: Schema.Number,
+  // False when the sample could not try the step, as when Settings had no
+  // models for it: its projection is then unknown, not zero.
+  costed: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true)))
 }) {}
 
 export class CostPreview extends Schema.Class<CostPreview>("gmat-prep/api/CostPreview")({
@@ -128,7 +133,9 @@ export class BookReport extends Schema.Class<BookReport>("gmat-prep/api/BookRepo
   extracted: Schema.Int,
   // Joined a Question already in the Question Bank as another Source.
   merged: Schema.Int,
+  // Waiting in the Review Queue, and still being enriched and checked.
   held: Schema.Int,
+  checking: Schema.Int,
   published: Schema.Int,
   withdrawn: Schema.Int,
   // Retired items, which never become Questions.
@@ -271,7 +278,8 @@ export class BooksApi extends HttpApiGroup.make("books")
       success: BookDetail,
       error: BookNotFound
     }),
-    // Reads the file again, for a Book whose reading was cancelled or failed.
+    // Reads the file again, for a Book whose reading was cancelled or failed,
+    // or whose cost preview could not cost a step.
     HttpApiEndpoint.post("readAgain", "/books/:id/read", {
       ...bookParams,
       success: BookView,

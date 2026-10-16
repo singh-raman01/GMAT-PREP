@@ -13,6 +13,8 @@ import type { JobKinds } from "./jobs/JobKind.ts"
 import { JobStore } from "./jobs/JobStore.ts"
 import { JobKindsLive } from "./jobs/kinds/index.ts"
 import { Profiles } from "./profiles/Profiles.ts"
+import { Bank } from "./review/Bank.ts"
+import { Golden } from "./review/Golden.ts"
 import { ReviewQueue } from "./review/ReviewQueue.ts"
 import { ApiKeyStore } from "./settings/ApiKeyStore.ts"
 import { Settings } from "./settings/Settings.ts"
@@ -32,14 +34,15 @@ const RemoveUploadLeftovers = Layer.effectDiscard(
 // kinds. Requires AppConfig.
 export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Layer.mergeAll(
   Profiles.layer,
-  Taxonomy.layer,
   Curator.layer,
   JobFeed.layer,
   Books.layer,
   ReviewQueue.layer,
+  Golden.layer,
+  Bank.layer,
   RemoveUploadLeftovers
 ).pipe(
-  Layer.provideMerge(Layer.mergeAll(Settings.layer, ApiKeyStore.layer, BookFiles.layer)),
+  Layer.provideMerge(Layer.mergeAll(Settings.layer, ApiKeyStore.layer, BookFiles.layer, Taxonomy.layer)),
   Layer.provideMerge(JobStore.layer),
   Layer.provideMerge(kinds),
   Layer.provideMerge(DatabaseLive)

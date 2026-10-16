@@ -1,0 +1,199 @@
+import { describe, expect, test } from "bun:test"
+import { Effect } from "effect"
+import { fitsSlot } from "../src/api/blueprint.ts"
+import { approachesProblems, type ApproachesReply, type QuestionText } from "../src/server/books/enrichment.ts"
+import { type GateInput, gateReasons } from "../src/server/review/gate.ts"
+import { reserveDecisions, type ReserveUnit } from "../src/server/review/reserve.ts"
+import { parseTaxonomy } from "../src/server/taxonomy/Taxonomy.ts"
+
+const taxonomy = await Effect.runPromise(parseTaxonomy(await Bun.file("taxonomy/v1.yaml").text()))
+
+const route = (settings: Partial<GateInput["approaches"][number]> = {}): GateInput["approaches"][number] => ({
+  strategy: "quant.strategy.solve-directly",
+  answer: "C",
+  author: "llm",
+  steps: "1. Subtract 1, so \\(3x = 12\\).",
+  validWhen: "Always.",
+  expectedSeconds: 60,
+  ...settings
+})
+
+const note = (label: string, settings: Partial<GateInput["notes"][number]> = {}): GateInput["notes"][number] => ({
+  label,
+  mistakeType: "calculation-slip",
+  trapPattern: null,
+  trapNote: `${label} comes from a slip.`,
+  ...settings
+})
+
+// A Problem Solving Question that passes every check.
+const passing: GateInput = {
+  questionType: "quant.ps",
+  linkReasons: [],
+  enriched: true,
+  key: "C",
+  optionLabels: ["A", "B", "C", "D", "E"],
+  primarySkill: "quant.number-properties.remainders",
+  secondarySkills: [],
+  difficultyEstimate: 0.2,
+  bookLabel: "medium",
+  solverAnswers: ["C", "C", "C"],
+  approaches: [route({ answer: "C" })],
+  notes: ["A", "B", "D", "E"].map((label) => note(label))
+}
+
+const codes = (input: GateInput) => gateReasons(taxonomy, input).map((reason) => reason.code)
+
+describe("The Publish Gate", () => {
+  test("a Question that passes every check has no reasons", () => {
+    expect(gateReasons(taxonomy, passing)).toEqual([])
+  })
+
+  test("any solve that disagrees with the key holds the Question, as does a missing solve", () => {
+    expect(gateReasons(taxonomy, { ...passing, solverAnswers: ["C", "D", "C"] })).toEqual([
+      { code: "solver-disagreement", detail: "Independent solves answered C, D and C; the key is C." }
+    ])
+    expect(codes({ ...passing, solverAnswers: ["C", "C"] })).toEqual(["solver-disagreement"])
+  })
+
+  test("Skills outside the Taxonomy or not for the Question Type, and Time pressure on an option, hold it", () => {
+    expect(gateReasons(taxonomy, { ...passing, primarySkill: "verbal.reading.inference" })).toEqual([
+      { code: "tags", detail: "The primary Skill verbal.reading.inference does not fit quant.ps." }
+    ])
+    expect(codes({ ...passing, secondarySkills: ["quant.made-up"] })).toEqual(["tags"])
+    expect(gateReasons(taxonomy, {
+      ...passing,
+      notes: [...passing.notes.slice(1), note("A", { mistakeType: "time-pressure" })]
+    })).toEqual([{ code: "tags", detail: "An option is tagged Time pressure, which only timing gives." }])
+  })
+
+  test("a Book Label two bands from the estimate holds it; one band apart does not", () => {
+    expect(codes({ ...passing, bookLabel: "easy", difficultyEstimate: 0.9 })).toEqual(["difficulty"])
+    expect(codes({ ...passing, bookLabel: "easy", difficultyEstimate: 0.3 })).toEqual([])
+    expect(codes({ ...passing, bookLabel: null, difficultyEstimate: 1.9 })).toEqual([])
+  })
+
+  test("Approaches must reach the key, and every wrong choice needs a note, the key none", () => {
+    expect(codes({ ...passing, approaches: [] })).toEqual(["approach-misses-key"])
+    expect(codes({ ...passing, approaches: [route({ answer: "B" })] })).toEqual(["approach-misses-key"])
+    // The Book's own explanation must reach the key too, but cannot stand in
+    // for an Approach the model wrote.
+    expect(gateReasons(taxonomy, { ...passing, approaches: [...passing.approaches, route({ author: "book", answer: "D" })] }))
+      .toEqual([{ code: "approach-misses-key", detail: "The book's explanation reaches D, not the key, C." }])
+    expect(codes({ ...passing, approaches: [route({ author: "book" })] })).toEqual(["approach-misses-key"])
+    expect(gateReasons(taxonomy, { ...passing, notes: passing.notes.slice(0, 2) })).toEqual([
+      { code: "option-notes", detail: "No note for the wrong choices D and E." }
+    ])
+    expect(codes({ ...passing, notes: [...passing.notes, note("C", { mistakeType: "trap" })] })).toEqual(["option-notes"])
+  })
+
+  test("teaching text a Learner cannot read holds the Question", () => {
+    const broken = "Divide: \\(\\frac{25}{\\) then compare."
+    expect(gateReasons(taxonomy, { ...passing, approaches: [route({ steps: broken })] })).toEqual([
+      expect.objectContaining({ code: "teaching-text", detail: expect.stringContaining("An Approach's steps cannot be shown") })
+    ])
+    expect(codes({ ...passing, approaches: [route({ validWhen: "  " })] })).toEqual(["teaching-text"])
+    expect(codes({ ...passing, approaches: [...passing.approaches, route({ author: "book", steps: broken })] })).toEqual([
+      "teaching-text"
+    ])
+    expect(codes({ ...passing, approaches: [route({ expectedSeconds: 0 })] })).toEqual(["teaching-text"])
+    expect(gateReasons(taxonomy, { ...passing, notes: [...passing.notes.slice(1), note("A", { trapNote: broken })] }))
+      .toEqual([expect.objectContaining({ code: "teaching-text", detail: expect.stringContaining("The note for A") })])
+  })
+
+  test("text in doubt is held for its link reasons alone, and a Question with no key skips the key's checks", () => {
+    const render = { code: "render" as const, detail: "It does not render." }
+    expect(gateReasons(taxonomy, { ...passing, linkReasons: [render], enriched: false, primarySkill: null })).toEqual([render])
+    // Not enriched for any other reason, it is held for that.
+    expect(codes({ ...passing, enriched: false })).toEqual(["not-enriched"])
+    const noKey = { code: "no-key" as const, detail: "No key." }
+    expect(gateReasons(taxonomy, { ...passing, linkReasons: [noKey], key: null, approaches: [], notes: [] })).toEqual([noKey])
+  })
+})
+
+const unit = (id: string, questionType: string, band: ReserveUnit["band"], reserve: boolean | null = null, size = 1) =>
+  ({ id, size, questionType, band, hash: `hash-${id}`, reserve }) satisfies ReserveUnit
+
+describe("An Approaches reply", () => {
+  const explained: QuestionText = {
+    questionType: "quant.ps",
+    stem: "If \\(3x + 1 = 13\\), what is the value of x?",
+    options: ["A", "B", "C", "D", "E"].map((label) => ({ label, text: label })),
+    key: "C",
+    explanation: "Subtract 1 and divide by 3."
+  }
+  const reply = (bookApproach: ApproachesReply["bookApproach"]) =>
+    ({
+      approaches: [{ strategy: "quant.strategy.solve-directly", steps: "1. Solve.", expectedSeconds: 60, validWhen: "Always.", answer: "C" }],
+      bookApproach,
+      wrongOptions: ["A", "B", "D", "E"].map((label) => ({
+        label,
+        trapNote: `${label} comes from a slip.`,
+        mistakeType: "calculation-slip",
+        trapPattern: null
+      }))
+    }) as unknown as ApproachesReply
+
+  test("is asked for again when the Book's Approach cannot be shown, or is missing for a shown explanation", () => {
+    const strategy = "quant.strategy.solve-directly"
+    expect(approachesProblems(reply({ strategy, expectedSeconds: 60, validWhen: "Always." }), explained)).toEqual([])
+    expect(approachesProblems(reply({ strategy, expectedSeconds: 60, validWhen: " " }), explained)).toEqual([
+      "The book's Approach's validWhen cannot be shown: it is empty."
+    ])
+    expect(approachesProblems(reply(null), explained)).toEqual(["The book gives an explanation: give its bookApproach."])
+    // With no explanation shown, the Book's Approach is not asked for.
+    expect(approachesProblems(reply(null), { ...explained, explanation: null })).toEqual([])
+  })
+})
+
+describe("The Mock Reserve", () => {
+  test("a quarter of a Book's Section joins, spread over Question Types and Difficulty Bands, the same way every time", () => {
+    const units = [
+      ...Array.from({ length: 8 }, (_, i) => unit(`e${i}`, "quant.ps", "easy")),
+      ...Array.from({ length: 8 }, (_, i) => unit(`m${i}`, "quant.ps", "medium")),
+      ...Array.from({ length: 4 }, (_, i) => unit(`h${i}`, "quant.ps", "hard"))
+    ]
+    const decisions = reserveDecisions(units)
+    const joined = [...decisions].filter(([, reserve]) => reserve).map(([id]) => id)
+    expect(joined).toEqual(["e0", "e1", "m0", "m1", "h0"])
+    expect(decisions.size).toBe(20)
+    expect([...reserveDecisions(units)]).toEqual([...decisions])
+  })
+
+  test("a unit is decided once, and later units make up a shortfall", () => {
+    const decided = Array.from({ length: 4 }, (_, i) => unit(`a${i}`, "quant.ps", "medium", false))
+    const later = Array.from({ length: 4 }, (_, i) => unit(`b${i}`, "quant.ps", "medium"))
+    const decisions = reserveDecisions([...decided, ...later])
+    expect([...decisions].filter(([, reserve]) => reserve).map(([id]) => id)).toEqual(["b0", "b1"])
+    expect(decisions.has("a0")).toBe(false)
+  })
+
+  test("units published later never push the Reserve past a quarter", () => {
+    let units = [unit("e0", "quant.ps", "easy"), unit("e1", "quant.ps", "easy"), unit("m0", "quant.ps", "medium"), unit("m1", "quant.ps", "medium")]
+    const apply = (decisions: ReadonlyMap<string, boolean>) =>
+      (units = units.map((each) => (decisions.has(each.id) ? { ...each, reserve: decisions.get(each.id)! } : each)))
+    apply(reserveDecisions(units))
+    expect(units.filter((each) => each.reserve).map((each) => each.id)).toEqual(["e0"])
+    units = [...units, unit("m2", "quant.ps", "medium")]
+    apply(reserveDecisions(units))
+    expect(units.filter((each) => each.reserve).map((each) => each.id)).toEqual(["e0"])
+    // Three more bring the quarter to two; the medium band is short, and m2
+    // stays out, decided once.
+    units = [...units, ...["m3", "h0", "h1"].map((id) => unit(id, "quant.ps", id.startsWith("h") ? "hard" : "medium"))]
+    apply(reserveDecisions(units))
+    expect(units.filter((each) => each.reserve).map((each) => each.id)).toEqual(["e0", "m3"])
+  })
+
+  test("only units that fit a Section Blueprint slot can join", () => {
+    expect(fitsSlot("verbal.rc-detail", 3)).toBe(true)
+    expect(fitsSlot("verbal.rc-detail", 5)).toBe(false)
+    expect(fitsSlot("di.msr", 3)).toBe(true)
+    const passages = [
+      unit("p1", "verbal.rc-detail", "medium", null, 5),
+      ...Array.from({ length: 4 }, (_, i) => unit(`p${i + 2}`, "verbal.rc-detail", "medium", null, 3))
+    ]
+    const decisions = reserveDecisions(passages)
+    expect(decisions.get("p1")).toBe(false)
+    expect([...decisions].filter(([, reserve]) => reserve).map(([id]) => id)).toEqual(["p2"])
+  })
+})

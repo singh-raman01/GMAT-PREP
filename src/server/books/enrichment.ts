@@ -1,8 +1,13 @@
-import { Effect, Schema } from "effect"
+import { and, asc, eq } from "drizzle-orm"
+import { Clock, Effect, Schema } from "effect"
+import { renderProblem } from "../../api/richText.ts"
 import type { TaxonomyView } from "../../api/Taxonomy.ts"
 import { optionMistakeTypes, skillsFor, strategiesFor, trapPatternsFor } from "../../api/taxonomyRules.ts"
-import { LlmAdapter } from "../llm/LlmAdapter.ts"
+import { Db } from "../db/Database.ts"
+import { approaches, optionNotes, options, parts, questions, solverRuns } from "../db/schema.ts"
+import { LlmAdapter, type LlmError } from "../llm/LlmAdapter.ts"
 import { quoteData } from "../llm/quoting.ts"
+import { explanationOf, readLinkReasons, UnsureCodes } from "./bankWrites.ts"
 
 // Enrichment: the LLM tags a Question from the Taxonomy and estimates its
 // Difficulty, solves it three times on its own, and writes Approaches and a
@@ -58,10 +63,14 @@ export const tagOutput = (taxonomy: TaxonomyView, questionType: string) => {
   })
 }
 
+// A reply's secondary Skills, once each, leaving out the primary one.
+export const secondaryOnly = (primarySkill: string, secondarySkills: ReadonlyArray<string>) =>
+  [...new Set(secondarySkills)].filter((skill) => skill !== primarySkill)
+
 export const tagQuestion = (jobId: string, taxonomy: TaxonomyView, question: QuestionText) =>
   Effect.gen(function*() {
     const llm = yield* LlmAdapter
-    return yield* llm.call({
+    const tagged = yield* llm.call({
       task: "tagging",
       promptVersion: TagPromptVersion,
       system: `You tag a GMAT question with the Skills it exercises, from a fixed list, and estimate how hard it is.
@@ -79,6 +88,10 @@ ${listing(skillsFor(taxonomy, question.questionType))}`,
       output: tagOutput(taxonomy, question.questionType),
       jobId
     })
+    return {
+      ...tagged,
+      value: { ...tagged.value, secondarySkills: secondaryOnly(tagged.value.primarySkill, tagged.value.secondarySkills) }
+    }
   })
 
 // Solving ------------------------------------------------------------------
@@ -177,19 +190,216 @@ ${listing(trapPatternsFor(taxonomy, question.questionType))}`,
     })
   })
 
+// An Approach is expected to take at least this long, and at most this.
+export const ApproachSeconds = { minimum: 5, maximum: 900 } as const
+
+// Text a Learner will read: none of it may be empty or fail to render.
+export const shownTextProblem = (text: string): string | undefined =>
+  text.trim() === "" ? "it is empty" : renderProblem(text)
+
 // What is wrong with a reply's Approaches and notes, against the key and
 // the wrong options, or nothing.
 export const approachesProblems = (reply: ApproachesReply, question: QuestionText): ReadonlyArray<string> => {
   const problems: Array<string> = []
   reply.approaches.forEach((approach, index) => {
+    const which = `Approach ${index + 1}`
     if (approach.answer !== question.key) {
-      problems.push(`Approach ${index + 1} arrives at ${approach.answer}, not the key, ${question.key}.`)
+      problems.push(`${which} arrives at ${approach.answer}, not the key, ${question.key}.`)
+    }
+    if (approach.expectedSeconds < ApproachSeconds.minimum || approach.expectedSeconds > ApproachSeconds.maximum) {
+      problems.push(
+        `${which} expects ${approach.expectedSeconds} seconds; give a time from ${ApproachSeconds.minimum} to ${ApproachSeconds.maximum}.`
+      )
+    }
+    for (const [field, text] of [["steps", approach.steps], ["validWhen", approach.validWhen]] as const) {
+      const problem = shownTextProblem(text)
+      if (problem !== undefined) problems.push(`${which}'s ${field} cannot be shown: ${problem}.`)
     }
   })
+  // The book's explanation, when shown, is an Approach of its own.
+  const book = reply.bookApproach
+  if (question.explanation !== null && book === null) {
+    problems.push("The book gives an explanation: give its bookApproach.")
+  }
+  if (question.explanation !== null && book !== null) {
+    if (book.expectedSeconds < ApproachSeconds.minimum || book.expectedSeconds > ApproachSeconds.maximum) {
+      problems.push(`The book's Approach expects ${book.expectedSeconds} seconds; give a time from ${ApproachSeconds.minimum} to ${ApproachSeconds.maximum}.`)
+    }
+    const problem = shownTextProblem(book.validWhen)
+    if (problem !== undefined) problems.push(`The book's Approach's validWhen cannot be shown: ${problem}.`)
+  }
   const wrong = question.options.map((option) => option.label).filter((label) => label !== question.key)
   const noted: ReadonlyArray<string> = reply.wrongOptions.map((option) => option.label)
   const missing = wrong.filter((label) => !noted.includes(label))
   if (missing.length > 0) problems.push(`No note for the wrong ${missing.length === 1 ? "choice" : "choices"} ${missing.join(", ")}.`)
   if (question.key !== null && noted.includes(question.key)) problems.push(`A note treats the key, ${question.key}, as wrong.`)
+  for (const note of reply.wrongOptions) {
+    const problem = shownTextProblem(note.trapNote)
+    if (problem !== undefined) problems.push(`The note for ${note.label} cannot be shown: ${problem}.`)
+  }
   return problems
 }
+
+// Enriching a stored Question ------------------------------------------------
+
+// A reply that stays invalid after its retry leaves that part of the
+// enrichment missing, and the Publish Gate holds the Question for it, instead
+// of stopping the whole run. Any other error stops the step as usual.
+export const unlessInvalid = <A, R>(call: Effect.Effect<A, LlmError, R>) =>
+  call.pipe(Effect.catchTag("LlmInvalidReply", () => Effect.succeed(undefined)))
+
+const loadQuestion = (questionId: string) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const [question] = yield* db.select().from(questions).where(eq(questions.id, questionId))
+    if (question === undefined) return undefined
+    const [part] = yield* db.select().from(parts).where(and(eq(parts.questionId, questionId), eq(parts.position, 0)))
+    if (part === undefined) return undefined
+    const optionRows = yield* db.select().from(options).where(eq(options.partId, part.id)).orderBy(asc(options.position))
+    const explained = yield* explanationOf(questionId)
+    const text: QuestionText = {
+      questionType: question.questionType,
+      stem: question.stem,
+      options: optionRows.map((option) => ({ label: option.label, text: option.text })),
+      key: part.key,
+      explanation: explained.explanation
+    }
+    return { question, partId: part.id, text, explanationReaches: explained.reaches }
+  })
+
+const retryNote = (problems: ReadonlyArray<string>) =>
+  `Your last reply had these problems:\n${problems.map((problem) => `- ${problem}`).join("\n")}\nWrite the whole reply again, fixing them.`
+
+// Approaches and wrong-option notes, written once more when they miss the
+// key or leave out a wrong choice; the last reply is kept either way, for the
+// Publish Gate to judge.
+const writeContent = (
+  jobId: string,
+  taxonomy: TaxonomyView,
+  loaded: NonNullable<Effect.Success<ReturnType<typeof loadQuestion>>>
+) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const { question, partId, explanationReaches } = loaded
+    // The Book's explanation is an Approach of its own, and is shown to the
+    // model, only when it reaches the key and can be shown.
+    const bookExplains = loaded.text.explanation !== null && explanationReaches !== null &&
+      explanationReaches === loaded.text.key && shownTextProblem(loaded.text.explanation) === undefined
+    const text: QuestionText = bookExplains ? loaded.text : { ...loaded.text, explanation: null }
+    const first = yield* unlessInvalid(writeApproaches(jobId, taxonomy, text, undefined))
+    const problems = first === undefined ? [] : approachesProblems(first.value, text)
+    const final = first !== undefined && problems.length === 0
+      ? first
+      : (yield* unlessInvalid(writeApproaches(jobId, taxonomy, text, first === undefined ? undefined : retryNote(problems)))) ??
+        first
+    const now = yield* Clock.currentTimeMillis
+    yield* db.transaction(() =>
+      Effect.gen(function*() {
+        yield* db.delete(approaches).where(eq(approaches.questionId, question.id))
+        yield* db.delete(optionNotes).where(eq(optionNotes.partId, partId))
+        if (final === undefined) return
+        const provenance = { model: final.model, promptVersion: final.promptVersion, createdAt: now }
+        const book = final.value.bookApproach
+        if (book !== null && bookExplains) {
+          yield* db.insert(approaches).values({
+            id: crypto.randomUUID(),
+            questionId: question.id,
+            position: 0,
+            strategy: book.strategy,
+            steps: text.explanation!,
+            expectedSeconds: book.expectedSeconds,
+            validWhen: book.validWhen,
+            author: "book",
+            answer: explanationReaches,
+            ...provenance
+          })
+        }
+        for (const [index, approach] of final.value.approaches.entries()) {
+          yield* db.insert(approaches).values({
+            id: crypto.randomUUID(),
+            questionId: question.id,
+            position: index + 1,
+            strategy: approach.strategy,
+            steps: approach.steps,
+            expectedSeconds: approach.expectedSeconds,
+            validWhen: approach.validWhen,
+            author: "llm",
+            answer: approach.answer,
+            ...provenance
+          })
+        }
+        const written = new Set<number>()
+        for (const note of final.value.wrongOptions) {
+          const position = text.options.findIndex((option) => option.label === note.label)
+          if (position === -1 || written.has(position)) continue
+          written.add(position)
+          yield* db.insert(optionNotes).values({
+            partId,
+            position,
+            trapNote: note.trapNote,
+            mistakeType: note.mistakeType,
+            trapPattern: note.trapPattern,
+            model: final.model,
+            promptVersion: final.promptVersion,
+            createdAt: now
+          })
+        }
+      })
+    ).pipe(Effect.orDie)
+  })
+
+// Does what enrichment still owes a Question: its tags and Difficulty
+// estimate and three solves, tried again whenever a reply was unusable, and
+// its key-dependent content once it has a key. Each part is stored as it is
+// done, so a step that stops part way picks up where it left off.
+export const enrichQuestion = (jobId: string, taxonomy: TaxonomyView, questionId: string) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const loaded = yield* loadQuestion(questionId).pipe(Effect.orDie)
+    if (loaded === undefined) return
+    const { question, text } = loaded
+    if (readLinkReasons(question.linkReasons).some((reason) => UnsureCodes.has(reason.code))) return
+    let stage = question.enrichment
+    if (question.taggedAt === null) {
+      const tagged = yield* unlessInvalid(tagQuestion(jobId, taxonomy, text))
+      const now = yield* Clock.currentTimeMillis
+      if (tagged !== undefined) {
+        yield* db.update(questions).set({
+          primarySkill: tagged.value.primarySkill,
+          secondarySkills: JSON.stringify(tagged.value.secondarySkills),
+          difficultyEstimate: tagged.value.difficulty,
+          tagsModel: tagged.model,
+          tagsPromptVersion: tagged.promptVersion,
+          taggedAt: now
+        }).where(eq(questions.id, questionId)).pipe(Effect.orDie)
+      }
+    }
+    const solved = new Set(
+      (yield* db.select({ run: solverRuns.run }).from(solverRuns).where(eq(solverRuns.questionId, questionId)).pipe(
+        Effect.orDie
+      )).map((row) => row.run)
+    )
+    for (let run = 1; run <= SolverRuns; run++) {
+      if (solved.has(run)) continue
+      const solve = yield* unlessInvalid(solveQuestion(jobId, text, run))
+      if (solve === undefined) continue
+      yield* db.insert(solverRuns).values({
+        questionId,
+        run,
+        answer: solve.value.answer,
+        model: solve.model,
+        promptVersion: solve.promptVersion,
+        createdAt: yield* Clock.currentTimeMillis
+      }).onConflictDoNothing().pipe(Effect.orDie)
+    }
+    if (stage === "pending") {
+      stage = "key-content"
+      yield* db.update(questions).set({ enrichment: stage }).where(eq(questions.id, questionId)).pipe(Effect.orDie)
+    }
+    // Without a key there is nothing to write against; a key from a Key
+    // Override or a Book Map fix brings the Question back here.
+    if (stage === "key-content" && text.key !== null) {
+      yield* writeContent(jobId, taxonomy, loaded)
+      yield* db.update(questions).set({ enrichment: "done" }).where(eq(questions.id, questionId)).pipe(Effect.orDie)
+    }
+  })

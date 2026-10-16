@@ -25,6 +25,9 @@ interface Props {
 
 const tokens = (count: number) => count.toLocaleString("en-US")
 
+const unitName = (unit: "page" | "question", count: number) =>
+  unit === "page" ? (count === 1 ? "page" : "pages") : (count === 1 ? "Question" : "Questions")
+
 export const BookPage = ({ id, notice, onLocked, onStopped }: Props) => {
   const heading = useFocusOnMount<HTMLHeadingElement>()
   const [detail, setDetail] = useState<BookDetail>()
@@ -141,7 +144,8 @@ const Report = ({ report }: { readonly report: BookReport }) => {
   const id = useId()
   const rows: ReadonlyArray<readonly [string, number, string]> = [
     ["Extracted", report.extracted, "items that became Questions or joined one"],
-    ["Waiting in the Review Queue", report.held, ""],
+    ["Being checked", report.checking, "enriched and put through the Publish Gate"],
+    ["Waiting in the Review Queue", report.held, "a check held them"],
     ["Published", report.published, ""],
     ["Withdrawn", report.withdrawn, ""],
     ["Already in the Question Bank", report.merged, "joined that Question as another Source"],
@@ -238,8 +242,10 @@ const BookProgress = (
   )
 }
 
-// A cap with room above the projection, as the default.
-const suggestedCap = (preview: CostPreview) => Math.max(0.1, Math.ceil(preview.projectedCost * 1.5 * 100) / 100)
+// A cap with room above the projection, as the default; none while a step
+// is not costed, since its cost is not known.
+const suggestedCap = (preview: CostPreview) =>
+  preview.steps.some((step) => !step.costed) ? "" : String(Math.max(0.1, Math.ceil(preview.projectedCost * 1.5 * 100) / 100))
 
 const Preview = (
   { book, preview, onStarted, onFailure, again = false }: {
@@ -252,9 +258,22 @@ const Preview = (
 ) => {
   const capId = useId()
   // A restart keeps the run's cap, which covers what it already spent.
-  const [cap, setCap] = useState(() => String(again && book.runCap !== null ? book.runCap : suggestedCap(preview)))
+  const [cap, setCap] = useState(() => (again && book.runCap !== null ? String(book.runCap) : suggestedCap(preview)))
+  const uncosted = preview.steps.filter((step) => !step.costed)
   const [problem, setProblem] = useState<{ readonly text: string; readonly aboutCap: boolean }>()
   const busy = useRef(false)
+
+  const costAgain = async () => {
+    if (busy.current) return
+    busy.current = true
+    const result = await call((client) => client.books.readAgain({ params: { id: book.id } }))
+    busy.current = false
+    if (result._tag === "Success") return onStarted(result.success)
+    if (result.failure._tag === "BookNotReady") {
+      return setProblem({ text: "The book changed in the meantime; reload the page.", aboutCap: false })
+    }
+    onFailure(result.failure)
+  }
 
   const start = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -291,23 +310,33 @@ const Preview = (
           ? "No page has a text layer, so nothing was sampled."
           : `The full run, tried on ${preview.sampledPages.length} pages spread through the book: about ${
             tokens(preview.projectedTokens)
-          } tokens and ${formatDollars(preview.projectedCost)} in all.`}
+          } tokens and ${formatDollars(preview.projectedCost)}${
+            uncosted.length === 0 ? " in all" : `, not counting ${uncosted.map((step) => step.name.toLowerCase()).join(" and ")}`
+          }.`}
       </p>
       <dl className="facts">
         {preview.steps.map((step) => (
           <div key={step.name}>
             <dt>{step.name}</dt>
             <dd>
-              {step.sampledPages === 0
-                ? "No sampled page needed it."
-                : `${step.sampledPages} sampled ${step.sampledPages === 1 ? "page" : "pages"}: ${
-                  tokens(step.sampleTokens)
-                } tokens, ${formatDollars(step.sampleCost)}.`}{" "}
-              {step.projectedPages === 0
-                ? "Nothing more to read."
-                : `The full run reads about ${step.projectedPages} ${step.projectedPages === 1 ? "page" : "pages"}: ${
-                  tokens(step.projectedTokens)
-                } tokens, ${formatDollars(step.projectedCost)}.`}
+              {!step.costed
+                ? `Not costed: Settings had no models for tagging, solving and Approaches when the sample ran. The full run ${
+                  step.unit === "page" ? "reads" : "enriches"
+                } about ${step.projectedPages} ${unitName(step.unit, step.projectedPages)}. Set the models, then cost it.`
+                : (
+                  <>
+                    {step.sampledPages === 0
+                      ? step.unit === "page" ? "No sampled page needed it." : "No sampled page held Questions."
+                      : `${step.sampledPages} sampled ${unitName(step.unit, step.sampledPages)}: ${
+                        tokens(step.sampleTokens)
+                      } tokens, ${formatDollars(step.sampleCost)}.`}{" "}
+                    {step.projectedPages === 0
+                      ? "Nothing more to do."
+                      : `The full run ${step.unit === "page" ? "reads" : "enriches"} about ${step.projectedPages} ${
+                        unitName(step.unit, step.projectedPages)
+                      }: ${tokens(step.projectedTokens)} tokens, ${formatDollars(step.projectedCost)}.`}
+                  </>
+                )}
             </dd>
           </div>
         ))}
@@ -329,12 +358,21 @@ const Preview = (
           </div>
         )}
       </dl>
+      {uncosted.length > 0 && !again && (
+        <div className="actions">
+          <button type="button" className="button button-quiet" onClick={() => void costAgain()}>
+            Cost {uncosted.map((step) => step.name.toLowerCase()).join(" and ")}
+          </button>
+        </div>
+      )}
       <form className="start-run" noValidate onSubmit={(event) => void start(event)}>
         <div className="field cap-field">
           <label htmlFor={capId}>Spend cap in dollars</label>
           <p id={`${capId}-hint`} className="hint">
             {again
               ? `The cap covers the whole run, including the ${formatDollars(book.runSpent)} it already spent. The run pauses if it reaches the cap.`
+              : uncosted.length > 0
+              ? "The run pauses if it reaches this. With a step not costed there is no suggestion: cost it first, or enter a cap of your own."
               : "The run pauses if it reaches this. The suggested cap allows half again the projected cost."}
           </p>
           <input
