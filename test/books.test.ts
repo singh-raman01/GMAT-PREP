@@ -352,8 +352,21 @@ describe("The cost preview", () => {
           projectedTokens: 14300
         })
         expect(extraction?.projectedCost).toBeCloseTo(9 * 0.0028 / 9 * 13, 12)
-        expect(preview.sampleTokens).toBe(11000)
-        expect(preview.projectedTokens).toBe(2640 + 14300)
+        // Two of the sample's Questions are enriched to cost enrichment: five
+        // calls each. The sample holds 13 Questions besides two Retired ones,
+        // so the Book's 24 pages with text hold about 31.
+        const enrichment = preview.steps[2]
+        expect(enrichment).toMatchObject({
+          name: "Enrichment",
+          unit: "question",
+          sampledPages: 2,
+          sampleTokens: 11000,
+          projectedPages: 31,
+          projectedTokens: 170500
+        })
+        expect(enrichment?.projectedCost).toBeCloseTo(10 * 0.0028 / 2 * 31, 12)
+        expect(preview.sampleTokens).toBe(22000)
+        expect(preview.projectedTokens).toBe(2640 + 14300 + 170500)
         const [sampleRequest] = yield* fake.requests
         expect(sampleRequest?.model).toBe("map-model")
         expect(quotedPages(sampleRequest!).map((page) => page.number)).toEqual([...preview.sampledPages])
@@ -361,7 +374,7 @@ describe("The cost preview", () => {
 
         // Nothing more runs until the Curator starts the full run.
         yield* advanceUntil(Effect.succeed(undefined), { step: "1 minute", maxSteps: 10 }).pipe(Effect.ignore)
-        expect(yield* fake.requests).toHaveLength(10)
+        expect(yield* fake.requests).toHaveLength(20)
         expect((yield* detailOf(curator.api, view.id)).book.status).toBe("previewed")
 
         const started = yield* curator.api.books.start({ params: { id: view.id }, payload: { spendCap: 0.05 } })
@@ -372,7 +385,7 @@ describe("The cost preview", () => {
         expect(again).toMatchObject({ _tag: "BookNotReady", status: "mapping" })
         yield* waitForStatus(curator.api, view.id, "map-proposed")
         // The full run surveyed all 24 pages with text in order, ten at a time.
-        const runRequests = (yield* fake.requests).slice(10)
+        const runRequests = (yield* fake.requests).slice(20)
         expect(runRequests.map((request) => quotedPages(request).length)).toEqual([10, 10, 4])
         expect(runRequests.flatMap((request) => quotedPages(request).map((page) => page.number))).toEqual(
           Array.from({ length: 25 }, (_, i) => i + 1).filter((number) => number !== 24)

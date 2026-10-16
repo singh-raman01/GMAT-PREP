@@ -1,15 +1,25 @@
-import { and, eq, inArray, sql } from "drizzle-orm"
-import { Clock, Effect, Schema } from "effect"
+import { and, count, eq, inArray, sql } from "drizzle-orm"
+import { Clock, Effect, Option, Schema } from "effect"
 import { CostPreview, CostStep, type PageRoute } from "../../api/Books.ts"
 import { formatDollars } from "../../api/money.ts"
 import { Db } from "../db/Database.ts"
 import { bookPages, books, jobs, llmCalls } from "../db/schema.ts"
 import { type JobKind, JobStepFailed } from "../jobs/JobKind.ts"
-import { Settings, taskReadsImages } from "../settings/Settings.ts"
+import { ApiKeyStore } from "../settings/ApiKeyStore.ts"
+import { missingSettings, Settings, taskReadsImages } from "../settings/Settings.ts"
+import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { BookFiles } from "./BookFiles.ts"
 import { readPdfPages, unreadableNote } from "./pdf.ts"
 import { readPage, readsGroup } from "./readings.ts"
 import { readSurvey, surveyPages } from "./survey.ts"
+import {
+  type QuestionText,
+  SolverRuns,
+  solveQuestion,
+  tagQuestion,
+  unlessInvalid,
+  writeApproaches
+} from "./enrichment.ts"
 
 // Reading a Book that was just added: its pages, a hundred per step, then
 // the cost preview from the full run tried on a 10-page sample. The full run
@@ -105,14 +115,17 @@ const readStep = (bookId: string, nextPage: number) =>
     } as const
   })
 
-// Projects a step of the full run from what it took on the sampled pages.
+// Projects a step of the full run from what it took on the sample: its pages,
+// or for enrichment, its Questions.
 const projectStep = (
   name: string,
   sampled: { readonly pages: number; readonly tokens: number; readonly cost: number },
-  remainingPages: number
+  remainingPages: number,
+  unit: "page" | "question" = "page"
 ) =>
   new CostStep({
     name,
+    unit,
     sampledPages: sampled.pages,
     sampleTokens: sampled.tokens,
     sampleCost: sampled.cost,
@@ -163,9 +176,17 @@ const sampleStep = (jobId: string, bookId: string) =>
         ? [{ page: row.number, role: survey.role, group: survey.group }]
         : []
     })
+    const sampledQuestions: Array<QuestionText> = []
     for (const page of extractable) {
-      yield* readPage({ jobId, bookId, page: page.page, role: page.role, group: page.group })
+      const { reading } = yield* readPage({ jobId, bookId, page: page.page, role: page.role, group: page.group })
+      if (reading.role === "questions" && reading.group === "ps") {
+        for (const item of reading.value.questions) {
+          if (item.retired !== null) continue
+          sampledQuestions.push({ questionType: "quant.ps", stem: item.stem, options: item.options, key: null, explanation: null })
+        }
+      }
     }
+    yield* sampleEnrichment(jobId, sampledQuestions)
 
     // What the sample took across every reading of the Book, since a reading
     // that was cancelled or failed leaves surveys and readings this one reuses.
@@ -180,6 +201,12 @@ const sampleStep = (jobId: string, bookId: string) =>
     const of = (task: string) => spent.find((row) => row.task === task) ?? { tokens: 0, cost: 0, model: "" }
     // Pages like the sampled extractable ones, in the same share.
     const extractablePages = sample.length === 0 ? 0 : Math.round(extractable.length / sample.length * textPages.length)
+    // Questions in the same share of the Book as in the sample.
+    const projectedQuestions = sample.length === 0 ? 0 : Math.round(sampledQuestions.length / sample.length * textPages.length)
+    const enrichCalls = ["tagging", "solving", "approaches"].map(of)
+    const [enriched] = yield* db.select({ n: count() }).from(llmCalls)
+      .where(and(inArray(llmCalls.jobId, intakeJobs), eq(llmCalls.task, "tagging"), eq(llmCalls.outcome, "ok")))
+      .pipe(Effect.orDie)
     const steps = [
       // The full run surveys every page with text, the sampled ones again.
       projectStep("Book Map", { pages: sample.length, ...of("book-map") }, textPages.length),
@@ -187,6 +214,18 @@ const sampleStep = (jobId: string, bookId: string) =>
         "Extraction",
         { pages: extractable.length, ...of("extraction") },
         Math.max(0, extractablePages - extractable.length)
+      ),
+      // Every Question of the full run is enriched; the sample's were only
+      // enriched to cost it.
+      projectStep(
+        "Enrichment",
+        {
+          pages: enriched?.n ?? 0,
+          tokens: enrichCalls.reduce((total, call) => total + call.tokens, 0),
+          cost: enrichCalls.reduce((total, call) => total + call.cost, 0)
+        },
+        projectedQuestions,
+        "question"
       )
     ]
     const preview = new CostPreview({
@@ -216,6 +255,35 @@ const sampleStep = (jobId: string, bookId: string) =>
           preview.projectedTokens.toLocaleString("en-US")
         } tokens, ${formatDollars(preview.projectedCost)}.`
     } as const
+  })
+
+// Enriches up to two of the sample's Questions, only to cost enrichment: they
+// are tagged, solved three times and given Approaches, and the replies are
+// not kept. Their key is not known yet, so the first solve's answer stands in.
+// Skipped when the enrichment models are not set, or when an earlier try of
+// this step already did it.
+const SampleQuestions = 2
+
+const sampleEnrichment = (jobId: string, sampled: ReadonlyArray<QuestionText>) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const llm = yield* (yield* Settings).llm
+    const hasKey = Option.isSome(yield* (yield* ApiKeyStore).read)
+    const ready = (["tagging", "solving", "approaches"] as const).every((task) => missingSettings(llm, hasKey, task).length === 0)
+    const [done] = yield* db.select({ n: count() }).from(llmCalls)
+      .where(and(eq(llmCalls.jobId, jobId), inArray(llmCalls.task, ["tagging", "solving", "approaches"])))
+      .pipe(Effect.orDie)
+    if (!ready || (done?.n ?? 0) > 0) return
+    const taxonomy = (yield* Taxonomy).view
+    for (const question of sampled.slice(0, SampleQuestions)) {
+      yield* unlessInvalid(tagQuestion(jobId, taxonomy, question))
+      const answers: Array<string> = []
+      for (let run = 1; run <= SolverRuns; run++) {
+        const solve = yield* unlessInvalid(solveQuestion(jobId, question, run))
+        if (solve !== undefined) answers.push(solve.value.answer)
+      }
+      yield* unlessInvalid(writeApproaches(jobId, taxonomy, { ...question, key: answers[0] ?? "A" }, undefined))
+    }
   })
 
 export const BookIntake: JobKind<typeof Params.Type, typeof Checkpoint.Type> = {

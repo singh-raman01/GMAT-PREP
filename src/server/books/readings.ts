@@ -184,8 +184,9 @@ export const storedReading = (bookId: string, page: number, role: MapRole, group
     return Option.map(value, (decoded) => toReading(role, group, decoded))
   })
 
-// Reads a page in a role, or returns the reading stored before.
-export const readPage = (input: {
+// Asks the extraction model to read a page in a role, now: the encoded
+// reply, ready to store, and the reading.
+const askModel = (input: {
   readonly jobId: string
   readonly bookId: string
   readonly page: number
@@ -193,9 +194,6 @@ export const readPage = (input: {
   readonly group: TypeGroup
 }) =>
   Effect.gen(function*() {
-    const stored = yield* storedReading(input.bookId, input.page, input.role, input.group)
-    if (Option.isSome(stored)) return { reading: stored.value, tokens: 0, cost: 0, model: null } satisfies ReadResult
-
     const db = yield* Db
     const llm = yield* LlmAdapter
     const prompt = promptFor(input.role, input.group)
@@ -221,21 +219,53 @@ export const readPage = (input: {
       output: prompt.output,
       jobId: input.jobId
     })
+    return {
+      reply,
+      items: Schema.encodeSync(Schema.fromJsonString(prompt.output))(reply.value),
+      reading: toReading(input.role, input.group, reply.value)
+    }
+  })
+
+// Reads a page in a role, or returns the reading stored before.
+export const readPage = (input: {
+  readonly jobId: string
+  readonly bookId: string
+  readonly page: number
+  readonly role: MapRole
+  readonly group: TypeGroup
+}) =>
+  Effect.gen(function*() {
+    const stored = yield* storedReading(input.bookId, input.page, input.role, input.group)
+    if (Option.isSome(stored)) return { reading: stored.value, tokens: 0, cost: 0, model: null } satisfies ReadResult
+    const db = yield* Db
+    const { reply, items, reading } = yield* askModel(input)
     const now = yield* Clock.currentTimeMillis
     yield* db.insert(pageReadings).values({
       bookId: input.bookId,
       page: input.page,
       role: input.role,
       group: input.group,
-      items: Schema.encodeSync(Schema.fromJsonString(prompt.output))(reply.value),
+      items,
       model: reply.model,
       promptVersion: reply.promptVersion,
       createdAt: now
     }).onConflictDoNothing().pipe(Effect.orDie)
     return {
-      reading: toReading(input.role, input.group, reply.value),
+      reading,
       tokens: reply.tokensIn + reply.tokensOut,
       cost: reply.cost,
       model: reply.model
     } satisfies ReadResult
   })
+
+// Reads a page again with the current prompt and model, whatever was stored,
+// and stores nothing: for checking the golden set. The encoded reply comes
+// back with the reading, for the caller to keep.
+export const readPageAfresh = askModel
+
+// A reading from its encoded reply, as readPageAfresh gave it.
+export const decodeReading = (role: MapRole, group: TypeGroup, items: string) =>
+  Option.map(
+    Schema.decodeUnknownOption(Schema.fromJsonString(promptFor(role, group).output))(items),
+    (value) => toReading(role, group, value)
+  )

@@ -6,6 +6,7 @@ import m3 from "./20261016090415_question_bank/migration.sql" with { type: "text
 import m4 from "./20261016093310_enrichment/migration.sql" with { type: "text" }
 import m5 from "./20261016100119_job_crashes/migration.sql" with { type: "text" }
 import m6 from "./20261016102025_item_identity/migration.sql" with { type: "text" }
+import m7 from "./20261016105352_golden_runs/migration.sql" with { type: "text" }
 
 export const bundledMigrations: ReadonlyArray<{ readonly name: string; readonly sql: string }> = [
   { name: "20261016072200_init", sql: m0 },
@@ -15,4 +16,5 @@ export const bundledMigrations: ReadonlyArray<{ readonly name: string; readonly 
   { name: "20261016093310_enrichment", sql: m4 },
   { name: "20261016100119_job_crashes", sql: m5 },
   { name: "20261016102025_item_identity", sql: m6 },
+  { name: "20261016105352_golden_runs", sql: m7 },
 ]

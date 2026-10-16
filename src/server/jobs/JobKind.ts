@@ -2,6 +2,7 @@ import { Context, type Effect, Layer, Schema } from "effect"
 import type { BookFiles } from "../books/BookFiles.ts"
 import type { Db } from "../db/Database.ts"
 import type { LlmAdapter, LlmError } from "../llm/LlmAdapter.ts"
+import type { ApiKeyStore } from "../settings/ApiKeyStore.ts"
 import type { Settings } from "../settings/Settings.ts"
 import type { Taxonomy } from "../taxonomy/Taxonomy.ts"
 
@@ -31,7 +32,7 @@ export interface StepInput<P, C> {
 }
 
 // What a step may use.
-export type StepServices = LlmAdapter | Db | Settings | BookFiles | Taxonomy
+export type StepServices = LlmAdapter | Db | Settings | ApiKeyStore | BookFiles | Taxonomy
 
 export interface JobKind<P, C> {
   readonly kind: string

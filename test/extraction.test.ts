@@ -437,8 +437,9 @@ describe("The Publish Gate", () => {
         const curator = yield* curatorBrowser
         const proposed = yield* proposedBook(curator)
         yield* confirmAndExtract(curator, proposed.book.id, rangesOf(proposed))
-        const written = yield* sentFor("You write teaching material")
-        // Seven Questions were enriched, each written twice.
+        // Two for the cost preview's sample; then seven Questions were
+        // enriched, each written twice.
+        const written = (yield* sentFor("You write teaching material")).slice(2)
         expect(written).toHaveLength(14)
         expect(written[1]?.messages.at(-1)?.content).toContain("Your last reply had these problems")
         const items = yield* curator.api.review.list()
@@ -738,6 +739,103 @@ describe("Fixing a Book Map", () => {
         expect(codes(listed)).toEqual(["structure"])
         const refused = yield* curator.api.review.publish({ params: { id: item.id } }).pipe(Effect.flip)
         expect(refused).toMatchObject({ _tag: "CannotPublish" })
+      }),
+      AllJobKinds
+    ))
+})
+
+describe("The golden set", () => {
+  test("the Curator approves the first Book's Questions with tags, and a check reports exactness and tag agreement", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const first = yield* proposedBook(curator)
+        yield* confirmAndExtract(curator, first.book.id, rangesOf(first))
+        const second = yield* proposedBook(curator, "Second edition")
+        yield* confirmAndExtract(curator, second.book.id, rangesOf(second))
+        const golden = curator.api.golden
+
+        let view = yield* golden.get()
+        expect(view.book?.id).toBe(first.book.id)
+        expect(view).toMatchObject({ limit: 100, approved: 0, report: null, job: null })
+        expect(view.candidates.map((candidate) => candidate.number)).toEqual([1, 2, 3, 4, 5, 6, 8, 9])
+        const [one, two, three] = view.candidates
+        const modelSkill = one!.primarySkill!
+
+        const refused = yield* golden.approve({
+          params: { questionId: three!.questionId },
+          payload: { primarySkill: "verbal.reading.inference", secondarySkills: [] }
+        }).pipe(Effect.flip)
+        expect(refused).toMatchObject({ _tag: "GoldenTagsInvalid" })
+        const db = yield* Db
+        const secondOwn = yield* bankItem(second.book.id, 9)
+        const notFirst = yield* golden.approve({
+          params: { questionId: secondOwn.question.id as never },
+          payload: { primarySkill: modelSkill, secondarySkills: [] }
+        }).pipe(Effect.flip)
+        expect(notFirst).toMatchObject({ _tag: "NotGoldenCandidate" })
+
+        yield* golden.approve({ params: { questionId: one!.questionId }, payload: { primarySkill: modelSkill, secondarySkills: [] } })
+        // The Curator labels the second with another Skill than the model's.
+        view = yield* golden.approve({
+          params: { questionId: two!.questionId },
+          payload: { primarySkill: "quant.computation.ordering", secondarySkills: [] }
+        })
+        expect(view.approved).toBe(2)
+        const readingsBefore = (yield* db.select().from(pageReadings).pipe(Effect.orDie)).length
+
+        view = yield* golden.check({ payload: { spendCap: 1 } })
+        expect(view.job).toMatchObject({ kind: "golden-check" })
+        const failed = yield* advanceUntil(
+          golden.get().pipe(Effect.map((current) => (current.report !== null ? current : undefined))),
+          { step: "200 millis", maxSteps: 3000 }
+        )
+        expect(failed.report).toMatchObject({
+          items: 2,
+          textExact: 2,
+          partsExact: 2,
+          keysExact: 2,
+          tagAgreement: 0.5,
+          passed: false
+        })
+        expect(failed.report?.misses).toMatchObject([{ number: 2, text: true, key: true, tags: false }])
+        // The Book's own readings were left alone.
+        expect((yield* db.select().from(pageReadings).pipe(Effect.orDie)).length).toBe(readingsBefore)
+
+        yield* golden.approve({ params: { questionId: two!.questionId }, payload: { primarySkill: modelSkill, secondarySkills: [] } })
+        const finishedBefore = failed.report!.finishedAt
+        yield* advanceUntil(Effect.succeed(undefined), { step: "1 second", maxSteps: 2 }).pipe(Effect.ignore)
+        yield* golden.check({ payload: { spendCap: 1 } })
+        const passed = yield* advanceUntil(
+          golden.get().pipe(
+            Effect.map((current) => (current.report !== null && current.report.finishedAt > finishedBefore ? current : undefined))
+          ),
+          { step: "200 millis", maxSteps: 3000 }
+        )
+        expect(passed.report).toMatchObject({ items: 2, tagAgreement: 1, passed: true, misses: [] })
+        expect(passed.job?.result).toBe("Golden set of 2: text exact on 2, Parts on 2, keys on 2; tags agree on 100%. Passed.")
+      }),
+      AllJobKinds
+    ))
+})
+
+describe("The Question Bank", () => {
+  test("after a Book is extracted, Skills with fewer than 15 Questions are flagged for merging", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        expect(yield* curator.api.bank.thinSkills()).toEqual([])
+        const proposed = yield* proposedBook(curator)
+        yield* confirmAndExtract(curator, proposed.book.id, rangesOf(proposed))
+        const thin = yield* curator.api.bank.thinSkills()
+        // The fake tags every Question with the first Skill it is offered.
+        const first = (yield* bankItem(proposed.book.id, 1)).question.primarySkill!
+        expect(thin.find((skill) => skill.id === first)?.questions).toBe(5)
+        expect(thin.every((skill) => skill.id.startsWith("quant.") && skill.questions < 15)).toBe(true)
+        expect(thin.at(-1)?.id).toBe(first)
+        expect(thin.length).toBeGreaterThan(10)
       }),
       AllJobKinds
     ))

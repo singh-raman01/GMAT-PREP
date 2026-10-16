@@ -207,7 +207,7 @@ const UnsureCodes: ReadonlySet<string> = new Set(["structure", "render", "figure
 // A reply that stays invalid after its retry leaves that part of the
 // enrichment missing, and the Publish Gate holds the Question for it, instead
 // of stopping the whole run. Any other error stops the step as usual.
-const unlessInvalid = <A, R>(call: Effect.Effect<A, LlmError, R>) =>
+export const unlessInvalid = <A, R>(call: Effect.Effect<A, LlmError, R>) =>
   call.pipe(Effect.catchTag("LlmInvalidReply", () => Effect.succeed(undefined)))
 
 const loadQuestion = (questionId: string) =>

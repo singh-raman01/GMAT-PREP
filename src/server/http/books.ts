@@ -16,6 +16,8 @@ import { CuratorCookie } from "../../api/Curator.ts"
 import { BookFiles } from "../books/BookFiles.ts"
 import { Books } from "../books/Books.ts"
 import { Curator } from "../curator/Curator.ts"
+import { Bank } from "../review/Bank.ts"
+import { Golden } from "../review/Golden.ts"
 import { ReviewQueue } from "../review/ReviewQueue.ts"
 
 export const BooksHandlers = HttpApiBuilder.group(
@@ -29,6 +31,29 @@ export const BooksHandlers = HttpApiBuilder.group(
       readAgain: ({ params }) => books.readAgain(params.id),
       start: ({ params, payload }) => books.start(params.id, payload.spendCap),
       confirmMap: ({ params, payload }) => books.confirmMap(params.id, payload.ranges, payload.spendCap)
+    })
+  })
+)
+
+export const BankHandlers = HttpApiBuilder.group(
+  Api,
+  "bank",
+  Effect.fn(function*(handlers) {
+    const bank = yield* Bank
+    return handlers.handleAll({ thinSkills: () => bank.thinSkills })
+  })
+)
+
+export const GoldenHandlers = HttpApiBuilder.group(
+  Api,
+  "golden",
+  Effect.fn(function*(handlers) {
+    const golden = yield* Golden
+    return handlers.handleAll({
+      get: () => golden.get,
+      approve: ({ params, payload }) => golden.approve(params.questionId, payload),
+      remove: ({ params }) => golden.remove(params.questionId),
+      check: ({ payload }) => golden.check(payload.spendCap)
     })
   })
 )

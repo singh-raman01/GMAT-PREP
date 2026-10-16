@@ -97,8 +97,10 @@ export type PageRoute = typeof PageRoute.Type
 // One step of the full run in the cost preview: what it took on the sample,
 // and what it would take on the pages the full run still reads.
 export class CostStep extends Schema.Class<CostStep>("gmat-prep/api/CostStep")({
-  // Such as "Book Map" or "Extraction".
+  // Such as "Book Map", "Extraction" or "Enrichment".
   name: Schema.String,
+  // What the step's counts count: pages, or for enrichment, Questions.
+  unit: Schema.Literals(["page", "question"]).pipe(Schema.withDecodingDefaultKey(Effect.succeed("page" as const))),
   sampledPages: Schema.Int,
   sampleTokens: Schema.Int,
   sampleCost: Schema.Number,
