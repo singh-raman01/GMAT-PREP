@@ -304,11 +304,11 @@ describe("While a Sectional runs", () => {
       yield* tab.sectionals.bookmark({ params: { id: started.id }, payload: { questionId: firstId, bookmarked: true } })
       const second = yield* answer(tab, started, "A")
 
-      // The wrong answer, the Bookmark and the Question on screen stay out,
-      // counted whatever their status.
+      // The wrong answer, the Bookmark and the Question on screen stay out.
+      // Under missed both count, whether missed or not.
       expect(yield* tab.practice.preview({ payload: { choice: missed } })).toMatchObject({ questions: 0, inSection: 2 })
       const bookmarked = yield* tab.practice.start({ payload: { choice: { ...missed, status: "bookmarked" } } }).pipe(Effect.flip)
-      expect(bookmarked).toMatchObject({ _tag: "NoQuestionsMatch", inSection: 2 })
+      expect(bookmarked).toMatchObject({ _tag: "NoQuestionsMatch", inSection: 1 })
       expect(yield* tab.practice.preview({ payload: { choice: bookOrder } })).toMatchObject({
         questions: 0,
         inSection: 2,

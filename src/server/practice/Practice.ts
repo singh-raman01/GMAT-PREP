@@ -292,10 +292,11 @@ export class Practice extends Context.Service<Practice, {
             if (problems.length > 0) return yield* new FiltersInvalid({ problems })
             const pool = yield* run(publishedPool)
             const picked = pickByFilters(pool.filter((question) => !held.has(question.id)), history, choice, salt)
-            // Counted whatever their status, which would say how an answer went.
-            const inSection = pool.filter((question) =>
-              held.has(question.id) && matchesFilters(question, { ...choice, status: "any" }, history)
-            ).length
+            // Under missed, counted whatever their status, which would say
+            // how an answer went.
+            const counted = choice.status === "missed" ? { ...choice, status: "any" as const } : choice
+            const inSection = pool.filter((question) => held.has(question.id) && matchesFilters(question, counted, history))
+              .length
             const words = [
               choice.questionType === undefined
                 ? choice.section === undefined ? "Every Section" : names.named(choice.section).name

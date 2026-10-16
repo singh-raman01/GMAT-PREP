@@ -158,7 +158,6 @@ const Running = (
   const [calculating, setCalculating] = useState(false)
   const [ending, setEnding] = useState(false)
   const calculatorToggle = useRef<HTMLButtonElement>(null)
-  const endToggle = useRef<HTMLButtonElement>(null)
   const mainHeading = useRef<HTMLHeadingElement>(null)
   const dataInsights = view.section.id === "di"
   const remaining = useRemaining(reading)
@@ -215,13 +214,7 @@ const Running = (
             </button>
           )}
           {view.heldHere && view.stage === "question" && (
-            <button
-              ref={endToggle}
-              type="button"
-              className="link-button set-end"
-              aria-expanded={ending}
-              onClick={() => setEnding(true)}
-            >
+            <button type="button" className="link-button set-end" aria-expanded={ending} onClick={() => setEnding(true)}>
               End the Section
             </button>
           )}
@@ -238,7 +231,8 @@ const Running = (
           }}
           onNo={() => {
             setEnding(false)
-            endToggle.current?.focus()
+            // Back to the Question, where Enter submits the answer.
+            mainHeading.current?.focus()
           }}
         />
       )}
