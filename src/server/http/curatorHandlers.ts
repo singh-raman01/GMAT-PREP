@@ -4,12 +4,23 @@ import { HttpApiBuilder } from "effect/http-api"
 import { Api } from "../../api/Api.ts"
 import { CuratorCookie, CuratorSession } from "../../api/Curator.ts"
 import { LlmNotConfigured } from "../../api/Jobs.ts"
-import { ApiKeyStatus, LlmSettingsView, LlmTasks, ModelPrice, TaskModel } from "../../api/Settings.ts"
+import {
+  ApiKeyStatus,
+  LlmSettingsView,
+  LlmTasks,
+  ModelPrice,
+  TargetTimeView,
+  TaskModel,
+  UnknownQuestionTypes
+} from "../../api/Settings.ts"
+import { DefaultTargetSeconds, targetSecondsFor } from "../../api/targetTimes.ts"
+import { sectionOf } from "../../api/taxonomyRules.ts"
 import { Curator } from "../curator/Curator.ts"
 import { ConnectionTest, randomWord } from "../jobs/kinds/connectionTest.ts"
 import { JobStore } from "../jobs/JobStore.ts"
 import { ApiKeyStore } from "../settings/ApiKeyStore.ts"
 import { missingSettings, Settings } from "../settings/Settings.ts"
+import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 
 // Plain HTTP on localhost or a trusted LAN, so the cookie is not marked Secure.
 const cookieOptions = { httpOnly: true, secure: false, sameSite: "strict", path: "/" } as const
@@ -96,6 +107,23 @@ export const SettingsHandlers = HttpApiBuilder.group(
       )
     )
 
+    const questionTypes = (yield* Taxonomy).view.sections.flatMap((section) =>
+      section.questionTypes.map((type) => ({ id: type.id, name: type.name, section: section.id }))
+    )
+    const targetTimesView = settings.targetTimes.pipe(
+      Effect.map((overrides) =>
+        questionTypes.map((type) =>
+          new TargetTimeView({
+            questionType: type.id,
+            name: type.name,
+            section: type.section,
+            seconds: targetSecondsFor(type.id, overrides),
+            sectionDefault: DefaultTargetSeconds[type.section] ?? targetSecondsFor(type.id, {})
+          })
+        )
+      )
+    )
+
     const view = Effect.gen(function*() {
       const llm = yield* settings.llm
       return new LlmSettingsView({
@@ -120,7 +148,21 @@ export const SettingsHandlers = HttpApiBuilder.group(
         yield* keys.save(payload.apiKey)
         return yield* keyStatus
       }),
-      removeApiKey: () => keys.remove.pipe(Effect.andThen(keyStatus))
+      removeApiKey: () => keys.remove.pipe(Effect.andThen(keyStatus)),
+      targetTimes: () => targetTimesView,
+      saveTargetTimes: Effect.fn(function*({ payload }) {
+        const known = new Set(questionTypes.map((type) => type.id))
+        const unknown = payload.times.map((time) => time.questionType).filter((id) => !known.has(id))
+        if (unknown.length > 0) return yield* new UnknownQuestionTypes({ questionTypes: [...new Set(unknown)] })
+        const current = { ...(yield* settings.targetTimes) }
+        for (const time of payload.times) {
+          // A time equal to the Section's default follows that default.
+          if (time.seconds === DefaultTargetSeconds[sectionOf(time.questionType)]) delete current[time.questionType]
+          else current[time.questionType] = time.seconds
+        }
+        yield* settings.saveTargetTimes(current)
+        return yield* targetTimesView
+      })
     })
   })
 )

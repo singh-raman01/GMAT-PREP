@@ -56,9 +56,16 @@ export const completionsUrl = (baseUrl: string) => {
   return trimmed.endsWith("/chat/completions") ? trimmed : `${trimmed}/chat/completions`
 }
 
+const TargetTimesKey = "target-times"
+const StoredTargetTimes = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Int))
+const decodeTargetTimes = Schema.decodeUnknownOption(StoredTargetTimes)
+
 export class Settings extends Context.Service<Settings, {
   readonly llm: Effect.Effect<LlmSettings>
   saveLlm(input: LlmSettingsInput): Effect.Effect<LlmSettings>
+  // Target Times the Curator set, in seconds by Question Type.
+  readonly targetTimes: Effect.Effect<Readonly<Record<string, number>>>
+  saveTargetTimes(times: Readonly<Record<string, number>>): Effect.Effect<Readonly<Record<string, number>>>
 }>()("gmat-prep/server/Settings") {
   static readonly layer = Layer.effect(
     Settings,
@@ -101,7 +108,24 @@ export class Settings extends Context.Service<Settings, {
         return value
       })
 
-      return Settings.of({ llm, saveLlm })
+      const targetTimes = Effect.gen(function*() {
+        const [row] = yield* db.select().from(settings).where(eq(settings.key, TargetTimesKey)).pipe(Effect.orDie)
+        if (row === undefined) return {}
+        return Option.getOrElse(decodeTargetTimes(row.value), () => ({}))
+      })
+
+      const saveTargetTimes = (times: Readonly<Record<string, number>>) =>
+        Effect.gen(function*() {
+          const value = JSON.stringify(times)
+          const updatedAt = yield* Clock.currentTimeMillis
+          yield* db.insert(settings)
+            .values({ key: TargetTimesKey, value, updatedAt })
+            .onConflictDoUpdate({ target: settings.key, set: { value, updatedAt } })
+            .pipe(Effect.orDie)
+          return times
+        })
+
+      return Settings.of({ llm, saveLlm, targetTimes, saveTargetTimes })
     })
   )
 }

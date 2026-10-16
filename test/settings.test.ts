@@ -158,3 +158,27 @@ describe("The config folder", () => {
     )
   })
 })
+
+describe("Target Times", () => {
+  test("default to the Section's time per Question, and the Curator can set a Question Type's own", () =>
+    runWithApp(Effect.gen(function*() {
+      const curator = yield* curatorBrowser
+      const times = yield* curator.settings.targetTimes()
+      expect(times).toHaveLength(21)
+      const of = (list: typeof times, id: string) => list.find((time) => time.questionType === id)
+      expect(of(times, "quant.ps")).toMatchObject({ name: "Problem Solving", section: "quant", seconds: 129 })
+      expect(of(times, "verbal.cr-weaken")).toMatchObject({ seconds: 117, sectionDefault: 117 })
+      expect(of(times, "di.ds")).toMatchObject({ seconds: 135, sectionDefault: 135 })
+
+      const set = yield* curator.settings.saveTargetTimes({ payload: { times: [{ questionType: "di.ds", seconds: 150 }] } })
+      expect(of(set, "di.ds")?.seconds).toBe(150)
+      expect(of(set, "di.ta")?.seconds).toBe(135)
+      // Back at the default, it follows the default again.
+      const reset = yield* curator.settings.saveTargetTimes({ payload: { times: [{ questionType: "di.ds", seconds: 135 }] } })
+      expect(of(reset, "di.ds")?.seconds).toBe(135)
+
+      const unknown = yield* curator.settings.saveTargetTimes({ payload: { times: [{ questionType: "di.made-up", seconds: 60 }] } })
+        .pipe(Effect.flip)
+      expect(unknown).toMatchObject({ _tag: "UnknownQuestionTypes", questionTypes: ["di.made-up"] })
+    })))
+})
