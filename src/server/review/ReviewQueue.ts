@@ -20,7 +20,7 @@ import {
   ReviewReason,
   SourceView
 } from "../../api/Review.ts"
-import { KeyCodes, readLinkReasons, recheckSources, RepeatCodes } from "../books/bankWrites.ts"
+import { KeyCodes, readLinkReasons, recheckSources, RepeatCodes, UnsureCodes } from "../books/bankWrites.ts"
 import { Db } from "../db/Database.ts"
 import {
   approaches,
@@ -221,7 +221,9 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
               related: row.relatedQuestionId === null ? null : views.get(row.relatedQuestionId) ?? null,
               status: row.status as "open" | "decided",
               decision: row.decision as ReviewItemView["decision"],
+              // Text in doubt is not enriched at all, so trying again cannot help it.
               checkable: row.status === "open" && question !== undefined &&
+                !reasons.some((reason) => UnsureCodes.has(reason.code)) &&
                 (reasons.some((reason) => RetryCodes.has(reason.code)) || question.solverAnswers.length < SolverRuns),
               createdAt: row.createdAt
             })

@@ -891,8 +891,11 @@ describe("When a reply or a job falls short", () => {
         const first = byNumber(yield* curator.api.review.list(), 1)
         expect(codes(first)).toEqual(["tags"])
         expect(first.checkable).toBe(true)
-        // Items whose reasons a new reply cannot settle are not checkable.
+        // Items whose reasons a new reply cannot settle are not checkable,
+        // nor is text in doubt, which is not enriched at all.
         expect(byNumber(yield* curator.api.review.list(), 6).checkable).toBe(false)
+        expect(codes(byNumber(yield* curator.api.review.list(), 9))).toEqual(["render"])
+        expect(byNumber(yield* curator.api.review.list(), 9).checkable).toBe(false)
         const notCheckable = yield* curator.api.review.checkAgain({ params: { id: byNumber(yield* curator.api.review.list(), 6).id } })
           .pipe(Effect.flip)
         expect(notCheckable._tag).toBe("ReviewItemNotOpen")
