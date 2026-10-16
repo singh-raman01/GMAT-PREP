@@ -839,4 +839,30 @@ describe("The Question Bank", () => {
       }),
       AllJobKinds
     ))
+
+  test("a Learner practises an extracted Book in order, past its Reserve Question and held items", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const proposed = yield* proposedBook(curator)
+        const id = proposed.book.id
+        yield* confirmAndExtract(curator, id, rangesOf(proposed))
+        const learner = yield* openInspectableBrowser
+        yield* learner.api.profiles.create({ payload: { name: "Asha" } })
+        const choice = { kind: "book", bookId: id } as const
+        const started = yield* learner.api.practice.start({ payload: { choice } })
+        expect(started.total).toBe(4)
+        expect(started.heldForMocks).toHaveLength(1)
+        expect(started.unavailable).toHaveLength(3)
+        expect(started.current?.question.source).toMatchObject({ bookTitle: "Practice Questions, First edition", page: 2 })
+
+        const reserve = yield* curator.api.bank.reserve()
+        expect(reserve.find((section) => section.id === "quant")).toMatchObject({ questions: 5, held: 1, released: 0 })
+        yield* curator.api.bank.releaseReserve({ payload: { section: "quant", count: 1 } })
+        const after = yield* learner.api.practice.preview({ payload: { choice } })
+        expect(after).toMatchObject({ questions: 5, heldForMocks: 0, unavailable: 3 })
+      }),
+      AllJobKinds
+    ))
 })
