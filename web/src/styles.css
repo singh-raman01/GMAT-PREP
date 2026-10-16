@@ -824,6 +824,344 @@ select:focus-visible {
   max-width: 9rem;
 }
 
+/* Books */
+
+.books {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--rule);
+  max-width: 52rem;
+}
+
+.book {
+  display: grid;
+  gap: 0.3rem;
+  padding: 1.25rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.book-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.9rem;
+}
+
+.book-title {
+  font-size: var(--step-2);
+  font-weight: 750;
+  line-height: 1.25;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.book-title:hover {
+  text-decoration: underline;
+}
+
+/* A plain label beside a title, outlined so it reads as a fact, not a button. */
+.tag {
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  color: var(--pencil);
+  font-size: var(--step--1);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.book-status {
+  font-weight: 700;
+}
+
+.book[data-status="unreadable"] .book-status {
+  color: var(--alert);
+}
+
+.book-meta,
+.book-facts {
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+.book-facts {
+  max-width: 68ch;
+  margin-bottom: 2rem;
+}
+
+.book-facts a {
+  color: var(--graphite);
+  font-weight: 700;
+}
+
+.back {
+  margin-bottom: 1.5rem;
+  font-size: var(--step-0);
+}
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+}
+
+.check input {
+  flex: none;
+  width: 1.15rem;
+  height: 1.15rem;
+  margin-top: 0.3rem;
+  accent-color: var(--graphite);
+}
+
+.check label {
+  font-size: var(--step-0);
+  font-weight: 700;
+}
+
+.price .check {
+  margin-top: 0.75rem;
+}
+
+input[type="file"] {
+  max-width: 100%;
+  font: inherit;
+  font-size: var(--step-0);
+}
+
+input[type="file"]::file-selector-button {
+  margin-right: 0.75rem;
+  padding: 0.45rem 0.9rem;
+  border: 2px solid var(--graphite);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--graphite);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.upload-progress {
+  display: grid;
+  gap: 0.4rem;
+  font-size: var(--step-0);
+  font-weight: 700;
+}
+
+.book-progress {
+  display: grid;
+  gap: 0.6rem;
+  max-width: 52rem;
+  margin-bottom: 3rem;
+  padding: 1.1rem 0;
+  border-block: 1px solid var(--rule);
+}
+
+/* Facts in two columns: the name, then what it says. */
+.facts {
+  display: grid;
+  gap: 0.9rem;
+  max-width: 52rem;
+  margin: 1.25rem 0 2rem;
+}
+
+.facts > div {
+  display: grid;
+  grid-template-columns: 10rem 1fr;
+  gap: 0.2rem 1.5rem;
+}
+
+.facts dt {
+  font-weight: 700;
+}
+
+.facts dd {
+  margin: 0;
+  max-width: 62ch;
+}
+
+.start-run {
+  display: grid;
+  gap: 1rem;
+}
+
+.link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--graphite);
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  text-decoration-thickness: 2px;
+}
+
+/* The Book Map editor: one row per range, read across like a ledger. */
+
+.map-source {
+  margin-bottom: 1.25rem;
+  font-size: var(--step-0);
+  font-weight: 700;
+}
+
+.ranges {
+  width: 100%;
+  max-width: 64rem;
+  margin-bottom: 1.25rem;
+  border-collapse: collapse;
+  font-size: var(--step-0);
+}
+
+.ranges th {
+  padding: 0 0.75rem 0.5rem 0;
+  border-bottom: 2px solid var(--graphite);
+  color: var(--pencil);
+  font-weight: 700;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ranges td {
+  padding: 0.6rem 0.75rem 0.6rem 0;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: middle;
+}
+
+.ranges input[type="text"],
+.ranges select {
+  min-height: 2.5rem;
+  font-size: var(--step-0);
+}
+
+.ranges input[type="text"] {
+  width: 15rem;
+  max-width: none;
+}
+
+.ranges select {
+  width: 11rem;
+}
+
+.ranges .group-pick select {
+  width: 14rem;
+}
+
+.ranges input.page-input {
+  width: 5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.group-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.row-actions {
+  white-space: nowrap;
+}
+
+.row-actions a,
+.row-actions .link-button {
+  margin-right: 1rem;
+  font-weight: 700;
+}
+
+.map-hint {
+  max-width: 62ch;
+  margin-top: 1.25rem;
+}
+
+.map-problems {
+  margin-top: 1.5rem;
+}
+
+.map-problems {
+  max-width: 62ch;
+  margin-bottom: 1.25rem;
+  padding: 0.75rem 1rem;
+  border-left: 4px solid var(--alert);
+}
+
+.map-problems ul {
+  margin: 0.4rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.confirm-actions {
+  align-items: center;
+  margin-top: 2rem;
+}
+
+@media (max-width: 48rem) {
+  .facts > div {
+    grid-template-columns: 1fr;
+  }
+
+  /* Each range becomes a short stack of labelled fields. */
+  .ranges thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .ranges,
+  .ranges tbody,
+  .ranges tr,
+  .ranges td {
+    display: block;
+  }
+
+  .ranges tr {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.6rem 1rem;
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .ranges td {
+    padding: 0;
+    border: 0;
+  }
+
+  .ranges td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 0.2rem;
+    color: var(--pencil);
+    font-weight: 700;
+  }
+
+  .ranges td[data-label="Set"],
+  .ranges td[data-label="Questions"],
+  .ranges td.row-actions {
+    grid-column: 1 / -1;
+  }
+
+  .ranges input[type="text"],
+  .ranges select,
+  .ranges .group-pick select {
+    width: 100%;
+  }
+
+  .ranges input.page-input {
+    width: 100%;
+  }
+
+  .group-pick {
+    display: flex;
+  }
+}
+
 /* Motion answers actions only, and stops when asked to. */
 
 @keyframes open {
@@ -905,4 +1243,8 @@ select:focus-visible {
   clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
+}
+
+.add-book .add-form {
+  margin-top: 1rem;
 }

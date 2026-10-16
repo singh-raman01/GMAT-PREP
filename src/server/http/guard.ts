@@ -1,5 +1,6 @@
 import { Cause, Effect } from "effect"
 import { HttpEffect, HttpRouter, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http"
+import { BookUploadPath, MaxBookBytes } from "../../api/Books.ts"
 
 // The server listens on 127.0.0.1 only, but a web page on another site can
 // still reach it by pointing its own host name at 127.0.0.1 (DNS rebinding).
@@ -40,6 +41,11 @@ const UnsafeMethods = new Set(["POST", "PUT", "PATCH", "DELETE"])
 
 export const MaxJsonBytes = 1_000_000
 
+// The one write that is not JSON: adding a Book streams the PDF itself.
+const FileUploads: ReadonlyMap<string, { readonly type: string; readonly maxBytes: number }> = new Map([
+  [BookUploadPath, { type: "application/pdf", maxBytes: MaxBookBytes }]
+])
+
 const writeRefusal = (request: HttpServerRequest.HttpServerRequest, host: string) => {
   if (!UnsafeMethods.has(request.method)) return undefined
   const origin = request.headers["origin"]
@@ -47,9 +53,22 @@ const writeRefusal = (request: HttpServerRequest.HttpServerRequest, host: string
     return HttpServerResponse.text("Changes are accepted only from GMAT prep's own pages.", { status: 403 })
   }
   const length = request.headers["content-length"]
+  const type = (request.headers["content-type"] ?? "").toLowerCase()
+  const upload = request.method === "POST" ? FileUploads.get(request.url.split("?")[0] ?? "") : undefined
+  if (upload !== undefined) {
+    if (!type.startsWith(upload.type)) {
+      return HttpServerResponse.text("Send the Book as a PDF.", { status: 415 })
+    }
+    if (length === undefined) {
+      return HttpServerResponse.text("Send the length of the file.", { status: 411 })
+    }
+    if (Number(length) > upload.maxBytes) {
+      return HttpServerResponse.text("The file is too large.", { status: 413 })
+    }
+    return undefined
+  }
   const hasBody = (length !== undefined && length !== "0") || request.headers["transfer-encoding"] !== undefined
   if (!hasBody) return undefined
-  const type = (request.headers["content-type"] ?? "").toLowerCase()
   if (!type.startsWith("application/json")) {
     return HttpServerResponse.text("Send the request body as JSON.", { status: 415 })
   }
@@ -62,8 +81,17 @@ const writeRefusal = (request: HttpServerRequest.HttpServerRequest, host: string
   return undefined
 }
 
+// A response that sets its own content security policy keeps it, such as a
+// Book's PDF, which the browser's viewer must be allowed to show.
+const { "content-security-policy": _policy, ...HeadersBesidesPolicy } = SecurityHeaders
+
 const addSecurityHeaders: HttpEffect.PreResponseHandler = (_request, response) =>
-  Effect.succeed(HttpServerResponse.setHeaders(response, SecurityHeaders))
+  Effect.succeed(
+    HttpServerResponse.setHeaders(
+      response,
+      response.headers["content-security-policy"] === undefined ? SecurityHeaders : HeadersBesidesPolicy
+    )
+  )
 
 // Logs a request that failed on the server. Failures that map to a client
 // error, such as a payload that does not decode, are not the server's fault.

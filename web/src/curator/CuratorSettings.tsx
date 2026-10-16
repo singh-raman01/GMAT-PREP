@@ -30,6 +30,7 @@ interface Draft {
   readonly models: Readonly<Record<LlmTask, string>>
   // Dollars per million tokens, as typed.
   readonly prices: Readonly<Record<string, { readonly input: string; readonly output: string }>>
+  readonly readsImages: ReadonlySet<string>
 }
 
 const draftOf = (view: LlmSettingsView): Draft => ({
@@ -41,7 +42,8 @@ const draftOf = (view: LlmSettingsView): Draft => ({
       input: String(price.inputPerMillion),
       output: String(price.outputPerMillion)
     }])
-  )
+  ),
+  readsImages: new Set(view.readsImages)
 })
 
 // The distinct model names in use, in task order.
@@ -122,7 +124,8 @@ export const CuratorSettings = ({ onLocked, onStopped, onTestStarted }: Props) =
             model,
             inputPerMillion: Number(draft.prices[model]!.input),
             outputPerMillion: Number(draft.prices[model]!.output)
-          }))
+          })),
+          readsImages: used.filter((model) => draft.readsImages.has(model))
         }
       })
     )
@@ -216,9 +219,10 @@ export const CuratorSettings = ({ onLocked, onStopped, onTestStarted }: Props) =
         </section>
 
         <section className="group" aria-labelledby={`${ids.same}-prices`}>
-          <h2 id={`${ids.same}-prices`}>Prices</h2>
+          <h2 id={`${ids.same}-prices`}>Prices and images</h2>
           <p className="group-about">
-            Dollars per million tokens, from your provider's price list. The API reports tokens but not cost.
+            Prices are dollars per million tokens, from your provider's price list; the API reports tokens but not
+            cost. Mark the models that accept images, so the extraction model can read scanned pages.
           </p>
           {used.length === 0
             ? <p className="quiet">Set a model above, and its prices go here.</p>
@@ -229,8 +233,15 @@ export const CuratorSettings = ({ onLocked, onStopped, onTestStarted }: Props) =
                     key={model}
                     model={model}
                     value={draft.prices[model] ?? { input: "", output: "" }}
+                    readsImages={draft.readsImages.has(model)}
                     problem={problems[`price:${model}`]}
                     onChange={(price) => update({ prices: { ...draft.prices, [model]: price } })}
+                    onReadsImagesChange={(reads) => {
+                      const next = new Set(draft.readsImages)
+                      if (reads) next.add(model)
+                      else next.delete(model)
+                      update({ readsImages: next })
+                    }}
                   />
                 ))}
               </div>
@@ -272,14 +283,16 @@ const TaskModelField = (
 }
 
 const PriceFields = (
-  { model, value, problem, onChange }: {
+  { model, value, readsImages, problem, onChange, onReadsImagesChange }: {
     readonly model: string
     readonly value: { readonly input: string; readonly output: string }
+    readonly readsImages: boolean
     readonly problem: string | undefined
     readonly onChange: (price: { readonly input: string; readonly output: string }) => void
+    readonly onReadsImagesChange: (readsImages: boolean) => void
   }
 ) => {
-  const ids = { input: useId(), output: useId(), error: useId() }
+  const ids = { input: useId(), output: useId(), error: useId(), images: useId() }
   return (
     <fieldset className="price" aria-describedby={problem === undefined ? undefined : ids.error}>
       <legend>{model}</legend>
@@ -308,6 +321,15 @@ const PriceFields = (
             onChange={(event) => onChange({ ...value, output: event.target.value })}
           />
         </div>
+      </div>
+      <div className="check">
+        <input
+          id={ids.images}
+          type="checkbox"
+          checked={readsImages}
+          onChange={(event) => onReadsImagesChange(event.target.checked)}
+        />
+        <label htmlFor={ids.images}>Reads images</label>
       </div>
       {problem !== undefined && <p id={ids.error} className="field-error">{problem}</p>}
     </fieldset>

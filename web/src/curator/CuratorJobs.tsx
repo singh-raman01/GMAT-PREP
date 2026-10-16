@@ -5,7 +5,7 @@ import { call } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
 import { clockTime, dayAndTime, endedAt } from "../format.ts"
 import { linkProps } from "../router.ts"
-import { latestRevision, mergeJob, useJobEvents } from "./jobEvents.ts"
+import { afterStreamClosed, latestRevision, mergeJob, useJobEvents } from "./jobEvents.ts"
 
 interface Props {
   readonly onLocked: () => void
@@ -56,19 +56,15 @@ export const CuratorJobs = ({ onLocked, onStopped }: Props) => {
     setJobs((current) => (current === undefined ? current : mergeJob(current, job)))
   }, [])
 
-  // The stream closes for good when the Curator is locked, or after the app
-  // restarted; in the second case the list is read again.
-  const closed = useCallback(async () => {
-    const status = await call((client) => client.curatorAccess.status())
-    if (!mounted.current) return
-    if (status._tag === "Success" && status.success.unlocked) {
-      setSince(undefined)
-      return load()
-    }
-    onLocked()
-  }, [load, onLocked])
-
-  useJobEvents(since, changed, () => void closed())
+  useJobEvents(
+    since,
+    changed,
+    () =>
+      void afterStreamClosed(() => {
+        setSince(undefined)
+        return load()
+      }, onLocked, () => mounted.current)
+  )
 
   const act = async (job: JobView, action: "pause" | "resume" | "cancel", spendCap?: number) => {
     const result = await call((client) =>

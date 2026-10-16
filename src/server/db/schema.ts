@@ -113,3 +113,73 @@ export const llmCalls = sqliteTable(
   },
   (t) => [index("llm_calls_job").on(t.jobId)]
 )
+
+// Books the Curator added. The file is stored once in the data folder's books
+// folder, named by its SHA-256, so the same file is never added twice.
+export const books = sqliteTable("books", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull(),
+  edition: text("edition").notNull(),
+  official: integer("official", { mode: "boolean" }).notNull(),
+  fileHash: text("file_hash").notNull().unique(),
+  fileSize: integer("file_size").notNull(),
+  // added, unreadable, previewed, mapping, map-proposed or mapped
+  status: text("status").notNull(),
+  // Why the file could not be read.
+  note: text("note"),
+  pageCount: integer("page_count"),
+  textPages: integer("text_pages"),
+  // How pages with no text layer are read: image or review.
+  scannedRoute: text("scanned_route"),
+  // The cost preview, as JSON, once the sample has run.
+  preview: text("preview"),
+  // The job reading the Book or proposing its Book Map.
+  jobId: text("job_id").references(() => jobs.id, { onDelete: "set null" }),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull()
+})
+
+// Each page's text as read from the file, how the page is read, and what the
+// Book Map model found on it.
+export const bookPages = sqliteTable(
+  "book_pages",
+  {
+    bookId: text("book_id").notNull().references(() => books.id, { onDelete: "cascade" }),
+    number: integer("number").notNull(),
+    text: text("text").notNull(),
+    hasText: integer("has_text", { mode: "boolean" }).notNull(),
+    // text, image or review
+    route: text("route").notNull(),
+    // JSON: role, group and chapter, with the model, prompt version and time.
+    survey: text("survey")
+  },
+  (t) => [primaryKey({ columns: [t.bookId, t.number] })]
+)
+
+// Book Maps the Book Map model proposed; the newest is shown to the Curator.
+export const bookMapProposals = sqliteTable(
+  "book_map_proposals",
+  {
+    id: text("id").primaryKey(),
+    bookId: text("book_id").notNull().references(() => books.id, { onDelete: "cascade" }),
+    // JSON array of ranges.
+    ranges: text("ranges").notNull(),
+    model: text("model").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    createdAt: integer("created_at").notNull()
+  },
+  (t) => [index("book_map_proposals_book").on(t.bookId)]
+)
+
+// Book Maps the Curator confirmed. Each confirmation is a new version.
+export const bookMaps = sqliteTable(
+  "book_maps",
+  {
+    bookId: text("book_id").notNull().references(() => books.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    // JSON array of ranges.
+    ranges: text("ranges").notNull(),
+    confirmedAt: integer("confirmed_at").notNull()
+  },
+  (t) => [primaryKey({ columns: [t.bookId, t.version] })]
+)

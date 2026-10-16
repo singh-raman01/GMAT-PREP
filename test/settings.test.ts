@@ -25,7 +25,8 @@ const settingsInput = {
   prices: [
     { model: "small-model", inputPerMillion: 0.15, outputPerMillion: 0.6 },
     { model: "large-model", inputPerMillion: 2.5, outputPerMillion: 10 }
-  ]
+  ],
+  readsImages: ["large-model"]
 }
 
 describe("LLM settings", () => {

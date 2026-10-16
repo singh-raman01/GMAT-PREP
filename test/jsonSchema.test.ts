@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
+import { surveyReply } from "../src/server/books/survey.ts"
 import { ConnectionTestReply } from "../src/server/jobs/kinds/connectionTest.ts"
 import { strictJsonSchema } from "../src/server/llm/jsonSchema.ts"
 
@@ -79,7 +80,7 @@ describe("Strict JSON Schema", () => {
   })
 
   test("every task's output schema has a strict form", () => {
-    for (const output of [ConnectionTestReply]) {
+    for (const output of [ConnectionTestReply, surveyReply([3, 4, 5])]) {
       expect(() => strictJsonSchema(output)).not.toThrow()
     }
   })

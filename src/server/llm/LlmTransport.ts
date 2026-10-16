@@ -83,6 +83,10 @@ const Completion = Schema.Struct({
 })
 const decodeCompletion = Schema.decodeUnknownOption(Completion)
 
+// Token counts as whole numbers, whatever a provider sends.
+const wholeTokens = (count: number | null | undefined) =>
+  count === null || count === undefined || !Number.isFinite(count) ? null : Math.max(0, Math.round(count))
+
 const requestBody = (request: TransportRequest) => ({
   model: request.model,
   messages: request.messages,
@@ -159,8 +163,8 @@ export const LlmTransportHttp = Layer.effect(
       return {
         content: choice?.message?.content ?? null,
         finishReason: choice?.finish_reason ?? null,
-        tokensIn: parsed.value.usage?.prompt_tokens ?? null,
-        tokensOut: parsed.value.usage?.completion_tokens ?? null
+        tokensIn: wholeTokens(parsed.value.usage?.prompt_tokens),
+        tokensOut: wholeTokens(parsed.value.usage?.completion_tokens)
       }
     })
     return LlmTransport.of({ complete })

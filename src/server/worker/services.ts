@@ -1,5 +1,6 @@
 import { Layer } from "effect"
 import { FetchHttpClient } from "effect/http"
+import { BookFiles } from "../books/BookFiles.ts"
 import { ReadyDatabaseLive } from "../db/Database.ts"
 import type { JobKinds } from "../jobs/JobKind.ts"
 import { JobRunner } from "../jobs/JobRunner.ts"
@@ -18,7 +19,7 @@ export const workerServices = <E, R>(
 ) =>
   JobRunner.layer.pipe(
     Layer.provideMerge(LlmAdapter.layer),
-    Layer.provideMerge(Layer.mergeAll(JobStore.layer, Settings.layer, ApiKeyStore.layer, transport)),
+    Layer.provideMerge(Layer.mergeAll(JobStore.layer, Settings.layer, ApiKeyStore.layer, BookFiles.layer, transport)),
     Layer.provideMerge(kinds),
     Layer.provideMerge(ReadyDatabaseLive)
   )

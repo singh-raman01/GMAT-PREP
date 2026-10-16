@@ -167,8 +167,10 @@ Question Bank, written by the worker and by Curator decisions:
 
 | Table | Holds |
 |---|---|
-| books | title, edition, file hash (unique), page count, text or scanned, official GMAC flag, status |
-| book maps | Book, version, page ranges by role (question set, key, explanations, labels) with Section and Question Type, confirmation time |
+| books | title, edition, file hash (unique), size, page count, pages with text, how scanned pages are read, official GMAC flag, status, cost preview, current job |
+| book pages | Book, page number, text, whether it has a text layer, how it is read (text, image or Review Queue), what the Book Map model found on it |
+| book map proposals | Book, page ranges, model, prompt version, time |
+| book maps | Book, version, page ranges by role (questions, answer key, explanations, difficulty labels), each with its question set and Question Type group, confirmation time |
 | stimuli | kind (passage, MSR tabs, table, chart, figure), Markdown body, Dataset, chart spec, figure crop, Reserve flag |
 | datasets | typed columns (number, percent, currency, date, text), rows, whether a Book or the generator made it |
 | questions | Section, Question Type, Stimulus, stem, status (draft, held, published, withdrawn), Difficulty seed and its basis (Book Label or LLM estimate), Book Label, primary and secondary Skills, Reserve flag, normalized-text hash, Taxonomy version |
@@ -243,18 +245,18 @@ Every Profile operation needs an unlocked Profile on the host or a paired device
 | Access | create, unlock, lock, update or delete a Profile; export a Profile; unlock as Curator; reset a PIN; make a pairing code; pair, list or revoke devices |
 | Sessions | start; get state, including the server's remaining time; claim from another device; submit a Response; set a Bookmark; take or skip the break; pause and resume a Practice Set; change an answer in Review & Edit; finish review; get the report |
 | Learning | get a Debrief; set a Mistake Type; get the Error Log; get due Retries; get Weak Areas; get an analytics view; get the Study Plan; get the Daily Log; write a Daily Log note; add an Official Score; add or remove a Paper Mark; file a Problem Report; open a Lesson; send a Tutor Chat message |
-| Curator | add a Book; get a Book; confirm a Book Map; preview cost; start ingestion; list, pause, resume or cancel jobs; get the Review Queue; decide a review item; override a key; withdraw a Question; release Reserve Questions; start a generation batch; approve a Lesson; get coverage; read and change settings; take or restore a snapshot; export the install |
+| Curator | add a Book; list or get Books; read a Book again; start the full run after the cost preview; confirm a Book Map; open a Book's PDF; list, pause, resume or cancel jobs; get the Review Queue; decide a review item; override a key; withdraw a Question; release Reserve Questions; start a generation batch; approve a Lesson; get coverage; read and change settings; take or restore a snapshot; export the install |
 | Events | clock sync, Section expired, Session claimed elsewhere, job progress, plan rebuilt, Review Queue changed |
 
 ### Content pipeline
 
-Books with a text layer come first, starting with the Official Guide family. Scanned Books take the image path; if the configured model cannot read images, figure Questions and scanned pages go to the Review Queue.
+Books with a text layer come first, starting with the Official Guide family. A page with fewer than 20 characters of text is a scanned page. Scanned pages take the image path when the extraction model is marked in Settings as reading images; otherwise figure Questions and scanned pages go to the Review Queue. The route is decided when the full run starts, from the model set then.
 
 Ingestion runs these steps. Each step saves its progress, so a job resumes from the last finished step after a crash, a rate limit or its spend cap.
 
-1. Register. The file's SHA-256 is its fingerprint, and a known fingerprint does nothing. The file is stored once under its hash, and the app records whether its pages carry a text layer and whether the Curator marked it official.
-2. Preview cost. The pipeline runs on a 10-page sample and projects tokens and cost for the whole Book. The full run waits for the Curator.
-3. Map. The LLM proposes the Book Map, and the Curator confirms it on one screen.
+1. Register. The PDF streams to the books folder while it is hashed; its SHA-256 is its fingerprint, and a known fingerprint does nothing. The file is stored once under its hash, with the official flag the Curator set. The worker then reads every page's text, a hundred pages a step, and records which pages carry a text layer.
+2. Preview cost. The pipeline runs on a 10-page sample spread through the Book and projects the tokens and cost of the full run from it. The full run waits for the Curator, who starts it with a spend cap.
+3. Map. The Book Map model reads the other pages with text, ten at a time, and says what each holds: its role, its Question Type group and its chapter. Code joins neighbouring pages into ranges; answer keys, explanations and difficulty labels join the questions of their chapter, or else the nearest earlier questions of their group. The Curator corrects the proposal on one screen, opening pages in the browser's PDF viewer to check, and confirms it. Each confirmation is a new Book Map version.
 4. Extract. Each range yields Questions, Parts, options, Stimuli and figure crops, and tables and charts become Datasets where possible. Retired items are skipped and counted. Old DS becomes Data Insights, and old Integrated Reasoning maps onto MSR, TA, GI and TPA (ADR 0004).
 5. Link. Each Question is linked to its key and explanation by number.
 6. Enrich. The LLM tags the Question Type and Skills from the Taxonomy, estimates Difficulty and writes one or two Approaches with their Strategies; a Book's own explanation becomes one Approach. For each wrong option it writes a Trap Note, the Mistake Type the option most likely signals and, where one fits, a Trap Pattern. Option tags never use Time pressure, which comes only from timing.
@@ -444,7 +446,7 @@ The Curator view shows Question Bank coverage by Skill and Difficulty Band, the 
 - The Curator passphrase is set the first time the Curator tools open. It has 8 to 200 characters, and five wrong entries lock the tools for 5 minutes, as with PINs.
 - The Curator resets PINs, and the passphrase is reset by a command run on the host computer: `gmat-prep reset-passphrase`, which also ends every Curator unlock.
 - Deleting a Profile needs its PIN or the Curator passphrase, and a snapshot is taken first.
-- The server accepts connections from the host only, and answers only requests whose Host header names this computer (127.0.0.1, localhost or [::1]), which stops a web page from reaching it through DNS rebinding. Every response forbids framing and type sniffing. Writes are accepted only from the app's own pages (by Origin) and only as JSON of at most 1 MB. In LAN mode it listens on the local network, and a new device must enter a 6-digit pairing code shown on the host; codes are single-use and expire after 5 minutes, and paired devices can be revoked. LAN traffic is plain HTTP, so LAN mode is for trusted networks.
+- The server accepts connections from the host only, and answers only requests whose Host header names this computer (127.0.0.1, localhost or [::1]), which stops a web page from reaching it through DNS rebinding. Every response forbids framing and type sniffing. Writes are accepted only from the app's own pages (by Origin) and only as JSON of at most 1 MB, except adding a Book, whose body is the PDF itself, of at most 500 MB. In LAN mode it listens on the local network, and a new device must enter a 6-digit pairing code shown on the host; codes are single-use and expire after 5 minutes, and paired devices can be revoked. LAN traffic is plain HTTP, so LAN mode is for trusted networks.
 - Profiles cannot see each other's data.
 
 ### LLM adapter

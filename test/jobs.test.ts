@@ -22,7 +22,8 @@ const configure = Effect.gen(function*() {
     baseUrl: "https://api.example.com/v1",
     jsonMode: "json-schema",
     models: [{ task: "tagging", model: "small-model" }],
-    prices: [{ model: "small-model", inputPerMillion: 2, outputPerMillion: 8 }]
+    prices: [{ model: "small-model", inputPerMillion: 2, outputPerMillion: 8 }],
+    readsImages: []
   })
   yield* keys.save("sk-test-12345678")
 })

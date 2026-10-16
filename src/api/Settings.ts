@@ -89,6 +89,8 @@ export class LlmSettingsView extends Schema.Class<LlmSettingsView>("gmat-prep/ap
   jsonMode: JsonMode,
   models: Schema.Array(TaskModel),
   prices: Schema.Array(ModelPrice),
+  // Models that accept images, so scanned pages can be sent as pictures.
+  readsImages: Schema.Array(Schema.String),
   apiKey: ApiKeyStatus
 }) {}
 
@@ -96,7 +98,8 @@ export const LlmSettingsInput = Schema.Struct({
   baseUrl: BaseUrl,
   jsonMode: JsonMode,
   models: Schema.Array(Schema.Struct(TaskModelFields)),
-  prices: Schema.Array(Schema.Struct(ModelPriceFields))
+  prices: Schema.Array(Schema.Struct(ModelPriceFields)),
+  readsImages: Schema.Array(ModelName)
 })
 export type LlmSettingsInput = typeof LlmSettingsInput.Type
 

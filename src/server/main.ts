@@ -3,6 +3,7 @@ import { Config, Effect, Layer, Option } from "effect"
 import { HttpRouter, HttpServer } from "effect/http"
 import { rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { MaxBookBytes } from "../api/Books.ts"
 import { AppConfig } from "./AppConfig.ts"
 import { AppRoutes, AppServices } from "./app.ts"
 import { ResetPassphrase } from "./curator/resetPassphrase.ts"
@@ -34,7 +35,8 @@ const ServerLive = Layer.unwrap(
       yield* Effect.logWarning(`Port ${preferredPort} is taken; using ${port === 0 ? "a free port" : port}`)
     }
     return HttpRouter.serve(AppRoutes, { disableListenLog: true, disableLogger: true }).pipe(
-      Layer.provideMerge(BunHttpServer.layer({ hostname: Host, port }))
+      // Bun refuses larger bodies itself; a Book may be up to MaxBookBytes.
+      Layer.provideMerge(BunHttpServer.layer({ hostname: Host, port, maxRequestBodySize: MaxBookBytes + 1024 * 1024 }))
     )
   })
 )
