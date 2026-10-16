@@ -55,12 +55,13 @@ export class WorkerSupervisor extends Context.Service<WorkerSupervisor, {
     Layer.effect(
       WorkerSupervisor,
       Effect.gen(function*() {
-        const { dataDir } = yield* AppConfig
+        const { configDir, dataDir } = yield* AppConfig
         const state = yield* Ref.make<State>({ running: false, pid: null, restarts: 0 })
         const command = workerCommand()
         const env = {
           ...process.env,
           GMAT_PREP_DATA_DIR: dataDir,
+          GMAT_PREP_CONFIG_DIR: configDir,
           GMAT_PREP_PARENT_PID: String(process.pid)
         }
 

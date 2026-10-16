@@ -209,6 +209,29 @@ describe("the server process", () => {
     await proc.exited
   })
 
+  test("the reset command on the host clears the Curator passphrase, even while the app runs", async () => {
+    const dataDir = tempDataDir()
+    startApp(dataDir, freePort())
+    const info = await serverInfo(dataDir)
+    const set = await fetch(`${info.url}/api/curator/passphrase`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ passphrase: "correct horse battery" })
+    })
+    expect(set.status).toBe(204)
+    const reset = Bun.spawn([process.execPath, "src/server/main.ts", "reset-passphrase"], {
+      cwd: repoRoot,
+      env: { ...process.env, GMAT_PREP_DATA_DIR: dataDir },
+      stdout: "pipe",
+      stderr: "pipe"
+    })
+    const output = await outputOf(reset)
+    expect(reset.exitCode).toBe(0)
+    expect(output).toContain("The Curator passphrase is cleared")
+    const status = await (await fetch(`${info.url}/api/curator/status`)).json() as { passphraseSet: boolean }
+    expect(status.passphraseSet).toBe(false)
+  })
+
   test("stores PINs only as argon2id hashes", async () => {
     const dataDir = tempDataDir()
     const proc = startApp(dataDir, freePort())
@@ -250,9 +273,13 @@ describe("the server process", () => {
   test("refuses a database with a damaged page", async () => {
     const dataDir = tempDataDir()
     const first = startApp(dataDir, freePort())
-    await serverInfo(dataDir)
+    const info = await serverInfo(dataDir)
+    const worker = await waitFor(async () => (await health(info.url)).worker.pid ?? undefined)
     first.kill("SIGTERM")
     await first.exited
+    // The worker holds the database open too; it must be gone before the file
+    // is changed underneath it.
+    await waitFor(() => (isAlive(worker) ? undefined : true))
     const file = join(dataDir, "gmat-prep.sqlite")
     const db = new Database(file)
     db.run("PRAGMA journal_mode = DELETE")

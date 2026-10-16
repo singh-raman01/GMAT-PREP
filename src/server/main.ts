@@ -5,6 +5,7 @@ import { rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { AppConfig } from "./AppConfig.ts"
 import { AppRoutes, AppServices } from "./app.ts"
+import { ResetPassphrase } from "./curator/resetPassphrase.ts"
 import { InstanceLockLive } from "./instanceLock.ts"
 import { WorkerMain } from "./worker/main.ts"
 import { WorkerSupervisor } from "./worker/WorkerSupervisor.ts"
@@ -90,6 +91,10 @@ const explainStartupFailure = (error: unknown): string | undefined => {
       const { migration } = error as { migration: string }
       return `Updating the database stopped at ${migration}, which would have broken links between records. Nothing was changed; report this, and keep using the previous version of GMAT prep.`
     }
+    case "ConfigInsideData": {
+      const { configDir, dataDir } = error as { configDir: string; dataDir: string }
+      return `The config folder ${configDir} is inside the data folder ${dataDir}, so secrets would reach snapshots. Set GMAT_PREP_CONFIG_DIR to a folder outside it.`
+    }
     case "NewerDatabase":
       return "This data folder was written by a newer version of GMAT prep. Install that version, or restore a snapshot."
     case "DatabaseCorrupt":
@@ -120,13 +125,18 @@ const keepFilesPrivate = () => {
   if (process.platform !== "win32") process.umask(0o077)
 }
 
+// The executable runs the app server, or with an argument the job worker or a
+// host command.
 export const main = () => {
   keepFilesPrivate()
-  const isWorker = process.argv.slice(2).includes("worker")
-  if (isWorker) {
-    BunRuntime.runMain(WorkerMain)
-  } else {
-    BunRuntime.runMain(runServer)
+  const command = process.argv.slice(2).find((arg) => !arg.startsWith("-"))
+  switch (command) {
+    case "worker":
+      return BunRuntime.runMain(WorkerMain)
+    case "reset-passphrase":
+      return BunRuntime.runMain(ResetPassphrase)
+    default:
+      return BunRuntime.runMain(runServer)
   }
 }
 

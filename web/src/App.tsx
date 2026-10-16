@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import type { ProfileSummary } from "../../src/api/Profiles.ts"
 import { announceUnlockChanged, call, onUnlockChanged, showProfile, type Trouble, troubleOf } from "./api.ts"
+import { CuratorArea } from "./curator/CuratorArea.tsx"
 import { useFocusOnMount } from "./focus.ts"
 import { ProfilePicker } from "./ProfilePicker.tsx"
+import { usePath } from "./router.ts"
 import { TaxonomyBrowser } from "./TaxonomyBrowser.tsx"
 
 type Screen =
@@ -12,6 +14,7 @@ type Screen =
   | { readonly _tag: "Studying"; readonly profile: ProfileSummary }
 
 export const App = () => {
+  const path = usePath()
   const [screen, setScreen] = useState<Screen>({ _tag: "Starting" })
   const shown = useRef<string | undefined>(undefined)
 
@@ -80,11 +83,16 @@ export const App = () => {
     void recheck("Your profile was locked, so open it again to carry on.")
   }, [recheck])
 
+  if (screen._tag === "Stopped") {
+    return <Stopped trouble={screen.trouble} onRetry={() => void recheck()} />
+  }
+  if (path === "/curator" || path.startsWith("/curator/")) {
+    return <CuratorArea path={path} onStopped={stop} />
+  }
+
   switch (screen._tag) {
     case "Starting":
       return null
-    case "Stopped":
-      return <Stopped trouble={screen.trouble} onRetry={() => void recheck()} />
     case "Picking":
       return <ProfilePicker notice={screen.notice} onUnlocked={unlocked} onStopped={stop} />
     case "Studying":

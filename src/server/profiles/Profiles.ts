@@ -11,6 +11,7 @@ import {
   ProfileSummary,
   WrongPin
 } from "../../api/Profiles.ts"
+import { LastUsedResolutionMs, newToken, sha256, UnlockIdleMs } from "../access/tokens.ts"
 import { Db } from "../db/Database.ts"
 import { profileUnlocks, profiles } from "../db/schema.ts"
 import { attemptPin, isLocked } from "./pinLockout.ts"
@@ -26,11 +27,6 @@ export interface CreateProfile {
   readonly timeZone?: string | undefined
 }
 
-// An unlock unused for this long ends, so a browser left signed in on a shared
-// computer does not keep a Profile open for good.
-export const UnlockIdleMs = 12 * 60 * 60 * 1000
-const LastUsedResolutionMs = 5 * 60 * 1000
-
 const hostTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone
 
 const isValidTimeZone = (timeZone: string) => {
@@ -42,9 +38,6 @@ const isValidTimeZone = (timeZone: string) => {
   }
 }
 
-const sha256 = (value: string) => new Bun.CryptoHasher("sha256").update(value).digest("hex")
-
-const newToken = () => Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url")
 
 const toSummary = (row: typeof profiles.$inferSelect) =>
   new ProfileSummary({

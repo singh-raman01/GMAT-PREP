@@ -1,0 +1,270 @@
+import { Schema } from "effect"
+import { type FormEvent, useCallback, useEffect, useId, useRef, useState } from "react"
+import { Passphrase } from "../../../src/api/Curator.ts"
+import { call } from "../api.ts"
+import { useFocusOnMount } from "../focus.ts"
+import { clockTime, minutesAndSeconds } from "../format.ts"
+import { linkProps, navigate } from "../router.ts"
+import { CuratorJobs } from "./CuratorJobs.tsx"
+import { CuratorSettings } from "./CuratorSettings.tsx"
+
+type Stop = (error: { readonly _tag: string }) => void
+
+const isPassphrase = Schema.is(Passphrase)
+
+type Gate =
+  | { readonly _tag: "Checking" }
+  | { readonly _tag: "Setting" }
+  | { readonly _tag: "Unlocking"; readonly notice: string | undefined }
+  | { readonly _tag: "Open" }
+
+// The Curator's tools, behind the Curator passphrase.
+export const CuratorArea = ({ path, onStopped }: { readonly path: string; readonly onStopped: Stop }) => {
+  const [gate, setGate] = useState<Gate>({ _tag: "Checking" })
+
+  const check = useCallback(async () => {
+    const result = await call((client) => client.curatorAccess.status())
+    if (result._tag === "Failure") return onStopped(result.failure)
+    const status = result.success
+    setGate(
+      !status.passphraseSet
+        ? { _tag: "Setting" }
+        : status.unlocked
+        ? { _tag: "Open" }
+        : { _tag: "Unlocking", notice: undefined }
+    )
+  }, [onStopped])
+
+  useEffect(() => {
+    void check()
+  }, [check])
+
+  const locked = useCallback(() => {
+    setGate({ _tag: "Unlocking", notice: "The Curator tools were locked, so unlock them again to carry on." })
+  }, [])
+
+  const lock = async () => {
+    const result = await call((client) => client.curatorSession.lock())
+    if (result._tag === "Failure" && result.failure._tag !== "CuratorNotUnlocked") return onStopped(result.failure)
+    setGate({ _tag: "Unlocking", notice: undefined })
+  }
+
+  switch (gate._tag) {
+    case "Checking":
+      return null
+    case "Setting":
+      return <SetPassphrase onSet={() => setGate({ _tag: "Open" })} onStopped={onStopped} />
+    case "Unlocking":
+      return <Unlock notice={gate.notice} onUnlocked={() => setGate({ _tag: "Open" })} onStopped={onStopped} />
+    case "Open": {
+      const section = path.startsWith("/curator/settings") ? "settings" : "jobs"
+      return (
+        <>
+          <header className="topbar">
+            <span className="wordmark">GMAT prep</span>
+            <div className="who">
+              <a className="quiet-link" {...linkProps("/")}>Profiles</a>
+              <span className="who-name">Curator</span>
+              <button type="button" className="button button-quiet" onClick={() => void lock()}>
+                Lock
+              </button>
+            </div>
+          </header>
+          <main className="page">
+            <nav className="subnav" aria-label="Curator tools">
+              <a {...linkProps("/curator")} aria-current={section === "jobs" ? "page" : undefined}>
+                <span className={section === "jobs" ? "mark" : undefined}>Jobs</span>
+              </a>
+              <a {...linkProps("/curator/settings")} aria-current={section === "settings" ? "page" : undefined}>
+                <span className={section === "settings" ? "mark" : undefined}>Settings</span>
+              </a>
+            </nav>
+            {section === "settings"
+              ? (
+                <CuratorSettings
+                  key="settings"
+                  onLocked={locked}
+                  onStopped={onStopped}
+                  onTestStarted={() => navigate("/curator")}
+                />
+              )
+              : <CuratorJobs key="jobs" onLocked={locked} onStopped={onStopped} />}
+          </main>
+        </>
+      )
+    }
+  }
+}
+
+const SetPassphrase = ({ onSet, onStopped }: { readonly onSet: () => void; readonly onStopped: Stop }) => {
+  const heading = useFocusOnMount<HTMLHeadingElement>()
+  const ids = { passphrase: useId(), repeat: useId(), hint: useId() }
+  const [passphrase, setPassphrase] = useState("")
+  const [repeat, setRepeat] = useState("")
+  const [problem, setProblem] = useState<{ readonly field: "passphrase" | "repeat"; readonly text: string }>()
+  const busy = useRef(false)
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (busy.current) return
+    if (!isPassphrase(passphrase)) {
+      return setProblem({ field: "passphrase", text: "Use a passphrase of 8 to 200 characters." })
+    }
+    if (repeat !== passphrase) {
+      return setProblem({ field: "repeat", text: "The two passphrases do not match." })
+    }
+    busy.current = true
+    const result = await call((client) => client.curatorAccess.setPassphrase({ payload: { passphrase } }))
+    busy.current = false
+    if (result._tag === "Success") return onSet()
+    if (result.failure._tag === "PassphraseAlreadySet") {
+      return setProblem({ field: "passphrase", text: "A passphrase was set a moment ago. Reload the page to unlock." })
+    }
+    onStopped(result.failure)
+  }
+
+  return (
+    <main className="page page-narrow">
+      <p className="wordmark">GMAT prep</p>
+      <h1 ref={heading} tabIndex={-1}>Set the Curator passphrase</h1>
+      <p className="lede">
+        The Curator adds books, reviews questions and sets up the LLM. A passphrase guards those tools on this
+        computer.
+      </p>
+      <form className="add-form" noValidate onSubmit={(event) => void submit(event)}>
+        <div className="field">
+          <label htmlFor={ids.passphrase}>Passphrase</label>
+          <p id={ids.hint} className="hint">At least 8 characters. A few words are easier to remember.</p>
+          <input
+            id={ids.passphrase}
+            type="password"
+            autoComplete="new-password"
+            value={passphrase}
+            aria-invalid={problem?.field === "passphrase"}
+            aria-describedby={problem?.field === "passphrase" ? `${ids.passphrase}-error ${ids.hint}` : ids.hint}
+            onChange={(event) => setPassphrase(event.target.value)}
+          />
+          {problem?.field === "passphrase" && (
+            <p id={`${ids.passphrase}-error`} className="field-error">{problem.text}</p>
+          )}
+        </div>
+        <div className="field">
+          <label htmlFor={ids.repeat}>Repeat the passphrase</label>
+          <input
+            id={ids.repeat}
+            type="password"
+            autoComplete="new-password"
+            value={repeat}
+            aria-invalid={problem?.field === "repeat"}
+            aria-describedby={problem?.field === "repeat" ? `${ids.repeat}-error` : undefined}
+            onChange={(event) => setRepeat(event.target.value)}
+          />
+          {problem?.field === "repeat" && <p id={`${ids.repeat}-error`} className="field-error">{problem.text}</p>}
+        </div>
+        <div className="actions">
+          <button type="submit" className="button">Set passphrase</button>
+          <a className="button button-quiet" {...linkProps("/")}>Back to profiles</a>
+        </div>
+      </form>
+    </main>
+  )
+}
+
+const Unlock = (
+  { notice, onUnlocked, onStopped }: {
+    readonly notice: string | undefined
+    readonly onUnlocked: () => void
+    readonly onStopped: Stop
+  }
+) => {
+  const heading = useFocusOnMount<HTMLHeadingElement>()
+  const inputId = useId()
+  const problemId = useId()
+  const [passphrase, setPassphrase] = useState("")
+  const [problem, setProblem] = useState<string>()
+  const [lockedUntil, setLockedUntil] = useState<number>()
+  const [now, setNow] = useState(() => Date.now())
+  const busy = useRef(false)
+  const locked = lockedUntil !== undefined && now < lockedUntil
+
+  useEffect(() => {
+    if (lockedUntil === undefined) return
+    const timer = window.setInterval(() => setNow(Date.now()), 250)
+    return () => window.clearInterval(timer)
+  }, [lockedUntil])
+
+  useEffect(() => {
+    if (lockedUntil !== undefined && !locked) {
+      setLockedUntil(undefined)
+      setProblem("The lock has ended, so you can enter the passphrase again.")
+    }
+  }, [locked, lockedUntil])
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (busy.current || locked) return
+    if (passphrase === "") return setProblem("Enter the Curator passphrase.")
+    busy.current = true
+    const result = await call((client) => client.curatorAccess.unlock({ payload: { passphrase } }))
+    busy.current = false
+    if (result._tag === "Success") return onUnlocked()
+    const failure = result.failure
+    switch (failure._tag) {
+      case "WrongPassphrase": {
+        const left = failure.attemptsLeft
+        setPassphrase("")
+        return setProblem(
+          `That passphrase is wrong. ${left} ${left === 1 ? "try" : "tries"} left before the Curator tools lock for 5 minutes.`
+        )
+      }
+      case "CuratorLocked":
+        setPassphrase("")
+        setProblem(undefined)
+        setNow(Date.now())
+        return setLockedUntil(failure.lockedUntil)
+      case "PassphraseNotSet":
+        return window.location.reload()
+      default:
+        return onStopped(failure)
+    }
+  }
+
+  return (
+    <main className="page page-narrow">
+      <p className="wordmark">GMAT prep</p>
+      <h1 ref={heading} tabIndex={-1}>Unlock the Curator tools</h1>
+      {notice !== undefined && <p className="notice" role="status">{notice}</p>}
+      <form className="add-form" noValidate onSubmit={(event) => void submit(event)}>
+        <div className="field">
+          <label htmlFor={inputId}>Curator passphrase</label>
+          <input
+            id={inputId}
+            type="password"
+            autoComplete="current-password"
+            value={passphrase}
+            readOnly={locked}
+            aria-disabled={locked}
+            aria-invalid={problem !== undefined && !locked}
+            aria-describedby={problemId}
+            onChange={(event) => setPassphrase(event.target.value)}
+          />
+        </div>
+        <div id={problemId} aria-live="polite">
+          {locked && lockedUntil !== undefined
+            ? <p className="problem">Too many wrong passphrases, so the tools are locked until {clockTime(lockedUntil)}.</p>
+            : problem !== undefined && <p className="problem">{problem}</p>}
+        </div>
+        {locked && lockedUntil !== undefined && (
+          <p className="countdown" aria-hidden="true">{minutesAndSeconds(lockedUntil - now)} left</p>
+        )}
+        <div className="actions">
+          <button type="submit" className="button" aria-disabled={locked}>Unlock</button>
+          <a className="button button-quiet" {...linkProps("/")}>Back to profiles</a>
+        </div>
+      </form>
+      <p className="hint aside">
+        Forgotten it? On this computer, run <code>gmat-prep reset-passphrase</code>, then set a new one here.
+      </p>
+    </main>
+  )
+}
