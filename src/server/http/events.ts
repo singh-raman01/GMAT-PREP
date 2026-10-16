@@ -7,12 +7,22 @@ import { JobFeed } from "../events/JobFeed.ts"
 
 // The Server-Sent Events stream, one per device. For now it carries job
 // progress, so it needs the Curator unlocked.
+//
+// Each event's id is the job revision it carries. A page that has just read
+// the job list opens the stream with ?since= the highest revision in that
+// list, and a browser that reconnects sends the last id it received as
+// Last-Event-ID, so no change falls between the two.
 
 const KeepAliveEvery = "20 seconds"
 
 const encodeEvent = Schema.encodeSync(Schema.toCodecJson(ServerEvent))
 
-const frame = (event: ServerEvent) => `data: ${JSON.stringify(encodeEvent(event))}\n\n`
+const frame = (event: JobChanged) => `id: ${event.job.revision}\ndata: ${JSON.stringify(encodeEvent(event))}\n\n`
+
+const revisionOf = (text: string | null | undefined): number | undefined => {
+  if (text === null || text === undefined || !/^\d{1,15}$/.test(text.trim())) return undefined
+  return Number(text.trim())
+}
 
 const serveEvents = Effect.gen(function*() {
   const request = yield* HttpServerRequest.HttpServerRequest
@@ -26,13 +36,20 @@ const serveEvents = Effect.gen(function*() {
   if (!unlocked) {
     return HttpServerResponse.text("Unlock as the Curator to receive job events.", { status: 401 })
   }
+  const since = revisionOf(request.headers["last-event-id"]) ??
+    revisionOf(new URL(request.url, "http://localhost").searchParams.get("since"))
   // Keep-alive comments hold the connection open. Each one also checks the
-  // unlock, so the stream ends soon after the Curator locks.
+  // unlock without counting as use, so an open stream neither keeps the
+  // Curator unlocked nor outlives a lock.
   const keepAlive = Stream.tick(KeepAliveEvery).pipe(
-    Stream.mapEffect(() => curator.check(token)),
+    Stream.mapEffect(() =>
+      curator.stillUnlocked(token).pipe(
+        Effect.flatMap((live) => live ? Effect.void : Effect.fail("locked" as const))
+      )
+    ),
     Stream.map(() => ": keep-alive\n\n")
   )
-  const events = feed.changes.pipe(Stream.map((job) => frame(new JobChanged({ job }))))
+  const events = feed.changesAfter(since).pipe(Stream.map((job) => frame(new JobChanged({ job }))))
   const body = Stream.concat(
     Stream.succeed("retry: 3000\n\n"),
     Stream.merge(events, keepAlive)

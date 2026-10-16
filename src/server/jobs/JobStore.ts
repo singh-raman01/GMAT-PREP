@@ -22,6 +22,13 @@ export type JobEnd =
   // resumeAt null waits for the Curator; a time resumes on its own.
   | { readonly _tag: "Paused"; readonly note: string; readonly resumeAt: number | null }
   | { readonly _tag: "Cancelled"; readonly note: string }
+  // The Curator asked for a pause, and the worker saved its step to honour it.
+  | { readonly _tag: "PausedOnRequest" }
+
+// What finish did: ended the job's turn, found the Curator had taken back
+// the pause it asked for (so the job keeps running), or found the job is no
+// longer this worker's.
+export type Finished = "ended" | "running" | "lost"
 
 export interface StepSave {
   readonly checkpoint: string
@@ -39,7 +46,26 @@ export interface Control {
 // claimed again.
 export const StaleAfterMs = 30_000
 
-const PausedByCurator = "Paused by the Curator"
+export const PausedByCurator = "Paused by the Curator"
+export const CancelledByCurator = "Cancelled by the Curator"
+
+// The end a job's turn takes, given what the Curator asked while the step ran,
+// as read at the moment the end is written. A pending cancel wins over every
+// end but Done, since the work is then finished anyway. A pending pause turns
+// a pause that would resume on its own into one that waits for the Curator. A
+// pause the Curator asked for and then took back keeps the job running.
+export const settleEnd = (end: JobEnd, requested: "pause" | "cancel" | null): JobEnd | "keep-running" => {
+  if (end._tag === "PausedOnRequest") {
+    if (requested === "cancel") return { _tag: "Cancelled", note: CancelledByCurator }
+    if (requested === "pause") return { _tag: "Paused", note: PausedByCurator, resumeAt: null }
+    return "keep-running"
+  }
+  if (requested === "cancel" && end._tag !== "Done") return { _tag: "Cancelled", note: CancelledByCurator }
+  if (requested === "pause" && end._tag === "Paused" && end.resumeAt !== null) {
+    return { _tag: "Paused", note: PausedByCurator, resumeAt: null }
+  }
+  return end
+}
 
 const encodeJson = <A>(schema: Schema.Codec<A, unknown>, value: A) =>
   JSON.stringify(Schema.encodeSync(Schema.toCodecJson(schema))(value))
@@ -95,7 +121,7 @@ export class JobStore extends Context.Service<JobStore, {
   claim(workerId: string): Effect.Effect<Option.Option<JobRow>>
   heartbeat(id: string, workerId: string): Effect.Effect<Option.Option<Control>>
   saveStep(id: string, workerId: string, save: StepSave): Effect.Effect<Option.Option<Control>>
-  finish(id: string, workerId: string, end: JobEnd): Effect.Effect<boolean>
+  finish(id: string, workerId: string, end: JobEnd): Effect.Effect<Finished>
   spendOf(id: string): Effect.Effect<Option.Option<{ readonly spend: number; readonly cap: number }>>
 }>()("gmat-prep/server/JobStore") {
   static readonly layer = Layer.effect(
@@ -209,7 +235,7 @@ export class JobStore extends Context.Service<JobStore, {
             case "failed":
               return Effect.succeed({
                 status: "cancelled",
-                note: "Cancelled by the Curator",
+                note: CancelledByCurator,
                 resumeAt: null,
                 requested: null,
                 finishedAt: now
@@ -294,23 +320,35 @@ export class JobStore extends Context.Service<JobStore, {
           return Option.map(Option.fromUndefinedOr(saved), (s) => ({ requested: asRequested(s.requested) }))
         })
 
+      // Writes the end of the job's turn from the row as it is now, so a
+      // request the Curator made while the step ran is not lost. The write
+      // holds only if the row is unchanged since the read; otherwise the end
+      // is settled again from the new row.
       const finish = (id: string, workerId: string, end: JobEnd) =>
         Effect.gen(function*() {
-          const now = yield* Clock.currentTimeMillis
-          const common = { claimant: null, requested: null, revision: nextRevision, updatedAt: now }
-          const changes = end._tag === "Done"
-            ? { status: "done", note: null, result: end.result, resumeAt: null, finishedAt: now }
-            : end._tag === "Failed"
-            ? { status: "failed", note: end.note, resumeAt: null, finishedAt: now }
-            : end._tag === "Paused"
-            ? { status: "paused", note: end.note, resumeAt: end.resumeAt, finishedAt: null }
-            : { status: "cancelled", note: end.note, resumeAt: null, finishedAt: now }
-          const updated = yield* db.update(jobs)
-            .set({ ...changes, ...common })
-            .where(ours(id, workerId))
-            .returning({ id: jobs.id })
-            .pipe(Effect.orDie)
-          return updated.length > 0
+          for (;;) {
+            const [current] = yield* db.select().from(jobs).where(ours(id, workerId)).pipe(Effect.orDie)
+            if (current === undefined) return "lost" as const
+            const settled = settleEnd(end, asRequested(current.requested))
+            if (settled === "keep-running") return "running" as const
+            const now = yield* Clock.currentTimeMillis
+            const common = { claimant: null, requested: null, revision: nextRevision, updatedAt: now }
+            const changes = settled._tag === "Done"
+              ? { status: "done", note: null, result: settled.result, resumeAt: null, finishedAt: now }
+              : settled._tag === "Failed"
+              ? { status: "failed", note: settled.note, resumeAt: null, finishedAt: now }
+              : settled._tag === "Paused"
+              ? { status: "paused", note: settled.note, resumeAt: settled.resumeAt, finishedAt: null }
+              : settled._tag === "Cancelled"
+              ? { status: "cancelled", note: settled.note, resumeAt: null, finishedAt: now }
+              : { status: "paused", note: PausedByCurator, resumeAt: null, finishedAt: null }
+            const updated = yield* db.update(jobs)
+              .set({ ...changes, ...common })
+              .where(and(ours(id, workerId), eq(jobs.revision, current.revision)))
+              .returning({ id: jobs.id })
+              .pipe(Effect.orDie)
+            if (updated.length > 0) return "ended" as const
+          }
         })
 
       const spendOf = (id: string) =>

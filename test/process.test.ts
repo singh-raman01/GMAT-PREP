@@ -30,7 +30,7 @@ const freePort = () => {
 const startApp = (dataDir: string, port: number) => {
   const proc = Bun.spawn([process.execPath, "src/server/main.ts"], {
     cwd: repoRoot,
-    env: { ...process.env, GMAT_PREP_DATA_DIR: dataDir, GMAT_PREP_PORT: String(port) },
+    env: { ...process.env, GMAT_PREP_DATA_DIR: dataDir, GMAT_PREP_CONFIG_DIR: `${dataDir}-config`, GMAT_PREP_PORT: String(port) },
     stdout: "pipe",
     stderr: "pipe"
   })
@@ -113,9 +113,15 @@ describe("the server process", () => {
   // bun --watch restarts the server in place, keeping its process id, so the
   // worker also watches the pipe its server holds open.
   test("a worker stops when its server's pipe closes, even if that process lives on", async () => {
+    const dataDirOfWorker = tempDataDir()
     const worker = Bun.spawn([process.execPath, "src/server/main.ts", "worker"], {
       cwd: repoRoot,
-      env: { ...process.env, GMAT_PREP_DATA_DIR: tempDataDir(), GMAT_PREP_PARENT_PID: String(process.pid) },
+      env: {
+        ...process.env,
+        GMAT_PREP_DATA_DIR: dataDirOfWorker,
+        GMAT_PREP_CONFIG_DIR: `${dataDirOfWorker}-config`,
+        GMAT_PREP_PARENT_PID: String(process.pid)
+      },
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe"
@@ -221,7 +227,7 @@ describe("the server process", () => {
     expect(set.status).toBe(204)
     const reset = Bun.spawn([process.execPath, "src/server/main.ts", "reset-passphrase"], {
       cwd: repoRoot,
-      env: { ...process.env, GMAT_PREP_DATA_DIR: dataDir },
+      env: { ...process.env, GMAT_PREP_DATA_DIR: dataDir, GMAT_PREP_CONFIG_DIR: `${dataDir}-config` },
       stdout: "pipe",
       stderr: "pipe"
     })

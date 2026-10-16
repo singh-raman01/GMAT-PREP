@@ -21,6 +21,9 @@ export class Curator extends Context.Service<Curator, {
   setPassphrase(passphrase: string): Effect.Effect<string, PassphraseAlreadySet>
   unlock(passphrase: string): Effect.Effect<string, PassphraseNotSet | WrongPassphrase | CuratorLocked>
   check(token: string): Effect.Effect<void, CuratorNotUnlocked>
+  // Whether the token is still a live unlock, without counting as use, for
+  // checks the Curator does not make, such as an open events stream's.
+  stillUnlocked(token: string): Effect.Effect<boolean>
   lock(token: string): Effect.Effect<void>
   // Clears the passphrase and every unlock, for the reset command on the host.
   readonly reset: Effect.Effect<void>
@@ -65,6 +68,15 @@ export class Curator extends Context.Service<Curator, {
               .where(and(eq(curatorUnlocks.tokenHash, tokenHash), lt(curatorUnlocks.lastUsedAt, now)))
           }
           return true
+        }).pipe(Effect.orDie)
+
+      const stillUnlocked = (token: string) =>
+        Effect.gen(function*() {
+          const [row] = yield* db.select({ lastUsedAt: curatorUnlocks.lastUsedAt }).from(curatorUnlocks)
+            .where(eq(curatorUnlocks.tokenHash, sha256(token)))
+          if (row === undefined) return false
+          const now = yield* Clock.currentTimeMillis
+          return now - row.lastUsedAt <= UnlockIdleMs
         }).pipe(Effect.orDie)
 
       const status = Effect.fn("Curator.status")(function*(token: string | undefined) {
@@ -124,7 +136,7 @@ export class Curator extends Context.Service<Curator, {
         yield* db.delete(curatorAccess).pipe(Effect.orDie)
       }).pipe(oneAtATime)
 
-      return Curator.of({ status, setPassphrase, unlock, check, lock, reset })
+      return Curator.of({ status, setPassphrase, unlock, check, stillUnlocked, lock, reset })
     })
   )
 }

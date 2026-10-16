@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
+import { ConfigProvider, Effect } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
+import { AppConfig } from "../src/server/AppConfig.ts"
 import { openBrowser, runWithApp, tempDataDir } from "./harness.ts"
 
 const passphrase = "correct horse battery"
@@ -124,5 +125,35 @@ describe("The API key", () => {
     )
     expect(status.saved).toBe(false)
     expect(existsSync(join(`${dataDir}-config`, "credentials.json"))).toBe(false)
+  })
+})
+
+describe("The config folder", () => {
+  const configFor = (env: Record<string, string>) =>
+    Effect.runPromise(
+      Effect.gen(function*() {
+        return yield* AppConfig
+      }).pipe(
+        Effect.provide(AppConfig.layerFromEnv),
+        Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord(env))),
+        Effect.flip,
+        Effect.map((error) => error._tag),
+        Effect.catch(() => Effect.succeed("accepted"))
+      )
+    )
+
+  test("is refused inside the data folder, where snapshots would copy the key", async () => {
+    const dataDir = tempDataDir()
+    expect(await configFor({ GMAT_PREP_DATA_DIR: dataDir, GMAT_PREP_CONFIG_DIR: join(dataDir, "config") })).toBe(
+      "ConfigInsideData"
+    )
+    expect(await configFor({ GMAT_PREP_DATA_DIR: dataDir, GMAT_PREP_CONFIG_DIR: dataDir })).toBe("ConfigInsideData")
+  })
+
+  test("is accepted beside the data folder", async () => {
+    const dataDir = tempDataDir()
+    expect(await configFor({ GMAT_PREP_DATA_DIR: dataDir, GMAT_PREP_CONFIG_DIR: `${dataDir}-config` })).toBe(
+      "accepted"
+    )
   })
 })

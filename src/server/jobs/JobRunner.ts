@@ -2,7 +2,7 @@ import { Cause, Clock, Context, Deferred, Effect, Layer, Option, Schema } from "
 import { formatDollars } from "../../api/money.ts"
 import { type LlmError, SpendCapReached } from "../llm/LlmAdapter.ts"
 import { type AnyJobKind, JobKinds, type JobStepFailed, type StepServices } from "./JobKind.ts"
-import { decodeJson, type JobEnd, type JobRow, JobStore } from "./JobStore.ts"
+import { CancelledByCurator, decodeJson, type JobEnd, type JobRow, JobStore } from "./JobStore.ts"
 
 // The worker's loop: claim a job, run its steps with a heartbeat, save a
 // checkpoint after each step, and end the job's turn as done, failed, paused
@@ -13,9 +13,6 @@ export const HeartbeatEvery = "5 seconds"
 export const PollEvery = "1 second"
 // How long a job waits after the API kept failing before it tries again.
 export const ApiPauseMs = 5 * 60 * 1000
-
-const PausedByCurator = "Paused by the Curator"
-const CancelledByCurator = "Cancelled by the Curator"
 
 // Why a step stopped, as the job's note.
 export const endForError = (error: LlmError | JobStepFailed, now: number): JobEnd => {
@@ -35,7 +32,13 @@ export const endForError = (error: LlmError | JobStepFailed, now: number): JobEn
     case "LlmNotConfigured":
       return { _tag: "Failed", note: `Set ${error.missing.join(", ")} in Settings, then resume the job.` }
     case "LlmRefused":
-      return { _tag: "Failed", note: `The API refused the request (${error.status}): ${error.message}` }
+      return {
+        _tag: "Failed",
+        // Status 0: the request never left this computer.
+        note: error.status === 0
+          ? `The request could not be sent: ${error.message}`
+          : `The API refused the request (${error.status}): ${error.message}`
+      }
     case "LlmInvalidReply":
       return { _tag: "Failed", note: `The model's reply could not be used, even after a retry: ${error.problem}` }
     case "JobStepFailed":
@@ -57,38 +60,6 @@ export class JobRunner extends Context.Service<JobRunner, {
       const kinds = yield* JobKinds
       const workerId = `worker-${process.pid}-${crypto.randomUUID().slice(0, 8)}`
 
-      // Runs steps until the job ends its turn. "lost" means another worker
-      // owns the job now, or it changed under this one.
-      const runSteps = (row: JobRow, kind: AnyJobKind, params: unknown, start: unknown) =>
-        Effect.gen(function*() {
-          let checkpoint = start
-          let stepsDone = row.stepsDone
-          for (;;) {
-            const spend = yield* store.spendOf(row.id)
-            if (Option.isSome(spend) && spend.value.spend >= spend.value.cap) {
-              return endForError(new SpendCapReached(spend.value), 0)
-            }
-            const outcome = yield* Effect.result(kind.step({ jobId: row.id, params, checkpoint, stepsDone }))
-            const now = yield* Clock.currentTimeMillis
-            if (outcome._tag === "Failure") return endForError(outcome.failure, now)
-            const step = outcome.success
-            if (step._tag === "Finished") return { _tag: "Done", result: step.result } as const
-            stepsDone += 1
-            const saved = yield* store.saveStep(row.id, workerId, {
-              checkpoint: encodeCheckpoint(kind, step.checkpoint),
-              stepsDone,
-              stepsTotal: step.stepsTotal,
-              note: step.note
-            })
-            if (Option.isNone(saved)) return "lost" as const
-            checkpoint = step.checkpoint
-            if (saved.value.requested === "cancel") return { _tag: "Cancelled", note: CancelledByCurator } as const
-            if (saved.value.requested === "pause") {
-              return { _tag: "Paused", note: PausedByCurator, resumeAt: null } as const
-            }
-          }
-        })
-
       const runJob = (row: JobRow) =>
         Effect.gen(function*() {
           const end = (jobEnd: JobEnd) => store.finish(row.id, workerId, jobEnd).pipe(Effect.asVoid)
@@ -100,14 +71,48 @@ export class JobRunner extends Context.Service<JobRunner, {
           if (Option.isNone(params)) {
             return yield* end({ _tag: "Failed", note: "The job's settings could not be read." })
           }
-          const checkpoint = row.checkpoint === null
+          const start = row.checkpoint === null
             ? Option.some(kind.start(params.value))
             : decodeJson(kind.checkpoint, row.checkpoint)
-          if (Option.isNone(checkpoint)) {
+          if (Option.isNone(start)) {
             return yield* end({ _tag: "Failed", note: "The job's saved progress could not be read." })
           }
           if (row.requested === "cancel") return yield* end({ _tag: "Cancelled", note: CancelledByCurator })
-          if (row.requested === "pause") return yield* end({ _tag: "Paused", note: PausedByCurator, resumeAt: null })
+          if (row.requested === "pause") return yield* end({ _tag: "PausedOnRequest" })
+
+          // The last saved step, so steps carry on from it after a pause the
+          // Curator took back.
+          let checkpoint: unknown = start.value
+          let stepsDone = row.stepsDone
+
+          // Runs steps until the job ends its turn. "lost" means another
+          // worker owns the job now.
+          const runSteps = Effect.gen(function*() {
+            for (;;) {
+              const spend = yield* store.spendOf(row.id)
+              if (Option.isSome(spend) && spend.value.spend >= spend.value.cap) {
+                return endForError(new SpendCapReached(spend.value), 0)
+              }
+              const outcome = yield* Effect.result(
+                kind.step({ jobId: row.id, params: params.value, checkpoint, stepsDone })
+              )
+              const now = yield* Clock.currentTimeMillis
+              if (outcome._tag === "Failure") return endForError(outcome.failure, now)
+              const step = outcome.success
+              if (step._tag === "Finished") return { _tag: "Done", result: step.result } as const
+              const saved = yield* store.saveStep(row.id, workerId, {
+                checkpoint: encodeCheckpoint(kind, step.checkpoint),
+                stepsDone: stepsDone + 1,
+                stepsTotal: step.stepsTotal,
+                note: step.note
+              })
+              if (Option.isNone(saved)) return "lost" as const
+              checkpoint = step.checkpoint
+              stepsDone += 1
+              if (saved.value.requested === "cancel") return { _tag: "Cancelled", note: CancelledByCurator } as const
+              if (saved.value.requested === "pause") return { _tag: "PausedOnRequest" } as const
+            }
+          })
 
           // The heartbeat keeps the claim. A cancel stops the step at once; a
           // pause waits for the step to finish and be saved.
@@ -123,24 +128,27 @@ export class JobRunner extends Context.Service<JobRunner, {
             )
           )
 
-          const outcome = yield* Effect.raceFirst(
-            runSteps(row, kind, params.value, checkpoint.value),
-            Deferred.await(stop)
-          ).pipe(
-            Effect.catchCause((cause) =>
-              Cause.hasInterruptsOnly(cause)
-                ? Effect.failCause(cause)
-                : Effect.logError(`Job ${row.id} stopped on an internal error`, Cause.pretty(cause)).pipe(
-                  Effect.as({
-                    _tag: "Failed",
-                    note: "The job stopped on an internal error; see the app's log."
-                  } as JobEnd)
-                )
+          for (;;) {
+            const outcome = yield* Effect.raceFirst(runSteps, Deferred.await(stop)).pipe(
+              Effect.catchCause((cause) =>
+                Cause.hasInterruptsOnly(cause)
+                  ? Effect.failCause(cause)
+                  : Effect.logError(`Job ${row.id} stopped on an internal error`, Cause.pretty(cause)).pipe(
+                    Effect.as({
+                      _tag: "Failed",
+                      note: "The job stopped on an internal error; see the app's log."
+                    } as JobEnd)
+                  )
+              )
             )
-          )
-          if (outcome === "lost") return
-          if (outcome === "cancel") return yield* end({ _tag: "Cancelled", note: CancelledByCurator })
-          yield* end(outcome)
+            if (outcome === "lost") return
+            const finished = yield* store.finish(
+              row.id,
+              workerId,
+              outcome === "cancel" ? { _tag: "Cancelled", note: CancelledByCurator } : outcome
+            )
+            if (finished !== "running") return
+          }
         }).pipe(Effect.scoped)
 
       const runOnce = Effect.gen(function*() {
