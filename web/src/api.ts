@@ -16,11 +16,27 @@ export const showProfile = (id: string | undefined) => {
   shownProfile = id
 }
 
+// Each tab is a device of its own: one device holds a Session at a time,
+// and another takes it over only when the Learner says so. The id lasts as
+// long as the tab, through reloads.
+const deviceId = (() => {
+  try {
+    const kept = sessionStorage.getItem("gmat-prep-device")
+    if (kept !== null) return kept
+    const made = crypto.randomUUID()
+    sessionStorage.setItem("gmat-prep-device", made)
+    return made
+  } catch {
+    return crypto.randomUUID()
+  }
+})()
+
 const makeClient = HttpApiClient.make(Api, {
   baseUrl: window.location.origin,
-  transformClient: HttpClient.mapRequest((request) =>
-    shownProfile === undefined ? request : HttpClientRequest.setHeader(request, "x-gp-profile", shownProfile)
-  )
+  transformClient: HttpClient.mapRequest((request) => {
+    const fromDevice = HttpClientRequest.setHeader(request, "x-gp-device", deviceId)
+    return shownProfile === undefined ? fromDevice : HttpClientRequest.setHeader(fromDevice, "x-gp-profile", shownProfile)
+  })
 }).pipe(Effect.provide(FetchHttpClient.layer))
 
 export type Client = Effect.Success<typeof makeClient>
