@@ -1,14 +1,27 @@
 import { Effect, Result } from "effect"
-import { FetchHttpClient, type HttpClientError } from "effect/http"
+import { FetchHttpClient, HttpClient, type HttpClientError, HttpClientRequest } from "effect/http"
 import { HttpApiClient } from "effect/http-api"
 import { Api } from "../../src/api/Api.ts"
 
 // The typed client derived from the same API definition the server uses. The
-// unlock cookie is HttpOnly and same-origin, so fetch sends it unprompted.
+// unlock cookie is HttpOnly, so this page never sees it; the browser sends it
+// with every request to the app.
 
-const makeClient = HttpApiClient.make(Api, { baseUrl: window.location.origin }).pipe(
-  Effect.provide(FetchHttpClient.layer)
-)
+// Tabs share the browser's one unlock. Each request names the Profile this
+// tab shows, and the server refuses it if another tab has since opened a
+// different Profile.
+let shownProfile: string | undefined
+
+export const showProfile = (id: string | undefined) => {
+  shownProfile = id
+}
+
+const makeClient = HttpApiClient.make(Api, {
+  baseUrl: window.location.origin,
+  transformClient: HttpClient.mapRequest((request) =>
+    shownProfile === undefined ? request : HttpClientRequest.setHeader(request, "x-gp-profile", shownProfile)
+  )
+}).pipe(Effect.provide(FetchHttpClient.layer))
 
 export type Client = Effect.Success<typeof makeClient>
 
@@ -33,4 +46,16 @@ export const troubleOf = (error: { readonly _tag: string }): Trouble => {
   // An undeclared status arrives as a response the client could not decode.
   if ("response" in reason && reason.response !== undefined && reason.response.status >= 500) return "failed"
   return "unreadable"
+}
+
+// Tells the app's other tabs that this browser's unlock changed, so they show
+// the Profile now unlocked instead of acting as the one they showed before.
+const channel = typeof BroadcastChannel === "undefined" ? undefined : new BroadcastChannel("gmat-prep-unlock")
+
+export const announceUnlockChanged = () => channel?.postMessage("changed")
+
+export const onUnlockChanged = (listener: () => void): (() => void) => {
+  if (channel === undefined) return () => {}
+  channel.addEventListener("message", listener)
+  return () => channel.removeEventListener("message", listener)
 }

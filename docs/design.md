@@ -438,11 +438,12 @@ The Curator view shows Question Bank coverage by Skill and Difficulty Band, the 
 
 ### Profiles, access and LAN mode
 
-- A Profile can have a PIN. PINs and the Curator passphrase are stored as argon2id hashes. An unlocked Profile and an unlocked Curator are held in HttpOnly, SameSite=Strict cookies.
+- A Profile can have a PIN. PINs and the Curator passphrase are stored as argon2id hashes. An unlocked Profile and an unlocked Curator are held in HttpOnly, SameSite=Strict cookies. An unlock ends after 12 hours without use, and a browser holds one at a time: unlocking another Profile ends the one before.
+- Tabs share the browser's unlock, so each request names the Profile its tab shows, and the server refuses it when another tab has opened a different Profile. The tab then shows the Profile now unlocked.
 - Five wrong PINs lock the Profile for 5 minutes. PIN checks run one at a time, so wrong PINs sent together still count one by one.
 - The Curator resets PINs, and the passphrase is reset by a command run on the host computer.
 - Deleting a Profile needs its PIN or the Curator passphrase, and a snapshot is taken first.
-- The server accepts connections from the host only, and answers only requests whose Host header names this computer (127.0.0.1, localhost or [::1]), which stops a web page from reaching it through DNS rebinding. Every response forbids framing and type sniffing. In LAN mode it listens on the local network, and a new device must enter a 6-digit pairing code shown on the host; codes are single-use and expire after 5 minutes, and paired devices can be revoked. LAN traffic is plain HTTP, so LAN mode is for trusted networks.
+- The server accepts connections from the host only, and answers only requests whose Host header names this computer (127.0.0.1, localhost or [::1]), which stops a web page from reaching it through DNS rebinding. Every response forbids framing and type sniffing. Writes are accepted only from the app's own pages (by Origin) and only as JSON of at most 1 MB. In LAN mode it listens on the local network, and a new device must enter a 6-digit pairing code shown on the host; codes are single-use and expire after 5 minutes, and paired devices can be revoked. LAN traffic is plain HTTP, so LAN mode is for trusted networks.
 - Profiles cannot see each other's data.
 
 ### LLM adapter
@@ -463,8 +464,9 @@ The Curator view shows Question Bank coverage by Skill and Difficulty Band, the 
 - Restore runs from the Curator screen, and the replaced database is kept as a snapshot too.
 - Export covers one Profile (JSON) or the whole install (database plus Books).
 - When the disk is full, ingestion pauses with a message and Sessions keep working. A failed snapshot is reported, never skipped silently.
-- Migrations run at startup after a snapshot. An app older than its database refuses to start rather than damage it.
-- A lock file stops a second copy from opening the same data folder. If the port is taken, the app uses the next free one and says which.
+- Migrations run at startup after a snapshot, each in its own transaction with foreign keys off, and each is rolled back if it leaves a broken reference. An app older than its database refuses to start rather than damage it.
+- A lock stops a second copy from opening the same data folder. It is a file lock the operating system releases when the process ends, so a crash never leaves the folder locked. If the port is taken, the app uses the next free one and says which.
+- Everything the app writes in the data folder is readable by the user who runs it and no one else.
 
 ### Speed targets
 

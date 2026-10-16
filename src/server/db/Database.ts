@@ -1,9 +1,8 @@
 import { SqliteClient } from "@effect/sql-sqlite-bun"
 import * as SQLiteBunDrizzle from "drizzle-orm/effect-sqlite-bun"
-import { migrate } from "drizzle-orm/effect-sqlite-bun/migrator"
 import { Clock, Context, Effect, Layer, Schema } from "effect"
 import { SqlClient } from "effect/sql"
-import { mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync } from "node:fs"
 import { join } from "node:path"
 import { AppConfig } from "../AppConfig.ts"
 import { bundledMigrations } from "./migrations/index.gen.ts"
@@ -54,20 +53,44 @@ export interface Migration {
   readonly sql: string
 }
 
-// Applies migrations. An upgrade of an existing database is preceded by a
-// snapshot, and a database that holds migrations this build does not know was
-// written by a newer version, so it is left untouched.
-const applyMigrations = (bundled: ReadonlyArray<Migration>) => Effect.gen(function*() {
-  const { dataDir } = yield* AppConfig
-  const sql = yield* SqlClient.SqlClient
-  const db = yield* Db
+export class MigrationBrokeReferences extends Schema.TaggedError<MigrationBrokeReferences>()(
+  "MigrationBrokeReferences",
+  { migration: Schema.String, brokenReferences: Schema.Int }
+) {}
 
-  const tracking = yield* sql<{ readonly name: string }>`
-    SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__drizzle_migrations'
+// drizzle-kit separates the statements of a migration with this marker.
+const StatementBreak = "--> statement-breakpoint"
+
+// The migration's timestamp, from the start of its folder name.
+const migrationTime = (name: string) => {
+  const stamp = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/.exec(name)
+  return stamp === null ? 0 : Date.UTC(+stamp[1]!, +stamp[2]! - 1, +stamp[3]!, +stamp[4]!, +stamp[5]!, +stamp[6]!)
+}
+
+const sha256 = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex")
+
+// Applies migrations, each in its own transaction, recorded in drizzle's
+// table. Foreign keys are off while they run: SQLite ignores a foreign_keys
+// pragma inside a transaction, and a table rebuild that drops a table with
+// them on would cascade-delete every row that refers to it. Each migration
+// then checks every reference and rolls back if any is broken.
+//
+// An upgrade of an existing database is preceded by a snapshot, and a
+// database that holds migrations this build does not know was written by a
+// newer version, so it is left untouched.
+const applyMigrations = (bundled: ReadonlyArray<Migration>) => Effect.gen(function*() {
+  const sql = yield* SqlClient.SqlClient
+
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS __drizzle_migrations (
+      id INTEGER PRIMARY KEY,
+      hash text NOT NULL,
+      created_at numeric,
+      name text,
+      applied_at TEXT
+    )
   `
-  const applied = tracking.length === 0
-    ? []
-    : (yield* sql<{ readonly name: string }>`SELECT name FROM __drizzle_migrations`).map((row) => row.name)
+  const applied = (yield* sql<{ readonly name: string }>`SELECT name FROM __drizzle_migrations`).map((row) => row.name)
 
   const known = new Set(bundled.map((migration) => migration.name))
   const unknownMigrations = applied.filter((name) => !known.has(name))
@@ -84,16 +107,23 @@ const applyMigrations = (bundled: ReadonlyArray<Migration>) => Effect.gen(functi
     yield* Effect.logInfo(`Snapshot taken before migrating: ${file}`)
   }
 
-  // Drizzle's migrator reads a folder, so the bundled files are written out first.
-  const folder = join(dataDir, ".migrations")
-  yield* Effect.sync(() => {
-    rmSync(folder, { recursive: true, force: true })
-    for (const migration of bundled) {
-      mkdirSync(join(folder, migration.name), { recursive: true })
-      writeFileSync(join(folder, migration.name, "migration.sql"), migration.sql)
-    }
-  })
-  yield* migrate(db, { migrationsFolder: folder })
+  yield* sql`PRAGMA foreign_keys = OFF`
+  yield* Effect.forEach(pending, (migration) =>
+    Effect.gen(function*() {
+      for (const statement of migration.sql.split(StatementBreak)) {
+        if (statement.trim() !== "") yield* sql.unsafe(statement)
+      }
+      const appliedAt = new Date(yield* Clock.currentTimeMillis).toISOString()
+      yield* sql`
+        INSERT INTO __drizzle_migrations (hash, created_at, name, applied_at)
+        VALUES (${sha256(migration.sql)}, ${migrationTime(migration.name)}, ${migration.name}, ${appliedAt})
+      `
+      const broken = yield* sql`PRAGMA foreign_key_check`
+      if (broken.length > 0) {
+        return yield* new MigrationBrokeReferences({ migration: migration.name, brokenReferences: broken.length })
+      }
+    }).pipe(sql.withTransaction)
+  ).pipe(Effect.ensuring(sql`PRAGMA foreign_keys = ON`.pipe(Effect.orDie)))
   yield* Effect.logInfo(`Applied ${pending.length} migration(s)`)
 })
 

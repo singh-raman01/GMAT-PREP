@@ -48,6 +48,13 @@ export class WrongPin extends Schema.TaggedError<WrongPin>()(
   { httpApiStatus: 401 }
 ) {}
 
+// The Profile has a PIN and none was sent. It costs no attempt.
+export class PinRequired extends Schema.TaggedError<PinRequired>()(
+  "PinRequired",
+  {},
+  { httpApiStatus: 401 }
+) {}
+
 export class ProfileLocked extends Schema.TaggedError<ProfileLocked>()(
   "ProfileLocked",
   { lockedUntil: Schema.Number },
@@ -90,11 +97,13 @@ export class ProfilesApi extends HttpApiGroup.make("profiles")
       success: ProfileSummary,
       error: [ProfileNameTaken, InvalidTimeZone]
     }),
+    // A PIN that is not 4 to 8 digits is refused before it is checked, so it
+    // costs no attempt.
     HttpApiEndpoint.post("unlock", "/:id/unlock", {
       params: { id: ProfileId },
-      payload: Schema.Struct({ pin: Schema.optional(Schema.String) }),
+      payload: Schema.Struct({ pin: Schema.optional(Pin) }),
       success: ProfileSummary,
-      error: [ProfileNotFound, WrongPin, ProfileLocked]
+      error: [ProfileNotFound, PinRequired, WrongPin, ProfileLocked]
     })
   )
   .prefix("/api/profiles")

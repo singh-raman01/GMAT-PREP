@@ -30,7 +30,8 @@ const filesUnder = (dir: string): ReadonlyArray<string> =>
   })
 
 console.log("Building the web app")
-await $`bun x vite build --config web/vite.config.ts --logLevel warn`.cwd(root)
+// --bun runs Vite on Bun rather than on whatever Node is installed.
+await $`bun x --bun vite build --config web/vite.config.ts --logLevel warn`.cwd(root)
 await $`bun scripts/gen-migrations-index.ts`.cwd(root)
 
 // An entry that imports every web file as an embedded file, registers them by

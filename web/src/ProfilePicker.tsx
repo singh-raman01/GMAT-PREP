@@ -39,6 +39,13 @@ export const ProfilePicker = ({ notice, onUnlocked, onStopped }: PickerProps) =>
   const [adding, setAdding] = useState(false)
   const [message, setMessage] = useState(notice)
   const busy = useRef(false)
+  const heading = useRef<HTMLHeadingElement>(null)
+  const addButton = useRef<HTMLButtonElement>(null)
+  const cancelAdding = () => {
+    setAdding(false)
+    // The form and its focus go away; focus goes back to the button that opened it.
+    requestAnimationFrame(() => addButton.current?.focus())
+  }
 
   const load = useCallback(async () => {
     const result = await call((client) => client.profiles.list())
@@ -49,6 +56,12 @@ export const ProfilePicker = ({ notice, onUnlocked, onStopped }: PickerProps) =>
   useEffect(() => {
     void load()
   }, [load])
+
+  // Focus the heading once the list of Profiles appears.
+  const listShown = profiles !== undefined && profiles.length > 0
+  useEffect(() => {
+    if (listShown) heading.current?.focus()
+  }, [listShown])
 
   const gone = useCallback((name: string) => {
     setOpenId(undefined)
@@ -70,6 +83,7 @@ export const ProfilePicker = ({ notice, onUnlocked, onStopped }: PickerProps) =>
     switch (result.failure._tag) {
       case "ProfileNotFound":
         return gone(profile.name)
+      case "PinRequired":
       case "WrongPin":
       case "ProfileLocked":
         // The Profile has a PIN that this list did not show yet.
@@ -101,7 +115,7 @@ export const ProfilePicker = ({ notice, onUnlocked, onStopped }: PickerProps) =>
   return (
     <main className="page picker">
       <p className="wordmark">GMAT prep</p>
-      <h1>Who is studying?</h1>
+      <h1 ref={heading} tabIndex={-1}>Who is studying?</h1>
       {noticeLine}
       <ul className="profiles">
         {profiles.map((profile) => {
@@ -140,12 +154,12 @@ export const ProfilePicker = ({ notice, onUnlocked, onStopped }: PickerProps) =>
               existing={profiles}
               onUnlocked={onUnlocked}
               onStopped={onStopped}
-              onCancel={() => setAdding(false)}
+              onCancel={cancelAdding}
             />
           </section>
         )
         : (
-          <button type="button" className="button button-quiet" onClick={() => setAdding(true)}>
+          <button ref={addButton} type="button" className="button button-quiet" onClick={() => setAdding(true)}>
             Add a profile
           </button>
         )}
@@ -223,6 +237,9 @@ const PinEntry = ({ id, profile, onUnlocked, onGone, onStopped }: PinEntryProps)
         return
       case "ProfileNotFound":
         return onGone()
+      case "PinRequired":
+        setProblem("Enter the PIN, which is 4 to 8 digits.")
+        return
       default:
         return onStopped(failure)
     }
@@ -242,14 +259,15 @@ const PinEntry = ({ id, profile, onUnlocked, onGone, onStopped }: PinEntryProps)
             autoComplete="off"
             maxLength={8}
             value={pin}
-            disabled={locked}
+            readOnly={locked}
+            aria-disabled={locked}
             aria-invalid={problem !== undefined && !locked}
             aria-describedby={problemId}
             data-shake={shakes === 0 ? undefined : shakes % 2}
             onChange={(event) => setPin(digitsOnly(event.target.value))}
           />
         </div>
-        <button type="submit" className="button" disabled={locked}>
+        <button type="submit" className="button" aria-disabled={locked}>
           Open
         </button>
       </form>

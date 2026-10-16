@@ -20,7 +20,9 @@ export const profileUnlocks = sqliteTable("profile_unlocks", {
   profileId: text("profile_id")
     .notNull()
     .references(() => profiles.id, { onDelete: "cascade" }),
-  createdAt: integer("created_at").notNull()
+  createdAt: integer("created_at").notNull(),
+  // An unlock unused for a while ends; see Profiles.UnlockIdleMs.
+  lastUsedAt: integer("last_used_at").notNull()
 })
 
 export const taxonomyVersions = sqliteTable(

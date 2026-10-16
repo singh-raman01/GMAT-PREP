@@ -294,9 +294,15 @@ input[aria-invalid="true"] {
   border-color: var(--alert);
 }
 
-input:disabled {
+input:disabled,
+input[aria-disabled="true"] {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+/* Headings take focus when a screen opens; the ring is for controls. */
+[tabindex="-1"]:focus {
+  outline: none;
 }
 
 input::placeholder {
@@ -577,8 +583,11 @@ input.pin-input {
 }
 
 .result-count {
-  margin-bottom: 2rem;
   font-weight: 700;
+}
+
+.result-count:not(:empty) {
+  margin-top: 1.25rem;
 }
 
 .group > h2.results-title {

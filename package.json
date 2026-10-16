@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "bun scripts/dev.ts",
     "start": "bun src/server/main.ts",
-    "build:web": "vite build --config web/vite.config.ts",
+    "build:web": "bun x --bun vite build --config web/vite.config.ts",
     "build": "bun scripts/build.ts",
     "build:all": "bun scripts/build.ts --all",
     "db:generate": "drizzle-kit generate && bun scripts/gen-migrations-index.ts",

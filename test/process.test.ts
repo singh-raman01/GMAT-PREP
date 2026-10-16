@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite"
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test"
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { closeSync, existsSync, openSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs"
 import { networkInterfaces } from "node:os"
 import { join } from "node:path"
 import { tempDataDir } from "./harness.ts"
@@ -136,7 +136,28 @@ describe("the server process", () => {
     proc.kill("SIGTERM")
     await proc.exited
     await waitFor(() => (isAlive(worker) ? undefined : true))
-    expect(existsSync(join(dataDir, "gmat-prep.lock"))).toBe(false)
+    expect(existsSync(join(dataDir, "server.json"))).toBe(false)
+    startApp(dataDir, freePort())
+    expect((await health((await serverInfo(dataDir)).url)).status).toBe("ok")
+  })
+
+  test("a server that was killed leaves nothing that blocks the next start", async () => {
+    const dataDir = tempDataDir()
+    const proc = startApp(dataDir, freePort())
+    await serverInfo(dataDir)
+    proc.kill("SIGKILL")
+    await proc.exited
+    rmSync(join(dataDir, "server.json"), { force: true })
+    startApp(dataDir, freePort())
+    expect((await health((await serverInfo(dataDir)).url)).status).toBe("ok")
+  })
+
+  // A process id can belong to another program after a crash and a restart.
+  test("a leftover process id naming a running program does not block the start", async () => {
+    const dataDir = tempDataDir()
+    writeFileSync(join(dataDir, "instance.pid"), String(process.pid))
+    startApp(dataDir, freePort())
+    expect((await health((await serverInfo(dataDir)).url)).status).toBe("ok")
   })
 
   test("a second copy on the same data folder refuses to start", async () => {
@@ -175,6 +196,19 @@ describe("the server process", () => {
     expect(reached).toBe(false)
   })
 
+  test("the data folder and its files are readable by this user only", async () => {
+    if (process.platform === "win32") return
+    const dataDir = join(tempDataDir(), "data")
+    const proc = startApp(dataDir, freePort())
+    await serverInfo(dataDir)
+    const mode = (file: string) => statSync(join(dataDir, file)).mode & 0o777
+    expect(mode(".")).toBe(0o700)
+    expect(mode("gmat-prep.sqlite")).toBe(0o600)
+    expect(mode("server.json")).toBe(0o600)
+    proc.kill("SIGTERM")
+    await proc.exited
+  })
+
   test("stores PINs only as argon2id hashes", async () => {
     const dataDir = tempDataDir()
     const proc = startApp(dataDir, freePort())
@@ -211,7 +245,33 @@ describe("the server process", () => {
     expect(output).toContain("newer version")
   })
 
-  test("refuses a damaged database", async () => {
+  // The file opens as a database, so only the integrity check at startup can
+  // tell that a page inside it is damaged.
+  test("refuses a database with a damaged page", async () => {
+    const dataDir = tempDataDir()
+    const first = startApp(dataDir, freePort())
+    await serverInfo(dataDir)
+    first.kill("SIGTERM")
+    await first.exited
+    const file = join(dataDir, "gmat-prep.sqlite")
+    const db = new Database(file)
+    db.run("PRAGMA journal_mode = DELETE")
+    db.run("CREATE TABLE filler (id INTEGER PRIMARY KEY, body TEXT)")
+    const insert = db.prepare("INSERT INTO filler (body) VALUES (?)")
+    for (let i = 0; i < 400; i++) insert.run(`${"x".repeat(200)}${i}`)
+    const pageSize = (db.query("PRAGMA page_size").get() as { page_size: number }).page_size
+    const pageCount = (db.query("PRAGMA page_count").get() as { page_count: number }).page_count
+    db.close()
+    const fd = openSync(file, "r+")
+    writeSync(fd, Buffer.alloc(64, 0xff), 0, 64, Math.floor(pageCount / 2) * pageSize + 8)
+    closeSync(fd)
+    const again = startApp(dataDir, freePort())
+    const output = await outputOf(again)
+    expect(again.exitCode).not.toBe(0)
+    expect(output).toContain("The database file is damaged")
+  })
+
+  test("refuses a file that is not a database", async () => {
     const dataDir = tempDataDir()
     writeFileSync(join(dataDir, "gmat-prep.sqlite"), "this is not a database, just text that fills a page ".repeat(200))
     const proc = startApp(dataDir, freePort())

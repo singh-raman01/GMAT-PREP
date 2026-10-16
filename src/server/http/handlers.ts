@@ -1,7 +1,8 @@
 import { Effect, Layer, Redacted } from "effect"
+import { HttpServerRequest } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"
 import { Api, Health } from "../../api/Api.ts"
-import { CurrentProfile, ProfileCookie, ProfileSession } from "../../api/Profiles.ts"
+import { CurrentProfile, NotUnlocked, ProfileCookie, ProfileSession } from "../../api/Profiles.ts"
 import { Profiles } from "../profiles/Profiles.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { WorkerSupervisor } from "../worker/WorkerSupervisor.ts"
@@ -13,6 +14,11 @@ const setUnlockCookie = (token: string) => HttpApiBuilder.securitySetCookie(Prof
 
 const clearUnlockCookie = HttpApiBuilder.securitySetCookie(ProfileCookie, "", { ...cookieOptions, maxAge: 0 })
 
+// Tabs share the browser's one unlock, so each tab names the Profile it
+// shows in X-GP-Profile. A tab left showing another Profile is refused, and
+// reloads the current one, instead of acting as the Profile now unlocked.
+export const ExpectedProfileHeader = "x-gp-profile"
+
 export const ProfileSessionLive = Layer.effect(
   ProfileSession,
   Effect.gen(function*() {
@@ -20,6 +26,11 @@ export const ProfileSessionLive = Layer.effect(
     return ProfileSession.of({
       cookie: Effect.fn(function*(httpEffect, { credential }) {
         const profile = yield* profiles.fromToken(Redacted.value(credential))
+        const request = yield* HttpServerRequest.HttpServerRequest
+        const expected = request.headers[ExpectedProfileHeader]
+        if (expected !== undefined && expected !== profile.id) {
+          return yield* new NotUnlocked()
+        }
         return yield* Effect.provideService(httpEffect, CurrentProfile, profile)
       })
     })
@@ -42,16 +53,25 @@ const ProfilesHandlers = HttpApiBuilder.group(
   "profiles",
   Effect.fn(function*(handlers) {
     const profiles = yield* Profiles
+
+    // A browser holds one unlock: a new one ends the one it replaces.
+    const replaceUnlock = Effect.fn(function*(token: string) {
+      const request = yield* HttpServerRequest.HttpServerRequest
+      const previous = request.cookies[ProfileCookie.key]
+      if (previous !== undefined && previous !== "") yield* profiles.lock(previous)
+      yield* setUnlockCookie(token)
+    })
+
     return handlers.handleAll({
       list: () => profiles.list,
       create: Effect.fn(function*({ payload }) {
         const unlocked = yield* profiles.create(payload)
-        yield* setUnlockCookie(unlocked.token)
+        yield* replaceUnlock(unlocked.token)
         return unlocked.profile
       }),
       unlock: Effect.fn(function*({ params, payload }) {
         const unlocked = yield* profiles.unlock(params.id, payload.pin)
-        yield* setUnlockCookie(unlocked.token)
+        yield* replaceUnlock(unlocked.token)
         return unlocked.profile
       })
     })

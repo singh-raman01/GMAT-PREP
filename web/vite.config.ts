@@ -17,7 +17,22 @@ export default defineConfig({
   server: {
     host: "127.0.0.1",
     port: 5173,
-    // changeOrigin sends the API its own host name, which it checks.
-    proxy: { "/api": { target: apiUrl, changeOrigin: true } }
+    proxy: {
+      "/api": {
+        target: apiUrl,
+        // The API checks that requests name its own host.
+        changeOrigin: true,
+        // The API accepts writes only from its own origin. A page served by
+        // Vite has Vite's origin, so its requests are passed on as the API's.
+        // Requests from any other origin keep theirs and are refused.
+        configure: (proxy) => {
+          proxy.on("proxyReq", (proxyRequest, request) => {
+            if (request.headers.origin === `http://${request.headers.host}`) {
+              proxyRequest.setHeader("origin", apiUrl)
+            }
+          })
+        }
+      }
+    }
   }
 })

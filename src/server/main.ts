@@ -1,5 +1,5 @@
 import { BunHttpServer, BunRuntime } from "@effect/platform-bun"
-import { Effect, Layer } from "effect"
+import { Config, Effect, Layer, Option } from "effect"
 import { HttpRouter, HttpServer } from "effect/http"
 import { rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
@@ -47,8 +47,11 @@ const AnnounceLive = Layer.effectDiscard(
     const port = address._tag === "UnixPathAddress" ? 0 : address.port
     const url = `http://${Host}:${port}`
     const file = join(dataDir, "server.json")
+    // runId lets the script that started this server tell its server.json
+    // from one left by an earlier run.
+    const runId = Option.getOrNull(yield* Config.String("GMAT_PREP_RUN_ID").pipe(Config.option))
     yield* Effect.acquireRelease(
-      Effect.sync(() => writeFileSync(file, JSON.stringify({ pid: process.pid, port, url }))),
+      Effect.sync(() => writeFileSync(file, JSON.stringify({ pid: process.pid, port, url, runId }))),
       () => Effect.sync(() => rmSync(file, { force: true }))
     )
     yield* Effect.logInfo(`GMAT prep is running at ${url}`)
@@ -80,8 +83,12 @@ const explainStartupFailure = (error: unknown): string | undefined => {
   const tagged = error as { readonly _tag?: string; readonly message?: string }
   switch (tagged._tag) {
     case "AlreadyRunning": {
-      const { pid, dataDir } = error as { pid: number; dataDir: string }
-      return `GMAT prep is already running (process ${pid}) on the data folder ${dataDir}.`
+      const { pid, dataDir } = error as { pid: number | null; dataDir: string }
+      return `GMAT prep is already running${pid === null ? "" : ` (process ${pid})`} on the data folder ${dataDir}.`
+    }
+    case "MigrationBrokeReferences": {
+      const { migration } = error as { migration: string }
+      return `Updating the database stopped at ${migration}, which would have broken links between records. Nothing was changed; report this, and keep using the previous version of GMAT prep.`
     }
     case "NewerDatabase":
       return "This data folder was written by a newer version of GMAT prep. Install that version, or restore a snapshot."
@@ -89,7 +96,9 @@ const explainStartupFailure = (error: unknown): string | undefined => {
       return "The database file is damaged. Restore a snapshot from the data folder's snapshots folder."
     case "SqlError": {
       const messages = causeMessages(error)
-      return messages.some((message) => message.includes("not a database"))
+      // SQLite says "file is not a database" for a file that is something else,
+      // and "database disk image is malformed" for one with a damaged page.
+      return messages.some((message) => message.includes("not a database") || message.includes("malformed"))
         ? "The database file is damaged or is not a GMAT prep database. Restore a snapshot from the data folder's snapshots folder."
         : `The database could not be opened: ${messages.at(-1) ?? "unknown error"}`
     }
@@ -105,7 +114,14 @@ const runServer = Layer.launch(MainLive).pipe(
   })
 )
 
+// Everything the app writes (database, snapshots, Books) is private to the
+// user who runs it; the worker inherits this.
+const keepFilesPrivate = () => {
+  if (process.platform !== "win32") process.umask(0o077)
+}
+
 export const main = () => {
+  keepFilesPrivate()
   const isWorker = process.argv.slice(2).includes("worker")
   if (isWorker) {
     BunRuntime.runMain(WorkerMain)
