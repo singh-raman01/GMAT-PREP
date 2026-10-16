@@ -439,10 +439,10 @@ The Curator view shows Question Bank coverage by Skill and Difficulty Band, the 
 ### Profiles, access and LAN mode
 
 - A Profile can have a PIN. PINs and the Curator passphrase are stored as argon2id hashes. An unlocked Profile and an unlocked Curator are held in HttpOnly, SameSite=Strict cookies.
-- Five wrong PINs lock the Profile for 5 minutes.
+- Five wrong PINs lock the Profile for 5 minutes. PIN checks run one at a time, so wrong PINs sent together still count one by one.
 - The Curator resets PINs, and the passphrase is reset by a command run on the host computer.
 - Deleting a Profile needs its PIN or the Curator passphrase, and a snapshot is taken first.
-- The server accepts connections from the host only. In LAN mode it listens on the local network, and a new device must enter a 6-digit pairing code shown on the host; codes are single-use and expire after 5 minutes, and paired devices can be revoked. LAN traffic is plain HTTP, so LAN mode is for trusted networks.
+- The server accepts connections from the host only, and answers only requests whose Host header names this computer (127.0.0.1, localhost or [::1]), which stops a web page from reaching it through DNS rebinding. Every response forbids framing and type sniffing. In LAN mode it listens on the local network, and a new device must enter a 6-digit pairing code shown on the host; codes are single-use and expire after 5 minutes, and paired devices can be revoked. LAN traffic is plain HTTP, so LAN mode is for trusted networks.
 - Profiles cannot see each other's data.
 
 ### LLM adapter

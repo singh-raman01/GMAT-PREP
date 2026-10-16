@@ -1,3 +1,5 @@
 # Drizzle 1.0's Effect driver, pinned while it is a release candidate
 
 Typed queries and generated migrations prevent a class of bugs that hand-written SQL invites, and Drizzle's Effect driver for Bun SQLite fits Effect 4 directly. That driver exists only in Drizzle 1.0, still a release candidate in October 2026, so drizzle-orm and drizzle-kit are pinned to exact versions and upgraded only on purpose, with the test suite as the gate. Database access sits behind repository services, so if the release candidate causes trouble the fallback, @effect/sql-sqlite-bun (stable) with SQL written by hand, replaces the driver without touching callers. Expected result: no dependency upgrade reaches the app without passing the tests.
+
+Amended 16 October 2026: the pinned build is 1.0.0-rc.5-5935859. The tagged 1.0.0-rc.4 cannot load its Effect driver with Effect 4.0.5, because the driver calls Schema.TaggedErrorClass, which Effect 4.0 does not export. The first build that loads with Effect 4.0.5 and passes the tests is pinned instead, and the same rule applies to every later upgrade.

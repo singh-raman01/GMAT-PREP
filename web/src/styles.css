@@ -1,0 +1,660 @@
+/*
+  GMAT prep. One typeface chosen for telling digits and letters apart, plain
+  lists, and a single emphasis: the highlighter marks what is chosen or found.
+  Section colors identify Sections and nothing else.
+*/
+
+:root {
+  color-scheme: light dark;
+
+  --paper: #ffffff;
+  --graphite: #23262b;
+  --pencil: #5b616c;
+  --rule: #dcdfe4;
+  --field: #858b96;
+  --hover: #f2f3f5;
+  --highlight: #ffe45e;
+  --on-highlight: #23262b;
+  --highlight-band: 70%;
+  --alert: #b3261e;
+
+  --quant: #17795e;
+  --verbal: #8b3a7e;
+  --di: #2c5db0;
+
+  --font: "Atkinson Hyperlegible Next Variable", "Atkinson Hyperlegible Next", "Atkinson Hyperlegible", system-ui,
+    sans-serif;
+
+  /* Type scale in rem: 14, 16, 18, 21, 28, 40 px. */
+  --step--1: 0.875rem;
+  --step-0: 1rem;
+  --step-1: 1.125rem;
+  --step-2: 1.3125rem;
+  --step-3: 1.75rem;
+  --step-4: 2.5rem;
+
+  --gutter: clamp(1rem, 4vw, 3rem);
+  --radius: 6px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #16181c;
+    --graphite: #e8e9ec;
+    --pencil: #a7adb7;
+    --rule: #343841;
+    --field: #6e7480;
+    --hover: #20232a;
+    --on-highlight: #16181c;
+    --highlight-band: 100%;
+    --alert: #ff8a80;
+
+    --quant: #52c49c;
+    --verbal: #d682c7;
+    --di: #86a9f0;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--graphite);
+  font-family: var(--font);
+  font-size: var(--step-1);
+  line-height: 1.5;
+  font-kerning: normal;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  line-height: 1.15;
+  text-wrap: balance;
+}
+
+h1 {
+  font-size: var(--step-4);
+  font-weight: 800;
+  letter-spacing: -0.015em;
+}
+
+h2 {
+  font-size: var(--step-3);
+  font-weight: 750;
+  letter-spacing: -0.01em;
+}
+
+h3 {
+  font-size: var(--step-2);
+  font-weight: 700;
+}
+
+p {
+  margin: 0;
+}
+
+:focus-visible {
+  outline: 3px solid var(--graphite);
+  outline-offset: 3px;
+}
+
+/* The highlighter: a hand-drawn band behind the text, slanted at the ends. */
+.mark,
+mark {
+  color: var(--on-highlight);
+  background: linear-gradient(
+      100deg,
+      transparent 0.1em,
+      var(--highlight) 0.2em,
+      var(--highlight) calc(100% - 0.2em),
+      transparent calc(100% - 0.1em)
+    )
+    0 85% / 100% var(--highlight-band) no-repeat;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  padding-inline: 0.16em;
+  margin-inline: -0.16em;
+}
+
+@media (forced-colors: active) {
+  .mark,
+  mark {
+    forced-color-adjust: none;
+    background: Mark;
+    color: MarkText;
+  }
+}
+
+/* Layout */
+
+.page {
+  max-width: 76rem;
+  margin-inline: auto;
+  padding: clamp(1.5rem, 5vw, 3.5rem) var(--gutter) 5rem;
+}
+
+/* Left of center on wide screens, flush with the gutter on narrow ones. */
+.page-narrow,
+.picker {
+  max-width: 42rem;
+  margin-inline: clamp(0rem, 12vw - 3rem, 10rem) auto;
+}
+
+.picker {
+  padding-top: clamp(2rem, 9vh, 6rem);
+}
+
+.wordmark {
+  font-size: var(--step-1);
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.page > .wordmark {
+  margin-bottom: clamp(2rem, 7vh, 4rem);
+}
+
+.page > h1 {
+  margin-bottom: 1rem;
+}
+
+.lede {
+  max-width: 60ch;
+  font-size: var(--step-2);
+  line-height: 1.45;
+  margin-bottom: 2rem;
+}
+
+.quiet {
+  color: var(--pencil);
+}
+
+.notice {
+  max-width: 60ch;
+  margin: 0 0 1.5rem;
+  padding: 0.75rem 1rem;
+  border-left: 4px solid var(--graphite);
+  background: var(--hover);
+}
+
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1.5rem;
+  padding: 0.75rem var(--gutter);
+  border-bottom: 1px solid var(--rule);
+}
+
+.who {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.who-name {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+/* Controls */
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  padding: 0.5rem 1.15rem;
+  border: 2px solid var(--graphite);
+  border-radius: var(--radius);
+  background: var(--graphite);
+  color: var(--paper);
+  font: inherit;
+  font-size: var(--step-0);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.button:hover {
+  background: color-mix(in srgb, var(--graphite) 86%, var(--paper));
+}
+
+.button-quiet {
+  background: transparent;
+  color: var(--graphite);
+}
+
+.button-quiet:hover {
+  background: var(--hover);
+}
+
+.button:disabled,
+.button[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.field {
+  display: grid;
+  gap: 0.35rem;
+  justify-items: start;
+}
+
+.field label {
+  font-size: var(--step-0);
+  font-weight: 700;
+}
+
+.optional,
+.hint {
+  color: var(--pencil);
+  font-weight: 400;
+}
+
+.hint {
+  font-size: var(--step-0);
+}
+
+input[type="text"],
+input[type="password"],
+input[type="search"] {
+  width: 100%;
+  max-width: 24rem;
+  min-height: 2.75rem;
+  padding: 0.45rem 0.75rem;
+  border: 2px solid var(--field);
+  border-radius: var(--radius);
+  background: var(--paper);
+  color: var(--graphite);
+  font: inherit;
+  font-size: var(--step-1);
+}
+
+input:focus-visible {
+  border-color: var(--graphite);
+}
+
+input[aria-invalid="true"] {
+  border-color: var(--alert);
+}
+
+input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+input::placeholder {
+  color: var(--pencil);
+  opacity: 1;
+}
+
+input.pin-input {
+  max-width: 11rem;
+  letter-spacing: 0.3em;
+  font-variant-numeric: tabular-nums;
+}
+
+.field-error,
+.problem {
+  color: var(--alert);
+  font-size: var(--step-0);
+  font-weight: 700;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+/* Profile picker */
+
+.profiles {
+  list-style: none;
+  margin: 1.5rem 0 2rem;
+  padding: 0;
+  border-top: 1px solid var(--rule);
+}
+
+.profiles > li {
+  border-bottom: 1px solid var(--rule);
+}
+
+/* The hover area hangs past the text edge so names line up with the heading. */
+.profile {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  width: calc(100% + 1.2rem);
+  margin: 0 -0.6rem;
+  padding: 0.85rem 0.6rem;
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.profile:hover {
+  background: var(--hover);
+}
+
+.profile-name {
+  min-width: 0;
+  font-size: var(--step-3);
+  font-weight: 700;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.profile-pin {
+  flex: none;
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+.pin-entry {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.25rem 0 1.25rem;
+  animation: open 160ms ease-out;
+}
+
+.pin-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.75rem;
+}
+
+.pin-input[data-shake="0"] {
+  animation: shake-a 320ms ease-in-out;
+}
+
+.pin-input[data-shake="1"] {
+  animation: shake-b 320ms ease-in-out;
+}
+
+.countdown {
+  color: var(--pencil);
+  font-size: var(--step-0);
+  font-variant-numeric: tabular-nums;
+}
+
+.add h2 {
+  font-size: var(--step-2);
+  margin-bottom: 1.25rem;
+}
+
+.add-form {
+  display: grid;
+  gap: 1.25rem;
+  max-width: 30rem;
+}
+
+/* Taxonomy */
+
+.search {
+  display: grid;
+  gap: 0.35rem;
+  max-width: 34rem;
+  margin-bottom: 2.5rem;
+}
+
+.search label {
+  font-size: var(--step-0);
+  font-weight: 700;
+}
+
+.search input {
+  max-width: none;
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 2rem;
+  margin-bottom: 2.5rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.7rem 0;
+  border: 0;
+  background: none;
+  color: var(--pencil);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tab[aria-selected="true"] {
+  color: var(--graphite);
+}
+
+.tab:hover .tab-label {
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.3em;
+}
+
+.tab-aside {
+  margin-left: auto;
+}
+
+[data-section="quant"] {
+  --section: var(--quant);
+}
+
+[data-section="verbal"] {
+  --section: var(--verbal);
+}
+
+[data-section="di"] {
+  --section: var(--di);
+}
+
+.swatch {
+  display: inline-block;
+  flex: none;
+  width: 0.7em;
+  height: 0.7em;
+  border-radius: 2px;
+  background: var(--section, var(--pencil));
+}
+
+.panel:focus-visible {
+  outline-offset: 8px;
+}
+
+.group {
+  margin-bottom: 3.5rem;
+}
+
+.group > h2 {
+  margin-bottom: 0.4rem;
+}
+
+.group-about {
+  max-width: 62ch;
+  margin-bottom: 1.75rem;
+  color: var(--pencil);
+}
+
+.topic + .topic {
+  margin-top: 2.25rem;
+}
+
+.topic-name {
+  margin-bottom: 1rem;
+}
+
+/* Entries read like an index: down one column, then the next. */
+.entries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  columns: 2 24rem;
+  column-gap: 3.5rem;
+}
+
+.entry {
+  break-inside: avoid;
+  padding-bottom: 1.5rem;
+}
+
+.entry-name {
+  margin-bottom: 0.2rem;
+  font-size: var(--step-1);
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.entry-text {
+  max-width: 62ch;
+}
+
+.entry-context {
+  margin-bottom: 0.2rem;
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+.entry-when {
+  margin-top: 0.35rem;
+}
+
+.when-label {
+  font-weight: 700;
+}
+
+.used-in {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.9rem;
+  margin-top: 0.45rem;
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+.used-in-label {
+  color: var(--graphite);
+  font-weight: 700;
+}
+
+.type-list {
+  display: contents;
+  list-style: none;
+}
+
+.type-list > li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.result-count {
+  margin-bottom: 2rem;
+  font-weight: 700;
+}
+
+.group > h2.results-title {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 1.25rem;
+  font-size: var(--step-2);
+}
+
+/* Motion answers actions only, and stops when asked to. */
+
+@keyframes open {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes shake-a {
+  20%,
+  60% {
+    transform: translateX(-6px);
+  }
+  40%,
+  80% {
+    transform: translateX(6px);
+  }
+}
+
+@keyframes shake-b {
+  20%,
+  60% {
+    transform: translateX(-6px);
+  }
+  40%,
+  80% {
+    transform: translateX(6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+@media (max-width: 40rem) {
+  h1 {
+    font-size: 2rem;
+  }
+
+  .profile-name {
+    font-size: 1.5rem;
+  }
+
+  .lede {
+    font-size: var(--step-1);
+  }
+
+  .tabs {
+    gap: 0 1.25rem;
+  }
+
+  .tab {
+    padding-block: 0.45rem;
+  }
+
+  .tab-aside {
+    margin-left: 0;
+  }
+}
