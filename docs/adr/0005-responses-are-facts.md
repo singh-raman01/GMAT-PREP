@@ -1,0 +1,3 @@
+# Responses are stored as facts; scores are derived
+
+Answer keys can be wrong (book errata, extraction slips), and a wrong key must not leave wrong history behind. A Response stores what the Profile selected for each Part, the time spent, the mode and the timestamp, and is never edited. Correctness, Difficulty, Ability and Weak Areas are derived from Responses and the current keys and can be rebuilt at any time. Study Plans are append-only versions built forward from the current Study Day, so a rebuild never rewrites past plan days. Expected result: a Key Override re-scores every past Response and updates every number that depends on it, and swapping the rating method means a rebuild, not a data migration.

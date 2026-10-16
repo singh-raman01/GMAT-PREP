@@ -1,0 +1,3 @@
+# Charts are stored as specs bound to typed Datasets
+
+A chart stored as an image cannot be checked against its answer key, and a table stored as text sorts "1,200" before "980". Question text is Markdown with LaTeX. Datasets have typed columns (number, percent, currency, date, text), and charts are Vega-Lite specs bound to their Dataset, with custom renderers for shapes Vega-Lite cannot draw, such as Venn diagrams. A Book figure that cannot be turned into data is kept as a cropped page image and goes to the Review Queue. Expected result: every chart in the Question Bank can be redrawn from its data, and TA tables sort by value.

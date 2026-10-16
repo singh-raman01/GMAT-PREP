@@ -1,0 +1,3 @@
+# GMAT Focus only, with retired content skipped at ingestion
+
+Older Books include content GMAT Focus no longer tests: Sentence Correction, geometry, Data Sufficiency inside Quant, and Integrated Reasoning. Sentence Correction and geometry are skipped at ingestion and counted per Book; old Data Sufficiency becomes Data Insights; old Integrated Reasoning items map onto MSR, TA, GI and TPA. Skipping saves LLM spend and keeps the Question Bank to what the exam tests. Expected result: no Retired item reaches a learner, and each Book's skip count shows nothing vanished silently. Reversing this means re-running ingestion on the affected Books.

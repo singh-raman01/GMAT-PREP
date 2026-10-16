@@ -1,0 +1,576 @@
+# Skills describe what a Question exercises, whichever Section serves it:
+# a DS Question takes Quant Skills for its math, and a verbal TPA or a
+# text-based MSR Question takes Verbal Skills. DI Skills cover only the
+# abilities those do not.
+version: 1
+# Each wrong option takes the one Mistake Type it most likely signals and,
+# where one fits, one Trap Pattern. Each Approach takes exactly one Strategy.
+# Time pressure is never an option tag; it comes only from Response timing.
+mistake_types:
+  - id: concept-gap
+    name: Concept gap
+    description: Did not know the rule, fact or method that the Question tests.
+  - id: wrong-approach
+    name: Wrong approach
+    description: Knew the content but used a method that was too slow or could not prove the answer.
+  - id: trap
+    name: Trap
+    description: Chose a wrong option that the Question planted to look right.
+  - id: calculation-slip
+    name: Calculation slip
+    description: Used the right method but made an arithmetic or algebra error.
+  - id: misread
+    name: Misread
+    description: Read the question, a statement or the data incorrectly, such as a number, a unit or a negation.
+  - id: time-pressure
+    name: Time pressure
+    description: Rushed or ran out of time, so the work was cut short or replaced by a guess.
+sections:
+  - id: quant
+    name: Quantitative Reasoning
+    question_types:
+      - id: quant.ps
+        name: Problem Solving
+        description: Solve a math problem and choose the one correct answer from five options.
+    topics:
+      - id: quant.number-properties
+        name: Number properties
+        skills:
+          - id: quant.number-properties.divisibility
+            name: Divisibility and factors
+            description: Factors, multiples, primes and prime factorization, divisibility rules, and greatest common factor or least common multiple.
+          - id: quant.number-properties.remainders
+            name: Remainders and units digits
+            description: Remainders from integer division, and repeating patterns such as the units digit of a large power.
+          - id: quant.number-properties.even-odd
+            name: Even and odd integers
+            description: Whether sums, differences, products and powers of integers come out even or odd.
+          - id: quant.number-properties.signs
+            name: Positive and negative numbers
+            description: How signs behave under multiplication, division and powers, what a sign condition on a product or quotient implies, and the special role of zero.
+          - id: quant.number-properties.digits
+            name: Digits and place value
+            description: The individual digits of a number and decimal place value, including digit puzzles and rounding to a given place.
+      - id: quant.computation
+        name: Computation and comparison
+        skills:
+          - id: quant.computation.fractions-decimals
+            name: Fractions and decimals
+            description: Calculating with fractions and decimals, including complex fractions, and converting among fraction, decimal and percent forms.
+          - id: quant.computation.ordering
+            name: Comparing and ordering values
+            description: Ranking numbers or expressions by size and placing them on a number line, including how powers and reciprocals behave between -1 and 1.
+          - id: quant.computation.estimation
+            name: Estimation
+            description: Approximating a result closely enough to pick the answer when the question asks for an approximate value or exact work is unnecessary.
+      - id: quant.exponents-roots
+        name: Exponents and roots
+        skills:
+          - id: quant.exponents-roots.exponents
+            name: Exponents
+            description: Rules for powers, including zero and negative exponents, powers of ten, comparing powers, and equations with the unknown in the exponent.
+          - id: quant.exponents-roots.roots
+            name: Roots and radicals
+            description: Simplifying and combining square and higher roots, rationalizing denominators, and converting between roots and fractional exponents.
+      - id: quant.algebra
+        name: Algebra
+        skills:
+          - id: quant.algebra.expressions
+            name: Algebraic expressions
+            description: Simplifying, expanding and factoring expressions, using identities such as the difference of squares, and working with algebraic fractions.
+          - id: quant.algebra.linear-equations
+            name: Linear equations and systems
+            description: Solving one or more linear equations, and judging how many independent equations are needed to fix the unknowns.
+          - id: quant.algebra.quadratics
+            name: Quadratic and polynomial equations
+            description: Solving equations with squared or higher powers, by factoring or otherwise, and reasoning about their roots.
+          - id: quant.algebra.inequalities
+            name: Inequalities
+            description: Solving and combining inequalities, including the sign flip when multiplying by a negative, and finding the possible range of a variable.
+          - id: quant.algebra.absolute-value
+            name: Absolute value
+            description: Equations and inequalities that contain absolute values, and absolute value read as distance on the number line.
+          - id: quant.algebra.functions
+            name: Functions and formulas
+            description: Evaluating or composing functions, applying an operation defined by a new symbol, and substituting into a given formula.
+          - id: quant.algebra.sequences
+            name: Sequences and series
+            description: Sequences defined by a rule or by earlier terms, evenly spaced sequences and consecutive integers, and sums of terms.
+      - id: quant.word-problems
+        name: Word problems
+        skills:
+          - id: quant.word-problems.ratios
+            name: Ratios and proportions
+            description: Ratios, proportions and fractional shares of a group or quantity, including scaling and conversion between units.
+          - id: quant.word-problems.percents
+            name: Percents
+            description: Percent of a quantity, percent change, successive changes, markups, discounts, profit and interest.
+          - id: quant.word-problems.speed-distance
+            name: Speed, distance and time
+            description: Travel problems relating speed, distance and time, including average speed and objects moving toward or away from each other.
+          - id: quant.word-problems.work-rates
+            name: Work and production rates
+            description: People or machines working at given rates, alone or together, to finish a job or produce output.
+          - id: quant.word-problems.extremes
+            name: Maximum and minimum values
+            description: Finding the greatest or least possible value of one quantity by pushing the others to their limits, as in problems about averages, groups or shares.
+          - id: quant.word-problems.translation
+            name: Translating words into equations
+            description: Turning a described situation, such as ages, prices, tiered charges or counts, into equations, when no more specific Skill such as rates, ratios, percents or mixtures fits.
+      - id: quant.statistics
+        name: Statistics
+        skills:
+          - id: quant.statistics.mean
+            name: Averages
+            description: The arithmetic mean, the link between sum, count and average, and how the average moves when values are added or removed.
+          - id: quant.statistics.weighted-average
+            name: Weighted averages and mixtures
+            description: The combined average of groups of different sizes, and mixtures of solutions or goods with different concentrations or prices.
+          - id: quant.statistics.median
+            name: Median, mode and percentiles
+            description: Middle values, most frequent values, and the position of a value within ordered data.
+          - id: quant.statistics.spread
+            name: Range and standard deviation
+            description: Range and standard deviation as measures of spread, and how adding values, shifting or scaling the data changes them.
+      - id: quant.counting-probability
+        name: Counting and probability
+        skills:
+          - id: quant.counting-probability.overlapping-sets
+            name: Overlapping sets
+            description: Counting members of two or three overlapping groups, as in Venn diagram or two-way table problems.
+          - id: quant.counting-probability.counting
+            name: Counting methods
+            description: Counting arrangements and selections with the multiplication principle, permutations and combinations.
+          - id: quant.counting-probability.probability
+            name: Probability
+            description: Probability of single and combined events, including independent, dependent and at-least-one cases.
+    # A Trap Pattern or Strategy applies only to the Question Types in its
+    # applies_to, whichever Section lists it.
+    trap_patterns:
+      - id: quant.trap.wrong-quantity
+        name: Answers a different quantity
+        description: Gives a value for a quantity other than the one asked, such as x for x + y, an intermediate result or the complement, or in DS judges sufficiency for such a quantity, tempting because the work behind it is correct.
+        applies_to: [quant.ps, di.ds, di.tpa]
+      - id: quant.trap.ignored-condition
+        name: Ignores a stated condition
+        description: Holds only if a condition in the question is dropped, such as positive, integer, distinct or at least one, tempting because the condition is easy to lose once the calculation starts.
+        applies_to: [quant.ps, di.ds, di.tpa]
+      - id: quant.trap.assume-integers
+        name: Assumes integers
+        description: Holds only if the unknowns are integers, which the question does not say, tempting because the easiest test values are whole numbers.
+        applies_to: [quant.ps, di.ds]
+      - id: quant.trap.overlook-negatives
+        name: Overlooks negative values
+        description: Treats a quantity that is or may be negative as positive, such as dropping the negative root of an even power or the negative case of an absolute value, or keeping an inequality's direction after multiplying by a negative, tempting because the positive case is the familiar one.
+        applies_to: [quant.ps, di.ds]
+      - id: quant.trap.overlook-zero
+        name: Overlooks zero
+        description: Misses that a value can be zero, as when dividing both sides by a variable that may be zero or forgetting that zero is even, tempting because a check of positive and negative values still skips it.
+        applies_to: [quant.ps, di.ds]
+      - id: quant.trap.assume-distinct
+        name: Assumes different values
+        description: Holds only if the unknowns differ from one another, though the question lets them be equal, as with two primes that could be the same prime, tempting because different letters suggest different numbers.
+        applies_to: [quant.ps, di.ds]
+      - id: quant.trap.product-rule-on-sum
+        name: Product rule applied to a sum
+        description: Applies a rule that holds only for products to a sum, such as squaring a sum term by term, taking the root of a sum term by term or cancelling one term of a sum in a fraction, tempting because the step mirrors a valid rule.
+        applies_to: [quant.ps, di.ds]
+      - id: quant.trap.wrong-base
+        name: Wrong base for a percent or ratio
+        description: Measures a percent or fraction against the wrong whole, such as taking change from the new value, adding successive percent changes, or dividing by the other part of a ratio instead of the total, tempting because every number used is in the problem.
+        applies_to: [quant.ps, di.ds, di.msr, di.ta, di.gi, di.tpa]
+      - id: quant.trap.plain-average
+        name: Unweighted average
+        description: Takes a plain average of speeds, work times, group averages or group percentages when the right method weights them by time or group size or adds rates, tempting because the midpoint looks fair.
+        applies_to: [quant.ps, di.ds, di.msr, di.ta, di.gi, di.tpa]
+      - id: quant.trap.off-by-one
+        name: Off by one
+        description: Miscounts by one, as with the integers from 10 to 50 inclusive, the terms of an evenly spaced sequence or the gaps between posts, tempting because subtracting the endpoints feels like counting.
+        applies_to: [quant.ps, di.ds]
+      - id: quant.trap.order-mismatch
+        name: Order counted wrongly
+        description: Counts arrangements when order does not matter, selections when it does, or identical items as distinct, so the count is off by the number of orderings, tempting because each count comes from a familiar formula.
+        applies_to: [quant.ps, di.ds]
+      - id: quant.trap.double-count
+        name: Overlap counted twice
+        description: Adds the sizes of overlapping groups without removing the overlap, or adds the probabilities of events that can happen together, tempting because adding the parts looks like finding the whole.
+        applies_to: [quant.ps, di.ds, di.msr, di.gi]
+    strategies:
+      - id: quant.strategy.solve-directly
+        name: Solve directly
+        description: Work forward from the given information with the standard equations, formulas, counting principles or number rules.
+        valid_when: Proves the answer whenever each step is valid; the pitfall is time, when a long setup is slower than another Strategy or a DS statement only has to be shown to fix one answer.
+        applies_to: [quant.ps, di.ds, di.tpa]
+      - id: quant.strategy.work-backward
+        name: Work backward from the options
+        description: Plug the options into the problem, often starting from a middle value, until one meets every condition.
+        valid_when: Proves the answer when the options are numbers and the one tested meets every condition in the question; the pitfall is checking only some of the conditions.
+        applies_to: [quant.ps, di.tpa]
+      - id: quant.strategy.pick-numbers
+        name: Pick numbers
+        description: Give the unknowns or unstated amounts convenient values, such as 100 for a starting price, and work the problem with them.
+        valid_when: Proves the answer when the result cannot depend on the values picked and, in PS, exactly one option matches; the pitfall is values such as 0 or 1 that make several options match, or values that break a condition.
+        applies_to: [quant.ps, di.ds, di.tpa]
+      - id: quant.strategy.test-cases
+        name: Test cases
+        description: Try allowed values of different kinds, such as negatives, fractions and zero, to see whether a claim or a DS statement always gives the same answer.
+        valid_when: Two allowed cases with different answers prove a DS statement insufficient or a must-be-true claim false, while agreeing cases prove nothing unless they cover every possibility; the pitfall is a case that breaks a given condition.
+        applies_to: [quant.ps, di.ds]
+      - id: quant.strategy.estimate
+        name: Estimate
+        description: Round the numbers, or read approximate values off a display, to fix the size of the answer, then choose the option it points to.
+        valid_when: Proves the answer when the options or thresholds are far enough apart that rounding cannot change the choice; the pitfall is close options, or rounding errors that all push the same way.
+        applies_to: [quant.ps, di.msr, di.ta, di.gi, di.tpa]
+      - id: quant.strategy.eliminate-by-property
+        name: Eliminate by a property
+        description: Rule out options that fail a quick check the answer must pass, such as sign, parity, units digit or divisibility.
+        valid_when: Proves the answer when exactly one option survives a check the true answer is certain to pass; the pitfall is a property the answer only might have, or stopping while two options remain.
+        applies_to: [quant.ps]
+      - id: quant.strategy.complement
+        name: Count the complement
+        description: Find the count or probability of the opposite outcome, such as none, and subtract it from the total or from 1.
+        valid_when: Proves the answer when the opposite outcome covers exactly the cases not asked about; the pitfall is the wrong opposite, such as exactly one in place of none for at least one.
+        applies_to: [quant.ps, di.ds]
+      - id: quant.strategy.list-cases
+        name: List cases or terms
+        description: Write out every possible case, or the first terms of a sequence or power, until the count or a repeating pattern is clear.
+        valid_when: Proves the answer when the list covers every case exactly once, or the pattern is known to repeat, as units digits of powers do; the pitfall is a missed or repeated case, or a pattern assumed to continue without reason.
+        applies_to: [quant.ps, di.ds]
+
+  - id: verbal
+    name: Verbal Reasoning
+    # EXCEPT questions take the Question Type of the task they ask about.
+    question_types:
+      - id: verbal.cr-assumption
+        name: CR Assumption
+        description: Choose the unstated premise that the argument relies on, or that would make its conclusion follow.
+      - id: verbal.cr-strengthen
+        name: CR Strengthen
+        description: Choose the new information that most increases support for the conclusion, or for the case that a plan will work.
+      - id: verbal.cr-weaken
+        name: CR Weaken
+        description: Choose the new information that most undermines the conclusion, or the case that a plan will work.
+      - id: verbal.cr-evaluate
+        name: CR Evaluate
+        description: Choose the information that would be most useful for judging whether the argument holds or a plan will succeed.
+      - id: verbal.cr-flaw
+        name: CR Flaw
+        description: Name the error in the reasoning, or the criticism the argument is most open to.
+      - id: verbal.cr-inference
+        name: CR Inference
+        description: Choose the statement that the given facts prove or most strongly support.
+      - id: verbal.cr-explain
+        name: CR Explain a discrepancy
+        description: Choose the statement that, if true, best resolves an apparent conflict or surprising result in the passage.
+      - id: verbal.cr-structure
+        name: CR Argument structure
+        description: Identify the role a statement plays in the argument, often shown in boldface, or describe how the argument makes its case.
+      - id: verbal.cr-complete
+        name: CR Complete the argument
+        description: Choose the statement that most logically fills a blank in the argument, whatever role the blank plays.
+      - id: verbal.rc-main-idea
+        name: RC Main idea
+        description: Identify the central point of a passage or the author's primary purpose in writing it.
+      - id: verbal.rc-detail
+        name: RC Detail
+        description: Identify what the passage states explicitly about a particular point.
+      - id: verbal.rc-inference
+        name: RC Inference
+        description: Identify what the passage implies or supports without saying it outright.
+      - id: verbal.rc-structure
+        name: RC Function and structure
+        description: Explain why the author includes a part of the passage, or how the passage or a paragraph is organized.
+      - id: verbal.rc-application
+        name: RC Application
+        description: Apply the passage's ideas to a new situation or analogous case, or judge which new fact would most support or undermine a claim in the passage.
+      - id: verbal.rc-tone
+        name: RC Tone and style
+        description: Identify the author's attitude toward a subject, or the tone or style of the writing.
+    topics:
+      - id: verbal.reading
+        name: Reading and interpretation
+        skills:
+          - id: verbal.reading.main-point
+            name: Main point and purpose
+            description: Identifying the central claim or overall aim of a passage, argument or document.
+          - id: verbal.reading.stated-info
+            name: Stated information
+            description: Locating what a text says explicitly and recognizing it when an answer rewords it.
+          - id: verbal.reading.inference
+            name: Supported inference
+            description: Deciding what a text or set of statements proves or strongly supports, without going beyond it.
+          - id: verbal.reading.structure
+            name: Role and structure
+            description: Identifying the role a statement or paragraph plays, such as conclusion, evidence, counterpoint or background, and how a text or argument is organized.
+          - id: verbal.reading.viewpoints
+            name: Viewpoints and tone
+            description: Telling whose view each statement expresses, and judging the author's attitude toward the ideas discussed.
+          - id: verbal.reading.application
+            name: Applying ideas to new cases
+            description: Using a principle, rule or finding from a text to judge a new situation or to pick an analogous one.
+      - id: verbal.arguments
+        name: Argument patterns
+        skills:
+          - id: verbal.arguments.causal
+            name: Cause and effect
+            description: Reasoning about cause and effect, including other possible causes, reversed direction and coincidence, whether in an argument or in facts that need explaining.
+          - id: verbal.arguments.plans
+            name: Plans and predictions
+            description: Arguments that an action will reach a goal or a trend will continue, open to feasibility problems, side effects and changing conditions.
+          - id: verbal.arguments.samples
+            name: Samples, surveys and measures
+            description: Conclusions drawn from a survey, study, sample or indicator, which hold only if that evidence fairly represents the group or quantity the conclusion is about.
+          - id: verbal.arguments.comparison
+            name: Comparisons and analogies
+            description: Arguments that carry a conclusion from one case, place or period to another, which hold only if the two are alike in the ways that matter.
+          - id: verbal.arguments.numbers
+            name: Numbers in arguments
+            description: Arguments whose reasoning turns on rates versus totals, percentages versus amounts, averages, or revenue versus profit, with little or no calculation.
+          - id: verbal.arguments.scope
+            name: Shifts in terms and scope
+            description: Conclusions that use a key term in a new sense, or claim more than the evidence shows, such as certainty from a likelihood or a lasting effect from a short-term one.
+      - id: verbal.logic
+        name: Deductive logic
+        skills:
+          - id: verbal.logic.conditional
+            name: Conditional and quantifier logic
+            description: Statements built on if-then, only if, unless, all, some or none, and what they do and do not guarantee.
+          - id: verbal.logic.rules
+            name: Rule-based deduction
+            description: Combining several stated rules about order, timing or assignment to work out what must or could be true.
+    trap_patterns:
+      - id: verbal.trap.no-effect
+        name: No effect on the conclusion
+        description: Stays on the topic but leaves the support for the conclusion, plan or claim at issue unchanged, or changes it only through an assumption the text does not give, tempting because it shares the argument's subject.
+        applies_to: [verbal.cr-assumption, verbal.cr-strengthen, verbal.cr-weaken, verbal.cr-evaluate, verbal.cr-complete, verbal.rc-application, di.tpa]
+      - id: verbal.trap.opposite
+        name: Opposite effect
+        description: Moves the argument the wrong way, such as weakening it when the task is to strengthen, or in an EXCEPT question does what the stem describes, tempting because its relevance is obvious.
+        applies_to: [verbal.cr-assumption, verbal.cr-strengthen, verbal.cr-weaken, verbal.cr-complete, verbal.rc-application, di.tpa]
+      - id: verbal.trap.not-required
+        name: Helpful but not required
+        description: Would support the conclusion but is not something the argument depends on, often because it is stronger than the argument needs, tempting because it clearly helps.
+        applies_to: [verbal.cr-assumption, di.tpa]
+      - id: verbal.trap.one-side
+        name: Explains only one side
+        description: Accounts for one of the conflicting facts but not how both can be true, or sharpens the conflict, tempting because it bears on the situation described.
+        applies_to: [verbal.cr-explain]
+      - id: verbal.trap.wrong-reasoning
+        name: Misdescribes the reasoning
+        description: Names a flaw or method the argument does not use, often a familiar textbook error, or a feature of the argument that is no weakness, tempting because it sounds like a standard answer.
+        applies_to: [verbal.cr-flaw, verbal.cr-structure]
+      - id: verbal.trap.wrong-role
+        name: Wrong role
+        description: Gives a statement or paragraph a role it does not play, such as calling evidence the conclusion or a view the author rejects one the author holds, tempting because the roles it names do occur elsewhere in the text.
+        applies_to: [verbal.cr-structure, verbal.rc-structure]
+      - id: verbal.trap.too-strong
+        name: Too strong
+        description: States a claim or attitude more strongly than the text supports, such as all for most, proves for suggests or contempt for mild doubt, tempting because firm wording sounds like a clear answer.
+        applies_to: [verbal.cr-inference, verbal.cr-complete, verbal.rc-main-idea, verbal.rc-detail, verbal.rc-inference, verbal.rc-tone, di.msr, di.tpa]
+      - id: verbal.trap.beyond-text
+        name: Goes beyond the text
+        description: Adds content the text does not establish, such as outside knowledge, a new cause or a prediction, tempting because it is plausible and on topic.
+        applies_to: [verbal.cr-inference, verbal.cr-complete, verbal.rc-main-idea, verbal.rc-detail, verbal.rc-inference, di.msr, di.tpa]
+      - id: verbal.trap.distortion
+        name: Distorts the text
+        description: Reuses the text's words but changes what they say, such as reversing a relationship or joining details the text keeps apart, tempting because the familiar wording looks like support.
+        applies_to: [verbal.cr-inference, verbal.cr-complete, verbal.rc-main-idea, verbal.rc-detail, verbal.rc-inference, verbal.rc-tone, di.msr, di.tpa]
+      - id: verbal.trap.true-not-answer
+        name: True but not the answer
+        description: Accurately reports something the passage says but does not answer the question asked, tempting because the reader recognizes it from the passage.
+        applies_to: [verbal.rc-detail, verbal.rc-inference, verbal.rc-structure]
+      - id: verbal.trap.too-narrow
+        name: Too narrow for the main idea
+        description: Offers a detail or one paragraph's point as the main idea or purpose of the whole passage, tempting because it is accurate.
+        applies_to: [verbal.rc-main-idea]
+      - id: verbal.trap.wrong-viewpoint
+        name: Wrong viewpoint
+        description: Attributes a view to the author, or to a group in the passage, that belongs to someone else, tempting because the view does appear in the passage.
+        applies_to: [verbal.rc-main-idea, verbal.rc-detail, verbal.rc-inference, verbal.rc-tone]
+      - id: verbal.trap.surface-analogy
+        name: Same topic, different logic
+        description: Offers a case that shares the passage's subject matter but not the relationship the question asks about, tempting because the topic matches.
+        applies_to: [verbal.rc-application]
+    strategies:
+      - id: verbal.strategy.paraphrase-argument
+        name: Paraphrase the argument
+        description: Restate the argument or facts in plain words, marking the conclusion and its evidence where there is one, then judge each option against that summary.
+        valid_when: Proves the answer when the summary keeps the conclusion's exact scope and the chosen option does what the task asks; the pitfall is a loose summary that widens or shifts the conclusion.
+        applies_to: [verbal.cr-assumption, verbal.cr-strengthen, verbal.cr-weaken, verbal.cr-evaluate, verbal.cr-flaw, verbal.cr-inference, verbal.cr-explain, verbal.cr-structure, verbal.cr-complete, di.tpa]
+      - id: verbal.strategy.predict-first
+        name: Predict before reading the options
+        description: Name the gap, the needed fact or the resolution before reading the options, then look for the option that matches it in substance.
+        valid_when: Proves the answer when the prediction follows from the argument and one option matches it; the pitfall is rejecting a correct option that fills the gap in an unexpected way.
+        applies_to: [verbal.cr-assumption, verbal.cr-strengthen, verbal.cr-weaken, verbal.cr-evaluate, verbal.cr-flaw, verbal.cr-explain, verbal.cr-structure, verbal.cr-complete, di.tpa]
+      - id: verbal.strategy.negate-option
+        name: Negate the option
+        description: Turn an option into its plain negation and check whether the argument then falls apart.
+        valid_when: Proves a required assumption when the negated option breaks the argument; the pitfall is negating to an extreme opposite, and it cannot confirm an assumption that would merely make the conclusion follow.
+        applies_to: [verbal.cr-assumption, di.tpa]
+      - id: verbal.strategy.test-both-answers
+        name: Test both answers
+        description: For an option that raises a question, check whether one answer to it would strengthen the argument and the other would weaken it.
+        valid_when: Proves an Evaluate answer when the two answers push the argument in opposite directions; the pitfall is an option where only one of the answers would matter.
+        applies_to: [verbal.cr-evaluate]
+      - id: verbal.strategy.eliminate-traps
+        name: Eliminate trap options
+        description: Rule out options that show a listed Trap Pattern, then compare the survivors closely with the text.
+        valid_when: Proves the answer when exactly one option survives and each rejected option has a real defect; the pitfall is rejecting a correct option for adding new information, which Strengthen and Weaken answers often do, or for strong wording the text supports.
+        applies_to: [verbal.cr-assumption, verbal.cr-strengthen, verbal.cr-weaken, verbal.cr-evaluate, verbal.cr-flaw, verbal.cr-inference, verbal.cr-explain, verbal.cr-structure, verbal.cr-complete, verbal.rc-main-idea, verbal.rc-detail, verbal.rc-inference, verbal.rc-structure, verbal.rc-application, verbal.rc-tone, di.msr, di.tpa]
+      - id: verbal.strategy.return-to-passage
+        name: Go back to the passage
+        description: Find the lines the question points to and paraphrase what they say before choosing an option.
+        valid_when: Proves the answer when the chosen option restates those lines or follows from them alone; the pitfall is matching words instead of meaning, or reading too little to catch a nearby qualification.
+        applies_to: [verbal.rc-detail, verbal.rc-inference, verbal.rc-structure, verbal.rc-application, verbal.rc-tone, di.msr]
+      - id: verbal.strategy.map-passage
+        name: Map the passage
+        description: Note each paragraph's role and the author's stance while reading, then answer from that map.
+        valid_when: Proves main idea, structure and tone answers when the option covers the whole map at the right strength; the pitfall is a map that misses a turn in the author's view.
+        applies_to: [verbal.rc-main-idea, verbal.rc-structure, verbal.rc-tone, di.msr]
+      - id: verbal.strategy.diagram-logic
+        name: Diagram the logic
+        description: Write if-then, all, some, none or ordering rules in shorthand and chain them to see what must or could be true.
+        valid_when: Proves what must be true when every rule is translated correctly and only valid chains are used; the pitfall is reversing a conditional or reading some as most.
+        applies_to: [verbal.cr-assumption, verbal.cr-flaw, verbal.cr-inference, verbal.cr-complete, di.ds, di.msr, di.tpa]
+
+  - id: di
+    name: Data Insights
+    question_types:
+      - id: di.ds
+        name: Data Sufficiency
+        description: Decide whether each of two statements, alone or together, gives enough information to answer a math or non-math question.
+      - id: di.msr
+        name: Multi-Source Reasoning
+        description: Answer questions on two or three tabbed sources of text, tables or graphics, by picking one option or by judging each of several statements.
+      - id: di.ta
+        name: Table Analysis
+        description: Judge each of several statements about a sortable table as true or false, yes or no, or a similar pair of options.
+      - id: di.gi
+        name: Graphics Interpretation
+        description: Complete statements about a chart or diagram by choosing an option from each dropdown.
+      - id: di.tpa
+        name: Two-Part Analysis
+        description: Choose one answer in each of two columns from a shared list of options, on a quantitative, verbal or logic problem.
+    topics:
+      # A DS Question asks either for one answer (a value or a choice) or for
+      # a yes or no. It takes the matching Skill below as a secondary Skill.
+      - id: di.sufficiency
+        name: Judging sufficiency
+        skills:
+          - id: di.sufficiency.value
+            name: Value sufficiency
+            description: For a question that asks for a value or a choice, judging whether the information fixes exactly one answer.
+            applies_to: [di.ds]
+          - id: di.sufficiency.yes-no
+            name: Yes/no sufficiency
+            description: For a question with a yes or no answer, judging whether the information forces the same answer in every allowed case, where a definite no is as sufficient as a definite yes.
+            applies_to: [di.ds]
+      - id: di.displays
+        name: Reading data displays
+        skills:
+          - id: di.displays.charts
+            name: Reading charts and graphs
+            description: Reading values off bar, line, pie, scatter and bubble charts, histograms and distribution curves, with attention to axes, scales, units and legends.
+            applies_to: [di.gi, di.msr]
+          - id: di.displays.diagrams
+            name: Reading diagrams
+            description: Following relationships shown in Venn diagrams, flowcharts, tree diagrams, organization charts, networks and timelines.
+            applies_to: [di.gi, di.msr]
+          - id: di.displays.tables
+            name: Sorting and filtering tables
+            description: Sorting a table or scanning it row by row to find entries that meet conditions, rank them or spot extremes.
+            applies_to: [di.ta, di.msr, di.ds]
+      - id: di.interpretation
+        name: Interpreting and combining data
+        skills:
+          - id: di.interpretation.trends
+            name: Trends and correlation
+            description: Judging the direction and strength of relationships in data, change over time, and outliers.
+            applies_to: [di.gi, di.ta, di.msr]
+          - id: di.interpretation.conclusions
+            name: Conclusions from data
+            description: Judging whether a claim follows from the data in a table or chart or needs more, such as evidence of cause, data on unlisted cases or another period.
+            applies_to: [di.gi, di.ta, di.msr]
+          - id: di.interpretation.combine-sources
+            name: Combining sources
+            description: Linking facts spread across tabs or documents, such as applying a rule from one source to figures in another, or reconciling sources that disagree.
+            applies_to: [di.msr]
+    trap_patterns:
+      - id: di.trap.agreeing-cases
+        name: Sufficient from agreeing cases
+        description: Treats a statement, or the two together, as sufficient because the cases tried agree, when an untried allowed case gives a different answer and no more specific Trap Pattern names it.
+        applies_to: [di.ds]
+      - id: di.trap.needless-combination
+        name: Both used when one suffices
+        description: Chooses C because the statements look made to be combined, when one alone already fixes the answer and no more specific Trap Pattern explains the miss.
+        applies_to: [di.ds]
+      - id: di.trap.carry-over
+        name: Carries over the other statement
+        description: Judges one statement alone with a fact that only the other statement gives, tempting because both were just read together.
+        applies_to: [di.ds]
+      - id: di.trap.definite-no
+        name: Definite no taken as insufficient
+        description: Rejects a statement that always gives the answer no, as if only a definite yes could be sufficient, tempting because no feels like a failure to answer.
+        applies_to: [di.ds]
+      - id: di.trap.missed-combination
+        name: Missed a working combination
+        description: Chooses E when the two statements together fix the answer, tempting because neither works alone and the link between them is not obvious.
+        applies_to: [di.ds]
+      - id: di.trap.unstated-fact
+        name: Fills in an unstated fact
+        description: Treats information as sufficient by supplying a fact it does not give, such as costs holding steady when only revenue is stated, tempting because the missing fact seems reasonable.
+        applies_to: [di.ds]
+      - id: di.trap.percentage-points
+        name: Percent versus percentage points
+        description: Treats a change in percentage points as a percent change, or the reverse, as when a rate rising from 10% to 12% is called a 2% rise, tempting because both are written with a percent sign.
+        applies_to: [di.msr, di.ta, di.gi]
+      - id: di.trap.scale-or-units
+        name: Misread scale or units
+        description: Reads a value with the wrong scale or unit, such as a figure in thousands as ones, a value against the other axis, or the top of a stacked segment as its size, tempting because the digits look right.
+        applies_to: [di.msr, di.ta, di.gi]
+      - id: di.trap.totals-vs-rates
+        name: Totals versus rates
+        description: Compares totals when the question is about rates, shares or percent change, or the reverse, as in picking the largest sales figure for the fastest growth, tempting because the biggest number stands out.
+        applies_to: [di.msr, di.ta, di.gi]
+      - id: di.trap.wrong-row-or-series
+        name: Wrong row, column or series
+        description: Uses data from a neighboring row, column or series, such as another year, the totals row or the other line on a chart, tempting because the values sit beside the right ones.
+        applies_to: [di.msr, di.ta, di.gi]
+      - id: di.trap.data-overreach
+        name: Claims more than the data show
+        description: Accepts a claim the data only hint at, such as a cause, a trend beyond the period shown or a fact about cases not listed, tempting because the data are consistent with it.
+        applies_to: [di.msr, di.ta, di.gi]
+      - id: di.trap.unlinked-pair
+        name: Pair that fails together
+        description: Picks options that each fit their own column but together fail the condition that links the two, tempting because each choice checks out alone.
+        applies_to: [di.tpa]
+      - id: di.trap.other-source
+        name: Misses a condition in another source
+        description: Answers from one source while a rule or exception in another tab changes the result, tempting because the first source seems complete.
+        applies_to: [di.msr]
+    strategies:
+      - id: di.strategy.rephrase-question
+        name: Rephrase the question
+        description: Simplify what a DS question asks, such as turning whether xy is positive into whether x and y are both positive or both negative, before judging the statements.
+        valid_when: Proves sufficiency when the new question is equivalent to the original under its stated conditions; the pitfall is a rewrite that divides by an unknown or drops a case.
+        applies_to: [di.ds]
+      - id: di.strategy.judge-without-solving
+        name: Judge without solving
+        description: Decide whether the information fixes one answer without computing it, as with two independent linear equations in two unknowns.
+        valid_when: Proves sufficiency when the equations are linear, independent and consistent, or the structure plainly allows only one value; the pitfall is equations that are multiples of each other, or nonlinear ones with two solutions.
+        applies_to: [di.ds]
+      - id: di.strategy.read-and-compute
+        name: Read the data and compute
+        description: Find the exact figures or rules a statement needs in the table, chart or tabs, then calculate or compare.
+        valid_when: Proves the answer when the right figures are read exactly and every condition from every source is applied; the pitfall is reading the wrong row, series or unit.
+        applies_to: [di.msr, di.ta, di.gi]
+      - id: di.strategy.sort-and-filter
+        name: Sort or filter the table
+        description: Sort by the column a statement concerns, or narrow to the rows that meet its condition, then read off ranks, extremes, medians or counts.
+        valid_when: Proves rank, extreme, median and count statements when the sort or filter uses the exact column and condition stated; the pitfall is sorting on a related column, such as a total for a rate, or miscounting ties.
+        applies_to: [di.ds, di.msr, di.ta]
+      - id: di.strategy.tighter-column-first
+        name: Solve the tighter column first
+        description: Choose first for the column with fewer workable options, then use that choice to find the answer for the other column.
+        valid_when: Proves the pair when the first choice is forced and the pair then meets every condition together; the pitfall is choosing each column on its own.
+        applies_to: [di.tpa]

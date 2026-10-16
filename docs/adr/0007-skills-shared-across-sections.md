@@ -1,0 +1,3 @@
+# Skills are tagged by what a Question exercises, not by its Section
+
+A Data Sufficiency Question sits in Data Insights but usually tests Quant content, and a gap in divisibility is the same gap whether it shows up in Problem Solving or in Data Sufficiency. Skills therefore come from one fixed, versioned Taxonomy shared by all Sections: a DS Question carries Quant Skills, and a verbal TPA or text-based MSR Question carries Verbal Skills, while its Section still decides which Ability and Score Estimate it feeds. The LLM may tag only from the Taxonomy, and a tag outside it sends the Question to the Review Queue. Expected result: weak-area analysis pools the evidence for a Skill across Sections. Reversing this means re-tagging the whole Question Bank.
