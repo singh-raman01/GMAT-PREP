@@ -8,9 +8,9 @@ import {
   type PracticeOptions,
   type PracticePreview,
   type PracticeSummary,
-  type ScoreEstimateView,
   type StatusFilter
 } from "../../../src/api/Practice.ts"
+import type { ScoreEstimates } from "../../../src/api/Scores.ts"
 import { call } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
 import { dayAndTime, spokenDuration } from "../format.ts"
@@ -130,7 +130,7 @@ export const PracticeHome = ({ onSessionLost, onStopped }: Props) => {
   const heading = useFocusOnMount<HTMLHeadingElement>()
   const [options, setOptions] = useState<PracticeOptions>()
   const [sets, setSets] = useState<ReadonlyArray<PracticeSummary>>()
-  const [scores, setScores] = useState<ReadonlyArray<ScoreEstimateView>>()
+  const [scores, setScores] = useState<ScoreEstimates>()
   const mounted = useRef(true)
 
   const handle = useCallback(
@@ -153,7 +153,7 @@ export const PracticeHome = ({ onSessionLost, onStopped }: Props) => {
       setOptions(result.success)
     })
     void loadSets()
-    void call((client) => client.practice.scores()).then((result) => {
+    void call((client) => client.scores.estimates()).then((result) => {
       if (mounted.current && result._tag === "Success") setScores(result.success)
     })
     return () => {
@@ -188,7 +188,7 @@ export const PracticeHome = ({ onSessionLost, onStopped }: Props) => {
         Answer one Question at a time. An untimed set shows how each is solved straight after; a timed set runs on
         the clock, shows it all at the end, and moves your Score Estimates.
       </p>
-      {scores !== undefined && scores.length > 0 && <Scores scores={scores} />}
+      {scores !== undefined && scores.sections.length > 0 && <Scores scores={scores} />}
       {active.length > 0 && (
         <section className="group" aria-labelledby="sets-active">
           <h2 id="sets-active">Sets in progress</h2>
@@ -268,12 +268,20 @@ const EndElsewhere = (
   )
 }
 
-// Each Section's Score Estimate from timed answers, with its likely range.
-const Scores = ({ scores }: { readonly scores: ReadonlyArray<ScoreEstimateView> }) => (
+// Each Section's Score Estimate from timed answers, with its likely range,
+// and the Total once all three have one.
+const Scores = ({ scores }: { readonly scores: ScoreEstimates }) => (
   <section className="group" aria-labelledby="scores-title">
     <h2 id="scores-title">Score Estimates</h2>
     <ul className="score-list">
-      {scores.map((each) => (
+      {scores.total !== null && (
+        <li className="score-total">
+          <span className="score-section">Total</span>
+          <span className="score-value">{scores.total.score}</span>
+          <span className="score-facts">likely {scores.total.low} to {scores.total.high}</span>
+        </li>
+      )}
+      {scores.sections.map((each) => (
         <li key={each.section.id}>
           <span className="score-section">{each.section.name}</span>
           <span className="score-value">{each.score}</span>
@@ -284,10 +292,10 @@ const Scores = ({ scores }: { readonly scores: ReadonlyArray<ScoreEstimateView> 
         </li>
       ))}
     </ul>
-    {scores.some((each) => !each.calibrated) && (
+    {scores.sections.some((each) => !each.calibrated) && (
       <p className="hint">
         Section scores run from 60 to 90. These are estimates from your timed answers, not yet calibrated against an
-        official score.
+        Official Score; you can enter one under <a {...linkProps("/scores")}>Scores</a>.
       </p>
     )}
   </section>

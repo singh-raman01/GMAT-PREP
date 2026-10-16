@@ -5,6 +5,9 @@ import { CuratorArea } from "./curator/CuratorArea.tsx"
 import { useFocusOnMount } from "./focus.ts"
 import { PracticeHome } from "./practice/PracticeHome.tsx"
 import { PracticeSet } from "./practice/PracticeSet.tsx"
+import { MockScreen } from "./mocks/MockScreen.tsx"
+import { MocksHome } from "./mocks/MocksHome.tsx"
+import { ScoresPage } from "./scores/ScoresPage.tsx"
 import { SectionalScreen } from "./sectionals/SectionalScreen.tsx"
 import { SectionalsHome } from "./sectionals/SectionalsHome.tsx"
 import { ProfilePicker } from "./ProfilePicker.tsx"
@@ -119,8 +122,8 @@ export const App = () => {
   }
 }
 
-// A Learner's pages: Practice and a set, Sectionals and one Sectional, and
-// the Taxonomy.
+// A Learner's pages: Practice and a set, Sectionals and one Sectional, Mocks
+// and one Mock, Scores, and the Taxonomy.
 const LearnerArea = ({ path, onSessionLost, onStopped }: {
   readonly path: string
   readonly onSessionLost: () => void
@@ -134,7 +137,19 @@ const LearnerArea = ({ path, onSessionLost, onStopped }: {
   if (sectionalId !== undefined) {
     return <SectionalScreen key={sectionalId} id={sectionalId} onSessionLost={onSessionLost} onStopped={onStopped} />
   }
-  const page = path === "/taxonomy" ? "taxonomy" : path === "/sectionals" ? "sectionals" : "practice"
+  const mockId = /^\/mocks\/([^/]+)$/.exec(path)?.[1]
+  if (mockId !== undefined) {
+    return <MockScreen key={mockId} id={mockId} onSessionLost={onSessionLost} onStopped={onStopped} />
+  }
+  const page = path === "/taxonomy"
+    ? "taxonomy"
+    : path === "/sectionals"
+    ? "sectionals"
+    : path === "/mocks"
+    ? "mocks"
+    : path === "/scores"
+    ? "scores"
+    : "practice"
   const link = (to: string, name: typeof page, label: string) => (
     <a {...linkProps(to)} aria-current={page === name ? "page" : undefined}>
       <span className={page === name ? "mark" : undefined}>{label}</span>
@@ -145,12 +160,18 @@ const LearnerArea = ({ path, onSessionLost, onStopped }: {
       <nav className="subnav" aria-label="Learner pages">
         {link("/", "practice", "Practice")}
         {link("/sectionals", "sectionals", "Sectionals")}
+        {link("/mocks", "mocks", "Mocks")}
+        {link("/scores", "scores", "Scores")}
         {link("/taxonomy", "taxonomy", "What the GMAT tests")}
       </nav>
       {page === "taxonomy"
         ? <TaxonomyBrowser onSessionLost={onSessionLost} onStopped={onStopped} />
         : page === "sectionals"
         ? <SectionalsHome onSessionLost={onSessionLost} onStopped={onStopped} />
+        : page === "mocks"
+        ? <MocksHome onSessionLost={onSessionLost} onStopped={onStopped} />
+        : page === "scores"
+        ? <ScoresPage onSessionLost={onSessionLost} onStopped={onStopped} />
         : <PracticeHome onSessionLost={onSessionLost} onStopped={onStopped} />}
     </>
   )

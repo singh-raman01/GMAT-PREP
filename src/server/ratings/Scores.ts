@@ -15,9 +15,9 @@ import { officialScores, profiles } from "../db/schema.ts"
 import { namesOf } from "../practice/content.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { scoreEstimatesOf, scoreEstimateView } from "./estimates.ts"
-import { dayNumber } from "./OfficialScores.ts"
+import { calibrationOf, dayNumber } from "./OfficialScores.ts"
 
-const viewOf = (row: typeof officialScores.$inferSelect) =>
+const viewOf = (used: ReadonlyMap<string, ReadonlyArray<string>>) => (row: typeof officialScores.$inferSelect) =>
   new OfficialScoreView({
     id: row.id,
     takenOn: row.takenOn,
@@ -26,6 +26,7 @@ const viewOf = (row: typeof officialScores.$inferSelect) =>
     quant: row.quant,
     verbal: row.verbal,
     di: row.di,
+    calibrates: used.get(row.id) ?? [],
     createdAt: row.createdAt
   })
 
@@ -56,9 +57,12 @@ export class Scores extends Context.Service<Scores, {
         )
 
       const list = (profileId: string) =>
-        db.select().from(officialScores).where(eq(officialScores.profileId, profileId))
-          .orderBy(desc(officialScores.takenOn), desc(officialScores.createdAt))
-          .pipe(Effect.orDie, Effect.map((rows) => rows.map(viewOf)))
+        Effect.gen(function*() {
+          const rows = yield* db.select().from(officialScores).where(eq(officialScores.profileId, profileId))
+            .orderBy(desc(officialScores.takenOn), desc(officialScores.createdAt)).pipe(Effect.orDie)
+          const { used } = yield* calibrationOf(profileId).pipe(Effect.provideService(Db, db), Effect.orDie)
+          return rows.map(viewOf(used))
+        })
 
       // A score from a day still to come, in the Profile's own time zone, is
       // a mistake.

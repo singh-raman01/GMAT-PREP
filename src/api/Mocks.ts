@@ -10,6 +10,9 @@ import { MockRunning, SectionalReport, SectionalRunning, SectionReadiness } from
 // first or second.
 
 export const BreakMinutes = 10
+// Going on within the break's first minute after Section 1 keeps it for
+// after Section 2.
+export const KeepBreakSeconds = 60
 
 export class MockOptions extends Schema.Class<MockOptions>("gmat-prep/api/MockOptions")({
   // Each Section's start check; a Mock needs all three to pass.

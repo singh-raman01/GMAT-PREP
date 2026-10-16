@@ -274,7 +274,8 @@ mark {
 
 input[type="text"],
 input[type="password"],
-input[type="search"] {
+input[type="search"],
+input[type="date"] {
   width: 100%;
   max-width: 24rem;
   min-height: 2.75rem;
@@ -2625,4 +2626,99 @@ input.number-input {
 
 .sectional-report .results-title {
   margin-top: 2.5rem;
+}
+
+/* Mocks: the order to take the Sections in, the break between them, and the
+   report with the Total first. */
+
+.order-choices {
+  display: grid;
+  gap: 0;
+  margin-top: 0.15rem;
+}
+
+.mock-order {
+  margin-bottom: 1rem;
+}
+
+.mock-break > p,
+.mock-report > p {
+  max-width: 68ch;
+}
+
+.break-time {
+  margin: 0.25rem 0 1rem;
+  font-size: var(--step-4);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.mock-report .results-title {
+  margin-top: 2rem;
+}
+
+.mock-sections {
+  display: grid;
+  margin: 0.5rem 0 1.5rem;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rule);
+  max-width: 52rem;
+}
+
+.mock-section {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 1rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.mock-section-name {
+  flex: 0 1 16rem;
+  font-weight: 700;
+}
+
+.mock-section-score {
+  font-size: var(--step-2);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.mock-section .set-facts {
+  flex: 1 1 10rem;
+}
+
+.score-list li.score-total {
+  padding: 1rem 0;
+}
+
+.score-total .score-value {
+  font-size: var(--step-4);
+  line-height: 1.1;
+}
+
+.score-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 1.5rem;
+}
+
+input[type="date"] {
+  max-width: 14rem;
+}
+
+.mock-break .break-time {
+  margin-top: 0.5rem;
+}
+
+.mock-break .actions,
+.mock-report .actions {
+  margin-top: 1.5rem;
+}
+
+.group .set-list + .practice-fields {
+  margin-top: 1.25rem;
 }

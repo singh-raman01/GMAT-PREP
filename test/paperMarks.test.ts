@@ -139,3 +139,39 @@ describe("Paper-Marked Questions", () => {
       expect((yield* timedSet(ben))[0]).toMatchObject({ ratedResponses: 3 })
     })))
 })
+
+describe("A Section and Paper Marks", () => {
+  test("serves a passage marked on paper only when nothing unseen fits, and its report counts it", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const curator = yield* openBrowser
+      yield* curator.curatorAccess.setPassphrase({ payload: { passphrase: "correct horse battery" } })
+      yield* curator.settings.saveBlueprint({ payload: { blueprint: { ...DefaultBlueprint, rc: [3, 4], cr: 1 } } })
+      const rc = { questionType: "verbal.rc-detail", primarySkill: "verbal.reading.detail" }
+      const cr = { questionType: "verbal.cr-weaken", primarySkill: "verbal.arguments.causal" }
+      const seeded = yield* seedBook("Verbal Review", [
+        ...[1, 2, 3, 4, 5].flatMap((p) => numbered(3, { ...rc, reserve: true, passage: `Passage ${p}.` }, p * 10)),
+        ...numbered(2, { ...cr, reserve: true }, 100),
+        // The one passage of four, on pages 200 to 203.
+        ...numbered(4, { ...rc, reserve: false, passage: "A passage of four." }, 200)
+      ])
+      const four = [200, 201, 202, 203].map((n) => seeded.ids.get(n)!)
+      const asha = yield* openBrowser
+      yield* asha.profiles.create({ payload: { name: "Asha" } })
+      yield* asha.paperMarks.add({ payload: { bookId: BookId.make(seeded.bookId), firstPage: 200, lastPage: 203 } })
+      yield* TestClock.adjust("1 minute")
+      let view = yield* asha.sectionals.start({ payload: { section: "verbal" } })
+      while (view.stage === "question") {
+        view = yield* asha.sectionals.answer({
+          params: { id: view.id },
+          payload: { seq: view.nextSeq, questionId: view.current!.question.id, selection: [{ part: 0, choice: "C" }] }
+        })
+      }
+      const report = (yield* asha.sectionals.finish({ params: { id: view.id } })).report!
+      const marked = report.results.filter((result) => four.includes(result.questionId))
+      expect(marked).toHaveLength(4)
+      expect(marked.every((result) => result.repeat)).toBe(true)
+      expect(report).toMatchObject({ repeats: 4, paperRepeats: 4 })
+      // None of them is Rated: only the passage of three and the CR Question are.
+      expect((yield* asha.practice.scores())[0]).toMatchObject({ section: { id: "verbal" }, ratedResponses: 4 })
+    })))
+})

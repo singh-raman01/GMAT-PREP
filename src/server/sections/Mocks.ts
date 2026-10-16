@@ -26,7 +26,7 @@ import { keysOf } from "../practice/history.ts"
 import { totalEstimate } from "../ratings/scale.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { decodeConfig, lineOf } from "./config.ts"
-import { afterSection, breakLeftMs, keepsBreak, NewMock, nextSection } from "./mockFlow.ts"
+import { afterSection, BreakMs, breakLeftMs, keepsBreak, NewMock, nextSection } from "./mockFlow.ts"
 import { rescore } from "./report.ts"
 import { Sectionals } from "./Sectionals.ts"
 
@@ -135,7 +135,7 @@ export class Mocks extends Context.Service<Mocks, {
               else if (next.stage === "section") config = yield* beginSection(mock, config, next.started)
             } else if (flow.stage === "break") {
               if (breakLeftMs(flow, now) > 0) break
-              const next = nextSection(flow, flow.breakStartedAt! + BreakMinutes * 60_000)
+              const next = nextSection(flow, flow.breakStartedAt! + BreakMs)
               config = yield* beginSection(mock, { ...config, flow: next }, next.started)
             } else break
           }

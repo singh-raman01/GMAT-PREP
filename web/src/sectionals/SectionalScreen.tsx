@@ -29,7 +29,17 @@ interface Props {
   readonly id: string
   readonly onSessionLost: () => void
   readonly onStopped: (error: { readonly _tag: string }) => void
+  // For a Mock's Section: called once the Section has closed, while the
+  // Mock goes on.
+  readonly onClosed?: () => void
 }
+
+// What the Section is called, and the page to go back to.
+const titleOf = (view: SectionalView) =>
+  view.mock === null ? `${view.section.name} Sectional` : `${view.section.name}, Mock Section ${view.mock.place}`
+
+const backOf = (view: SectionalView) =>
+  view.mock === null ? { to: "/sectionals", label: "Sectionals" } : { to: `/mocks/${view.mock.id}`, label: "Mock" }
 
 // The browser reads the Sectional again this often, besides after every
 // change, so its clock stays the server's.
@@ -52,7 +62,7 @@ const outOfStepText: Record<SectionalOutOfStep["reason"], string> = {
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`
 
-export const SectionalScreen = ({ id, onSessionLost, onStopped }: Props) => {
+export const SectionalScreen = ({ id, onSessionLost, onStopped, onClosed }: Props) => {
   const [view, setView] = useState<SectionalView>()
   const [reading, setReading] = useState<ClockReading>()
   const [missing, setMissing] = useState(false)
@@ -106,7 +116,9 @@ export const SectionalScreen = ({ id, onSessionLost, onStopped }: Props) => {
     )
   }
   if (view === undefined) return <p className="quiet" aria-busy="true">Opening the Sectional</p>
-  if (view.stage === "finished") return <Report view={view} onFailure={handle} />
+  if (view.stage === "finished") {
+    return view.report === null ? <SectionClosed view={view} onClosed={onClosed} /> : <Report view={view} onFailure={handle} />
+  }
   return <Running key={view.id} view={view} reading={reading} onView={show} onRefresh={refresh} onFailure={handle} />
 }
 
@@ -189,10 +201,10 @@ const Running = (
   return (
     <div className="practice-set sectional" data-section={view.section.id}>
       <p className="back">
-        <a className="quiet-link" {...linkProps("/sectionals")}>Sectionals</a>
+        <a className="quiet-link" {...linkProps(backOf(view).to)}>{backOf(view).label}</a>
       </p>
       <div className="set-head">
-        <p className="set-title">{view.section.name} Sectional</p>
+        <p className="set-title">{titleOf(view)}</p>
         <div className="set-controls">
           {remaining !== undefined && (
             <Timer
@@ -655,7 +667,11 @@ const Report = ({ view, onFailure }: { readonly view: SectionalView; readonly on
       ? `The Question Bank had nothing left for ${plural(report.unfilled, "slot", "slots")}, which ${report.unfilled === 1 ? "is" : "are"} not scored.`
       : undefined,
     report.repeats > 0
-      ? `${plural(report.repeats, "Question you had seen before was", "Questions you had seen before were")} served, since too few unseen ones were left.`
+      ? `${plural(report.repeats, "Question you had seen before was", "Questions you had seen before were")} served, since too few unseen ones were left.${
+        report.paperRepeats === 0
+          ? ""
+          : ` ${report.paperRepeats === report.repeats ? (report.repeats === 1 ? "It" : "All of them") : report.paperRepeats} you had marked as done on paper.`
+      }`
       : undefined,
     report.rescored
       ? "An answer key changed after the Section closed, so these results and the score follow the new key."
@@ -664,12 +680,14 @@ const Report = ({ view, onFailure }: { readonly view: SectionalView; readonly on
   return (
     <div className="sectional-report" data-section={view.section.id}>
       <p className="back">
-        <a className="quiet-link" {...linkProps("/sectionals")}>Sectionals</a>
+        <a className="quiet-link" {...linkProps(backOf(view).to)}>{backOf(view).label}</a>
       </p>
-      <h1 ref={heading} tabIndex={-1}>{view.section.name} Sectional</h1>
+      <h1 ref={heading} tabIndex={-1}>{titleOf(view)}</h1>
       <div className="report-score">
         <span className="score-value">{report.score}</span>
-        <span className="score-facts">likely {report.low} to {report.high}, on the 60 to 90 scale</span>
+        <span className="score-facts">
+          likely {report.low} to {report.high}, on the 60 to 90 scale{report.calibrated ? "" : ", not yet calibrated"}
+        </span>
       </div>
       <p className="lede">
         {right} of {report.results.length} right, {answered} answered in time.
@@ -691,9 +709,23 @@ const Report = ({ view, onFailure }: { readonly view: SectionalView; readonly on
         {report.results.map((result) => <ResultRow key={result.position} view={view} result={result} onFailure={onFailure} />)}
       </ol>
       <div className="actions">
-        <a className="button" {...linkProps("/sectionals")}>Back to Sectionals</a>
+        <a className="button" {...linkProps(backOf(view).to)}>Back to {view.mock === null ? "Sectionals" : "the Mock"}</a>
       </div>
     </div>
+  )
+}
+
+// A Mock's Section that has closed while the Mock goes on: its results wait
+// for the end of the Mock.
+const SectionClosed = ({ view, onClosed }: { readonly view: SectionalView; readonly onClosed: (() => void) | undefined }) => {
+  const heading = useFocusOnMount<HTMLHeadingElement>()
+  useEffect(() => onClosed?.(), [onClosed])
+  return (
+    <>
+      <h1 ref={heading} tabIndex={-1}>{titleOf(view)} has closed</h1>
+      <p className="lede">Its results show with the Mock's report, once the Mock is over.</p>
+      <a className="button" {...linkProps(backOf(view).to)}>Back to the Mock</a>
+    </>
   )
 }
 

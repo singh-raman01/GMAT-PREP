@@ -47,6 +47,9 @@ export class OfficialScoreView extends Schema.Class<OfficialScoreView>("gmat-pre
   quant: Schema.Int,
   verbal: Schema.Int,
   di: Schema.Int,
+  // The Sections whose score line it helps fit: those with a Score Estimate
+  // on or before the day it was taken.
+  calibrates: Schema.Array(Schema.String),
   createdAt: Schema.Number
 }) {}
 

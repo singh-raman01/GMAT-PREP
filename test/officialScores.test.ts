@@ -117,7 +117,8 @@ describe("Score lines", () => {
           ]).pipe(Effect.orDie)
           // Taken before any Score Estimate: left out of the fit.
           yield* browser.scores.addOfficial({ payload: score("2026-09-20", { quant: 70 }) })
-          yield* browser.scores.addOfficial({ payload: score("2026-10-10", { quant: 81 }) })
+          const listed = yield* browser.scores.addOfficial({ payload: score("2026-10-10", { quant: 81 }) })
+          expect(listed.map((each) => [each.takenOn, each.calibrates])).toEqual([["2026-10-10", ["quant"]], ["2026-09-20", []]])
           return yield* scoreLinesOf(profile.id)
         })
 
