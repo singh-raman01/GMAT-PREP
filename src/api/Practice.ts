@@ -133,7 +133,8 @@ export class Debrief extends Schema.Class<Debrief>("gmat-prep/api/Debrief")({
 }) {}
 
 export class ResponseView extends Schema.Class<ResponseView>("gmat-prep/api/ResponseView")({
-  selection: Selection,
+  // Empty for a time-out.
+  selection: Schema.Array(PartChoice),
   guessed: Schema.Boolean,
   timeSpentMs: Schema.Int,
   // Against the current key.

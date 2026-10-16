@@ -93,23 +93,30 @@ export type WorkerTestServices =
   | Db
   | AppConfig
 
-export const appWithWorkersLayer = (dataDir: string, kinds: ReadonlyArray<AnyJobKind>) => {
+// Sets the fake clock before the app starts, as a start later in the day.
+const clockStartsAt = (millis: number | undefined) =>
+  millis === undefined ? Layer.empty : Layer.effectDiscard(TestClock.setTime(millis))
+
+export const appWithWorkersLayer = (dataDir: string, kinds: ReadonlyArray<AnyJobKind>, startAt?: number) => {
   const server = HttpRouter.serve(AppRoutes, { disableListenLog: true, disableLogger: true }).pipe(
     Layer.provideMerge(makeAppServices(JobKinds.layer(kinds))),
     Layer.provide(WorkerSupervisor.layerIdle),
     Layer.provideMerge(AppConfig.layer({ dataDir, preferredPort: 0 })),
     Layer.provideMerge(BunHttpServer.layerTest),
+    Layer.provideMerge(clockStartsAt(startAt)),
     Layer.provideMerge(TestClock.layer())
   )
   return testWorkersLayer(kinds).pipe(Layer.provideMerge(server), Layer.provideMerge(LlmTransportFake))
 }
 
 // The app with no worker running; the test starts workers when it wants them.
+// startAt sets the fake clock before the app starts.
 export const runWithWorkers = <A, E>(
   effect: Effect.Effect<A, E, WorkerTestServices>,
   kinds: ReadonlyArray<AnyJobKind> = [ConnectionTest],
-  dataDir: string = tempDataDir()
-): Promise<A> => Effect.runPromise(effect.pipe(Effect.provide(appWithWorkersLayer(dataDir, kinds))))
+  dataDir: string = tempDataDir(),
+  startAt?: number
+): Promise<A> => Effect.runPromise(effect.pipe(Effect.provide(appWithWorkersLayer(dataDir, kinds, startAt))))
 
 // The app with one worker already running.
 export const runWithWorker = <A, E>(
