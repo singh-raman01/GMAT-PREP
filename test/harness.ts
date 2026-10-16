@@ -87,6 +87,7 @@ export type WorkerTestServices =
   | HttpClient.HttpClient
   | HttpServer.HttpServer
   | FakeLlm
+  | LlmTransport
   | TestWorkers
   | JobStore
   | Settings

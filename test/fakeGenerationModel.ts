@@ -281,13 +281,52 @@ export const msrKeys = ["A,B,A", "A,B,B", "A,A,B"] as const
 
 export const generatedItems = { "di.ta": taItem, "di.gi": giItem, "di.tpa": tpaItem, "di.msr": msrItem } as const
 
-// Each item's stems with the keys code should compute for them.
-export const generatedKeys: ReadonlyMap<string, string> = new Map([
-  [taItem.intro, taKeys],
-  [giItem.intro, giKeys],
-  [tpaItem.intro, tpaKeys],
-  ...msrItem.questions.map((question, index) => [question.intro, msrKeys[index]!] as const)
-])
+// Sentences that open each later item of a type, so the items read as
+// different Questions, as a real generator's do; the first keeps its own
+// words.
+const Openers = [
+  "Shown are a chain's outlets with their takings, yearly change and staff headcount.",
+  "The figures cover a ferry company's harbours: fares collected, change in trips and berths in use.",
+  "A wholesaler's depots are listed with orders filled, growth since last year and vans on the road.",
+  "Each row is a museum branch, with ticket income, change in visits and galleries open.",
+  "These numbers come from a bakery's shops: loaves sold, change in footfall and ovens running.",
+  "A water utility's districts are set out with meters read, change in usage and crews assigned.",
+  "The list covers a cinema group's screens with seats sold, change in showings and staff rostered."
+]
+
+// An intro as the n-th item of its type words it: its first sentence gives
+// way to that item's opener.
+export const introFor = (intro: string, item: number) => {
+  if (item <= 1) return intro
+  const opener = Openers[(item - 2) % Openers.length]!
+  const rest = intro.split(/(?<=\.)\s+/).slice(1).join(" ")
+  return rest === "" ? `${opener} ${intro}` : `${opener} ${rest}`
+}
+
+// The fixed item for a type, worded as the n-th item of its type.
+export const itemFor = (type: keyof typeof generatedItems, item: number): unknown => {
+  switch (type) {
+    case "di.ta":
+      return { ...taItem, intro: introFor(taItem.intro, item) }
+    case "di.gi":
+      return { ...giItem, intro: introFor(giItem.intro, item) }
+    case "di.tpa":
+      return { ...tpaItem, intro: introFor(tpaItem.intro, item) }
+    case "di.msr":
+      return { ...msrItem, questions: msrItem.questions.map((question) => ({ ...question, intro: introFor(question.intro, item) })) }
+  }
+}
+
+// Each item's stems, however an item words them, with the keys code should
+// compute for them.
+export const generatedKeys: ReadonlyMap<string, string> = new Map(
+  Array.from({ length: Openers.length + 1 }, (_, i) => i + 1).flatMap((item) => [
+    [introFor(taItem.intro, item), taKeys] as const,
+    [introFor(giItem.intro, item), giKeys] as const,
+    [introFor(tpaItem.intro, item), tpaKeys] as const,
+    ...msrItem.questions.map((question, index) => [introFor(question.intro, item), msrKeys[index]!] as const)
+  ])
+)
 
 // Each statement's or blank's words, with its predicate, whether the blank
 // is approximate, and the tab it reads.
@@ -342,19 +381,22 @@ export const makeFakeGenerationModel = (options: FakeGeneration = {}) => {
   const enrichment = makeFakeBookModel({
     solve: (stem, run) => options.solve?.(stem, run) ?? generatedKeys.get(stem)
   })
+  const written = new Map<keyof typeof generatedItems, number>()
   return (request: TransportRequest): FakeOutcome => {
     const system = request.messages[0]?.content ?? ""
     const type = typeOf(system)
     const reply = (value: unknown): FakeOutcome => ({ content: JSON.stringify(value), ...FakeTokens })
     if (type !== undefined) {
       const attempt = asked(request).includes("Your last reply broke these rules") ? 2 : 1
-      return reply(options.reply?.(type, attempt) ?? generatedItems[type])
+      // Each new item of a type, in any batch, is worded as the next one.
+      if (attempt === 1) written.set(type, (written.get(type) ?? 0) + 1)
+      return reply(options.reply?.(type, attempt) ?? itemFor(type, written.get(type) ?? 1))
     }
     if (system.includes("You check Two-Part Analysis questions")) {
       const columns = tpaItem.columns.map((column) => column.predicate)
-      const intro = tpaItem.intro
+      const problem = /^The problem: (.*)$/m.exec(asked(request))?.[1] ?? ""
       return reply({
-        columns: options.disagree?.has(intro) === true
+        columns: options.disagree?.has(problem) === true
           ? [columns[0], predicate(choice("y", 2), row("e", "Ember"), sameRow("ok", "y", "e"))]
           : columns
       })

@@ -1,6 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useId, useRef, useState } from "react"
 import { bandNames, type DifficultyBand } from "../../../src/api/difficulty.ts"
-import type { BatchView, GeneratedQuestionType } from "../../../src/api/Generation.ts"
+import { type BatchView, DefaultSpendCap, type GeneratedQuestionType } from "../../../src/api/Generation.ts"
 import type { TaxonomyView } from "../../../src/api/Taxonomy.ts"
 import { skillsFor } from "../../../src/api/taxonomyRules.ts"
 import { call } from "../api.ts"
@@ -56,12 +56,14 @@ export const Generation = ({ onLocked, onStopped }: Props) => {
     mounted.current = true
     void load()
     void call((client) => client.bank.taxonomy()).then((result) => {
-      if (mounted.current && result._tag === "Success") setTaxonomy(result.success)
+      if (!mounted.current) return
+      if (result._tag === "Success") setTaxonomy(result.success)
+      else handle(result.failure)
     })
     return () => {
       mounted.current = false
     }
-  }, [load])
+  }, [load, handle])
 
   useJobEvents(
     since,
@@ -122,7 +124,7 @@ const NewBatch = (
   const [skill, setSkill] = useState("")
   const [band, setBand] = useState<DifficultyBand>("medium")
   const [count, setCount] = useState("5")
-  const [cap, setCap] = useState("2")
+  const [cap, setCap] = useState(String(DefaultSpendCap))
   const [problem, setProblem] = useState<{ readonly text: string; readonly field: "count" | "cap" | null }>()
   const [started, setStarted] = useState("")
   const busy = useRef(false)
@@ -147,7 +149,7 @@ const NewBatch = (
     }
     const spendCap = Number(cap)
     if (!Number.isFinite(spendCap) || spendCap <= 0 || spendCap > 10_000) {
-      return setProblem({ text: "Enter a cap in dollars, above 0.", field: "cap" })
+      return setProblem({ text: "Enter a cap in dollars, above 0 and at most 10,000.", field: "cap" })
     }
     if (chosen === "") return setProblem({ text: "Wait for the Skills to load, then choose one.", field: null })
     if (busy.current) return
@@ -239,6 +241,17 @@ const NewBatch = (
 const Batch = ({ batch, skillName }: { readonly batch: BatchView; readonly skillName: (id: string) => string }) => {
   const job = batch.job
   const live = job !== null && (job.status === "queued" || job.status === "running" || job.status === "paused")
+  // Drafts are being checked while the job runs; once it stopped, they wait.
+  const unchecked = batch.checking > 0 && !live
+  const note = job === null
+    ? ""
+    : job.status === "done"
+    ? "Finished."
+    : job.status === "paused"
+    ? `Paused: ${sentence(job.note ?? "paused")}`
+    : live
+    ? `Working: ${sentence(job.note ?? "starting")}`
+    : `The batch ${job.status === "failed" ? "failed" : "stopped"}: ${sentence(job.note ?? "no reason given")}`
   const asked = batch.questionType === "di.msr"
     ? plural(batch.count, "set of three Questions", "sets of three Questions")
     : plural(batch.count, "Question", "Questions")
@@ -252,7 +265,8 @@ const Batch = ({ batch, skillName }: { readonly batch: BatchView; readonly skill
       </p>
       <p className="batch-counts">
         {batch.published} published, {batch.held} held, {batch.reserved} for Mocks
-        {batch.checking > 0 && `, ${batch.checking} being checked`}
+        {batch.checking > 0 && !unchecked && `, ${batch.checking} being checked`}
+        {unchecked && `, ${batch.checking} left unchecked when the batch stopped`}
         {batch.withdrawn > 0 && `, ${batch.withdrawn} withdrawn`}.
         {batch.failed > 0 && ` ${plural(batch.failed, "item", "items")} could not be made valid.`}
         {batch.held > 0 && (
@@ -262,16 +276,17 @@ const Batch = ({ batch, skillName }: { readonly batch: BatchView; readonly skill
           </>
         )}
       </p>
-      {job !== null && job.status !== "done" && (
-        <p className="job-note" aria-live={live ? "polite" : undefined}>
-          {job.status === "paused"
-            ? `Paused: ${sentence(job.note ?? "paused")}`
-            : live
-            ? `Working: ${sentence(job.note ?? "starting")}`
-            : `The batch ${job.status === "failed" ? "failed" : "stopped"}: ${sentence(job.note ?? "no reason given")}`}{" "}
-          <a {...linkProps("/curator/jobs")}>Jobs</a>
-        </p>
-      )}
+      {/* One live region for the batch's whole life, so its end is said too. */}
+      <p className="job-note" aria-live="polite">
+        {/* Said when the job ends; the counts above show the outcome. */}
+        <span className={job?.status === "done" ? "visually-hidden" : undefined}>{note}</span>
+        {job !== null && job.status !== "done" && (
+          <>
+            {" "}
+            <a {...linkProps("/curator/jobs")}>Jobs</a>
+          </>
+        )}
+      </p>
     </li>
   )
 }

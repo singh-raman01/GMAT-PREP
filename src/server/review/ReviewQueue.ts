@@ -173,6 +173,15 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
             id: generationBatches.id,
             number: generationBatches.number
           }).from(generationBatches).where(inArray(generationBatches.id, batchIds))
+          // An MSR set's Questions in the order they were written, to tell
+          // them apart.
+          const setRows = batchIds.length === 0 ? [] : yield* db.select({
+            id: questions.id,
+            batchId: questions.batchId,
+            item: questions.batchItem
+          }).from(questions)
+            .where(and(inArray(questions.batchId, batchIds), eq(questions.questionType, "di.msr")))
+            .orderBy(asc(questions.createdAt), asc(sql`${questions}.rowid`))
           return new Map(rows.map((row) => {
             const own = partRows.filter((each) => each.questionId === row.id)
             const positionOf = (partId: string) => own.find((part) => part.id === partId)?.position ?? 0
@@ -207,7 +216,11 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
               explanation: explained?.explanation ?? null,
               generated: row.batchId === null ? null : {
                 batch: batchRows.find((batch) => batch.id === row.batchId)?.number ?? 0,
-                item: row.batchItem ?? 0
+                item: row.batchItem ?? 0,
+                question: row.questionType === "di.msr"
+                  ? setRows.filter((each) => each.batchId === row.batchId && each.item === row.batchItem)
+                    .findIndex((each) => each.id === row.id) + 1
+                  : null
               },
               sources: mine.map((source) =>
                 new SourceView({
