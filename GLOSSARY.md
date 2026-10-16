@@ -133,6 +133,14 @@ _Avoid_: upload, document
 **Book Map**:
 The Curator-confirmed layout of a Book: where each question set, its answer key, its explanations and its difficulty labels sit.
 
+**Question set**:
+A run of numbered Questions in a Book that share an answer key and explanations, such as a chapter's Problem Solving Questions. Each Book Map range names the set it belongs to.
+_Avoid_: section, chapter
+
+**Question Type group**:
+Question Types that share one format, such as the CR Question Types, or Problem Solving. A Book Map range holds one group; older Books add Sentence Correction and older Integrated Reasoning.
+_Avoid_: question format, question kind
+
 **Publish Gate**:
 The checks a Question must pass before it enters the Question Bank.
 _Avoid_: verification check, QA
@@ -171,7 +179,7 @@ A Session of Questions chosen by Section, Question Type, Skill, Difficulty Band,
 _Avoid_: quiz, worksheet
 
 **Section Blueprint**:
-The number of Questions each group of Question Types gets in an adaptive Section, such as 10 for the CR Question Types.
+The number of Questions each Question Type group gets in an adaptive Section, such as 10 for the CR Question Types.
 _Avoid_: question mix
 
 **Mock Reserve**:
