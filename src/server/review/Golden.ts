@@ -15,13 +15,17 @@ import { LlmNotConfigured } from "../../api/Jobs.ts"
 import { QuestionId, type QuestionStatus } from "../../api/Review.ts"
 import { tagProblems } from "../../api/taxonomyRules.ts"
 import { Db } from "../db/Database.ts"
-import { books, goldenQuestions, goldenRuns, jobs, options, parts, questions, sources, stimuli } from "../db/schema.ts"
+import { books, goldenQuestions, goldenRuns, jobs, options, parts, questions, sources } from "../db/schema.ts"
 import { JobKinds } from "../jobs/JobKind.ts"
 import { JobStore, toJobView } from "../jobs/JobStore.ts"
 import { ApiKeyStore } from "../settings/ApiKeyStore.ts"
 import { missingSettings, Settings } from "../settings/Settings.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { decodeReport, GoldenCheck, GoldenExpected } from "./goldenJob.ts"
+import { joinedKey } from "../../api/keys.ts"
+import { type PartKind, PracticePart } from "../../api/Practice.ts"
+import { stimulusViews } from "../stimuli/stimuli.ts"
+import { datasetText, stimulusLabels, stimulusText } from "../stimuli/stimulusText.ts"
 
 // The golden set: the first Book's Questions the Curator approves, up to a
 // hundred, and checks of it against the current prompts and models.
@@ -61,18 +65,18 @@ export class Golden extends Context.Service<Golden, {
             set: sources.set,
             page: sources.page,
             number: sources.number,
-            bookKey: sources.bookKey,
-            passage: stimuli.body
+            bookKey: sources.bookKey
           })
             .from(sources)
             .innerJoin(questions, eq(questions.id, sources.questionId))
-            .leftJoin(stimuli, eq(stimuli.id, questions.stimulusId))
             .where(and(eq(sources.bookId, bookId), eq(sources.merged, false), inArray(questions.status, ["published", "held"])))
             .orderBy(asc(sources.page), asc(sources.number))
           const ids = rows.map((row) => row.question.id)
           const partRows = ids.length === 0
             ? []
-            : yield* db.select().from(parts).where(and(inArray(parts.questionId, ids), eq(parts.position, 0)))
+            : yield* db.select().from(parts).where(inArray(parts.questionId, ids)).orderBy(asc(parts.position))
+          const shown = yield* stimulusViews(rows.flatMap((row) => (row.question.stimulusId === null ? [] : [row.question.stimulusId])))
+            .pipe(Effect.provideService(Db, db))
           const optionRows = partRows.length === 0
             ? []
             : yield* db.select().from(options).where(inArray(options.partId, partRows.map((part) => part.id)))
@@ -81,7 +85,7 @@ export class Golden extends Context.Service<Golden, {
             ? []
             : yield* db.select().from(goldenQuestions).where(inArray(goldenQuestions.questionId, ids))
           return rows.map((row) => {
-            const part = partRows.find((each) => each.questionId === row.question.id)
+            const mine = partRows.filter((each) => each.questionId === row.question.id)
             const golden = approved.find((each) => each.questionId === row.question.id)
             const expected = golden === undefined ? undefined : JSON.parse(golden.expected) as typeof GoldenExpected.Type
             return new GoldenCandidate({
@@ -90,13 +94,20 @@ export class Golden extends Context.Service<Golden, {
               set: row.set,
               number: row.number,
               page: row.page,
-              passage: row.passage,
+              stimulus: row.question.stimulusId === null ? null : shown.get(row.question.stimulusId) ?? null,
               stem: row.question.stem,
-              options: optionRows.filter((option) => option.partId === part?.id).map((option) => ({
-                label: option.label,
-                text: option.text
-              })),
-              key: part?.key ?? null,
+              parts: mine.map((part) =>
+                new PracticePart({
+                  position: part.position,
+                  kind: part.kind as PartKind,
+                  prompt: part.prompt,
+                  options: optionRows.filter((option) => option.partId === part.id).map((option) => ({
+                    label: option.label,
+                    text: option.text
+                  }))
+                })
+              ),
+              key: joinedKey(mine.map((part) => part.key)),
               bookKey: row.bookKey,
               status: row.question.status as QuestionStatus,
               primarySkill: expected?.primarySkill ?? row.question.primarySkill,
@@ -156,11 +167,16 @@ export class Golden extends Context.Service<Golden, {
           const [approved] = yield* db.select({ n: count() }).from(goldenQuestions).pipe(Effect.orDie)
           if (!found.approved && (approved?.n ?? 0) >= GoldenLimit) return yield* new GoldenSetFull({ limit: GoldenLimit })
           const now = yield* Clock.currentTimeMillis
+          const stimulus = found.stimulus
+          const quoted = stimulus === null ? null : stimulusText(stimulus.kind === "tabs"
+            ? { kind: "tabs", tabs: stimulus.tabs.map((tab) => ({ ...tab, ...datasetText(tab.dataset) })) }
+            : { kind: stimulus.kind, body: stimulus.body, ...datasetText(stimulus.dataset) })
           const expected = encodeExpected({
             questionType: found.questionType,
-            passage: found.passage,
+            stimulus: stimulus === null ? null : `${stimulusLabels[stimulus.kind]}:\n${quoted}`,
             stem: found.stem,
-            options: found.options,
+            options: found.parts[0]?.options ?? [],
+            parts: found.parts.map((part) => ({ kind: part.kind, prompt: part.prompt, options: part.options })),
             key: found.bookKey,
             primarySkill: tags.primarySkill,
             secondarySkills: [...tags.secondarySkills]

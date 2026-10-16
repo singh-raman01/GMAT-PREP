@@ -9,6 +9,7 @@ import { ApiKeyStore } from "../settings/ApiKeyStore.ts"
 import { missingSettings, Settings, taskReadsImages } from "../settings/Settings.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { BookFiles } from "./BookFiles.ts"
+import { draftText } from "../stimuli/stimulusText.ts"
 import { linkSet } from "./linking.ts"
 import { readPdfPages, unreadableNote } from "./pdf.ts"
 import { readPage, readsGroup } from "./readings.ts"
@@ -194,9 +195,9 @@ const sampleStep = (jobId: string, bookId: string, at: typeof Checkpoint.Type) =
         if (item._tag !== "Candidate") continue
         sampledQuestions.push({
           questionType: item.questionType,
-          stimulus: item.passage,
+          stimulus: item.stimulus === null ? null : draftText(item.stimulus),
           stem: item.stem,
-          options: item.options,
+          parts: item.parts.map(({ kind, prompt, options }) => ({ kind, prompt, options })),
           key: null,
           explanation: null
         })
@@ -309,9 +310,12 @@ const enrichSample = (jobId: string, question: QuestionText) =>
     const answers: Array<string> = []
     for (let run = 1; run <= SolverRuns; run++) {
       const solve = yield* unlessInvalid(solveQuestion(jobId, question, run))
-      if (solve !== undefined) answers.push(solve.value.answer)
+      if (solve !== undefined) answers.push(solve.answer)
     }
-    yield* unlessInvalid(writeApproaches(jobId, taxonomy, { ...question, key: answers[0] ?? "A" }, undefined))
+    // Written against the first solve's answer, or the first options, to
+    // cost the call.
+    const key = answers[0] ?? question.parts.map((part) => part.options[0]?.label ?? "A").join(",")
+    yield* unlessInvalid(writeApproaches(jobId, taxonomy, { ...question, key }, undefined))
   })
 
 export const BookIntake: JobKind<typeof Params.Type, typeof Checkpoint.Type> = {

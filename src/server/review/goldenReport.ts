@@ -4,10 +4,16 @@ import { QuestionId } from "../../api/Review.ts"
 // Comparing a check of the golden set with what the Curator approved.
 
 export interface GoldenItem {
-  // The passage a Reading Comprehension Question asks about.
-  readonly passage: string | null
+  // What it asks about, written out under its label, such as "The passage:";
+  // null when it stands alone.
+  readonly stimulus: string | null
   readonly stem: string
-  readonly options: ReadonlyArray<{ readonly label: string; readonly text: string }>
+  // Each Part's words and options.
+  readonly parts: ReadonlyArray<{
+    readonly prompt: string | null
+    readonly options: ReadonlyArray<{ readonly label: string; readonly text: string }>
+  }>
+  // Each Part's key, joined; see api/keys.ts.
   readonly key: string | null
 }
 
@@ -38,25 +44,28 @@ const sameTags = (a: GoldenTags, b: GoldenTags) =>
 export const goldenReport = (entries: ReadonlyArray<GoldenEntry>, finishedAt: number): GoldenReport => {
   const results = entries.map((entry) => {
     const { expected, item, tags } = entry
-    const text = item !== null && item.passage === expected.passage && item.stem === expected.stem &&
-      item.options.length === expected.options.length &&
-      item.options.every((option, index) => option.text === expected.options[index]?.text)
-    const parts = item !== null && item.options.map((option) => option.label).join() ===
-        expected.options.map((option) => option.label).join()
+    const sameWords = item !== null && item.parts.length === expected.parts.length &&
+      item.parts.every((part, index) => {
+        const other = expected.parts[index]!
+        return part.prompt === other.prompt && part.options.length === other.options.length &&
+          part.options.every((option, at) => option.text === other.options[at]?.text)
+      })
+    const text = item !== null && item.stimulus === expected.stimulus && item.stem === expected.stem && sameWords
+    const labels = (each: GoldenItem) => each.parts.map((part) => part.options.map((option) => option.label).join(", "))
+      .join("; ")
+    const parts = item !== null && labels(item) === labels(expected)
     const key = item !== null && item.key === expected.key
     const agrees = tags !== null && sameTags(tags, expected)
     const detail = [
       item === null ? "Not found when its page was read again." : undefined,
-      item !== null && item.passage !== expected.passage ? "The passage text differs." : undefined,
+      item !== null && item.stimulus !== expected.stimulus
+        ? `${(expected.stimulus ?? item.stimulus ?? "").split(":")[0]} differs.`
+        : undefined,
       item !== null && item.stem !== expected.stem
         ? `Text: "${clip(item.stem)}", not "${clip(expected.stem)}".`
         : undefined,
-      item !== null && item.stem === expected.stem && !text ? "Answer choice text differs." : undefined,
-      item !== null && !parts
-        ? `Choices ${item.options.map((option) => option.label).join(", ") || "none"}, not ${
-          expected.options.map((option) => option.label).join(", ")
-        }.`
-        : undefined,
+      item !== null && item.stem === expected.stem && !sameWords ? "Answer choice text differs." : undefined,
+      item !== null && !parts ? `Choices ${labels(item) || "none"}, not ${labels(expected)}.` : undefined,
       item !== null && !key ? `Key ${item.key ?? "none"}, not ${expected.key ?? "none"}.` : undefined,
       !agrees
         ? tags === null

@@ -1260,7 +1260,7 @@ describe("Extracting verbal and Data Sufficiency Questions", () => {
         const golden = curator.api.golden
         const view = yield* golden.get()
         const candidate = (number: number) => view.candidates.find((each) => each.number === number)!
-        expect(candidate(16).passage).toBe(PassageLines.join(" "))
+        expect(candidate(16).stimulus).toMatchObject({ kind: "passage", body: PassageLines.join(" ") })
         for (const number of [10, 13, 16]) {
           const each = candidate(number)
           yield* golden.approve({

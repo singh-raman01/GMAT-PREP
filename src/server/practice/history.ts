@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm"
+import { asc, eq, inArray, isNotNull, sql } from "drizzle-orm"
 import { Effect, Schema } from "effect"
 import { PartChoice, type Selection } from "../../api/Practice.ts"
 import { Db } from "../db/Database.ts"
@@ -97,8 +97,7 @@ export const historyOf = (profileId: string) =>
   })
 
 // Every published Question as Practice Sets choose among them, in the order
-// the Bank took them in. The set screen shows one Part, so a Question with
-// several Parts waits for a later version.
+// the Bank took them in.
 export const publishedPool = Effect.gen(function*() {
   const db = yield* Db
   const rows = yield* db.select({
@@ -113,7 +112,7 @@ export const publishedPool = Effect.gen(function*() {
     stimulusId: questions.stimulusId
   }).from(questions)
     .leftJoin(difficulty, eq(difficulty.questionId, questions.id))
-    .where(and(eq(questions.status, "published"), singlePart))
+    .where(eq(questions.status, "published"))
     .orderBy(asc(questions.createdAt), asc(sql`${questions}.rowid`))
   return rows.map((row): PoolQuestion => ({
     id: row.id,
@@ -127,9 +126,6 @@ export const publishedPool = Effect.gen(function*() {
     stimulusId: row.stimulusId
   }))
 })
-
-// A Question with exactly one Part.
-export const singlePart = sql`(select count(*) from ${parts} where ${parts.questionId} = ${questions.id}) = 1`
 
 // One Question's current Difficulty.
 export const difficultyOf = (questionId: string) =>

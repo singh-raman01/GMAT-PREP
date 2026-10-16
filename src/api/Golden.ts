@@ -4,6 +4,8 @@ import { BookId } from "./Books.ts"
 import { CuratorSession } from "./Curator.ts"
 import { JobView, LlmNotConfigured, SpendCap } from "./Jobs.ts"
 import { QuestionId, QuestionStatus } from "./Review.ts"
+import { PracticePart } from "./Practice.ts"
+import { StimulusView } from "./Stimulus.ts"
 
 // The golden set: the first 100 Questions the Curator approves from the first
 // Book, with the text, Parts, key and tags the Curator confirmed. A check
@@ -20,10 +22,11 @@ export class GoldenCandidate extends Schema.Class<GoldenCandidate>("gmat-prep/ap
   set: Schema.String,
   number: Schema.Int,
   page: Schema.Int,
-  // The passage a Reading Comprehension Question asks about.
-  passage: Schema.NullOr(Schema.String),
+  // What it asks about: a passage, a table, a chart, a figure or tabs.
+  stimulus: Schema.NullOr(StimulusView),
   stem: Schema.String,
-  options: Schema.Array(Schema.Struct({ label: Schema.String, text: Schema.String })),
+  parts: Schema.Array(PracticePart),
+  // Each Part's key, joined: C, or A,B,A for three Parts.
   key: Schema.NullOr(Schema.String),
   // The key the Book prints for the item, which a check expects even when
   // the Curator overrode the Question's key.

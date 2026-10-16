@@ -1,5 +1,6 @@
 import { Effect, Layer } from "effect"
 import { BookFiles } from "./books/BookFiles.ts"
+import { FigureFiles } from "./books/FigureFiles.ts"
 import { Books } from "./books/Books.ts"
 import { Curator } from "./curator/Curator.ts"
 import { DatabaseLive } from "./db/Database.ts"
@@ -8,6 +9,7 @@ import { BookFileRoutes } from "./http/books.ts"
 import { EventsRoutes } from "./http/events.ts"
 import { GuardLive } from "./http/guard.ts"
 import { ApiRoutes } from "./http/handlers.ts"
+import { MediaRoutes } from "./http/media.ts"
 import { WebRoutes } from "./http/web.ts"
 import type { JobKinds } from "./jobs/JobKind.ts"
 import { JobStore } from "./jobs/JobStore.ts"
@@ -22,7 +24,7 @@ import { Settings } from "./settings/Settings.ts"
 import { Taxonomy } from "./taxonomy/Taxonomy.ts"
 
 // Every route the server answers, behind the Host check.
-export const AppRoutes = Layer.mergeAll(ApiRoutes, BookFileRoutes, EventsRoutes, WebRoutes, GuardLive)
+export const AppRoutes = Layer.mergeAll(ApiRoutes, BookFileRoutes, MediaRoutes, EventsRoutes, WebRoutes, GuardLive)
 
 // Uploads a crash cut short leave temporary files; none is in progress yet.
 const RemoveUploadLeftovers = Layer.effectDiscard(
@@ -44,7 +46,7 @@ export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Layer.mergeAll(
   Practice.layer,
   RemoveUploadLeftovers
 ).pipe(
-  Layer.provideMerge(Layer.mergeAll(Settings.layer, ApiKeyStore.layer, BookFiles.layer, Taxonomy.layer)),
+  Layer.provideMerge(Layer.mergeAll(Settings.layer, ApiKeyStore.layer, BookFiles.layer, FigureFiles.layer, Taxonomy.layer)),
   Layer.provideMerge(JobStore.layer),
   Layer.provideMerge(kinds),
   Layer.provideMerge(DatabaseLive)
