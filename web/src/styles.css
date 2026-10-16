@@ -1618,6 +1618,17 @@ input[type="file"]::file-selector-button {
   font-size: var(--step-0);
 }
 
+/* Ending a set another tab holds asks first, on a line of its own. */
+.end-elsewhere {
+  flex: 1 1 100%;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.end-elsewhere p {
+  margin: 0;
+}
+
 .practice-start,
 .practice-fields {
   display: grid;

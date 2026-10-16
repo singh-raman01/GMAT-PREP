@@ -18,18 +18,51 @@ export const showProfile = (id: string | undefined) => {
 
 // Each tab is a device of its own: one device holds a Session at a time,
 // and another takes it over only when the Learner says so. The id lasts as
-// long as the tab, through reloads.
-const deviceId = (() => {
+// long as the tab, through reloads. It is made from random bytes, which a
+// page served over plain HTTP on the network can get, unlike a UUID.
+const newDeviceId = () =>
+  Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("")
+
+const keepDeviceId = (id: string) => {
+  try {
+    sessionStorage.setItem("gmat-prep-device", id)
+  } catch {
+    // Storage is off: the id lasts until the page reloads.
+  }
+}
+
+let deviceId = (() => {
   try {
     const kept = sessionStorage.getItem("gmat-prep-device")
     if (kept !== null) return kept
-    const made = crypto.randomUUID()
-    sessionStorage.setItem("gmat-prep-device", made)
-    return made
   } catch {
-    return crypto.randomUUID()
+    // Storage is off; a new id each load.
   }
+  const made = newDeviceId()
+  keepDeviceId(made)
+  return made
 })()
+
+// A duplicated tab starts with a copy of its tab's storage, and so with its
+// device id. On load a tab asks the others whether its id is in use, and
+// takes a new one if it is. Requests wait briefly for an answer.
+const devices = typeof BroadcastChannel === "undefined" ? undefined : new BroadcastChannel("gmat-prep-device")
+const AnswerWaitMs = 100
+const deviceChecked = new Promise<void>((resolve) => {
+  if (devices === undefined) return resolve()
+  const timer = setTimeout(resolve, AnswerWaitMs)
+  devices.addEventListener("message", (event: MessageEvent<{ readonly type: string; readonly id: string }>) => {
+    if (event.data.id !== deviceId) return
+    if (event.data.type === "asking") devices.postMessage({ type: "in-use", id: deviceId })
+    if (event.data.type === "in-use") {
+      deviceId = newDeviceId()
+      keepDeviceId(deviceId)
+      clearTimeout(timer)
+      resolve()
+    }
+  })
+  devices.postMessage({ type: "asking", id: deviceId })
+})
 
 const makeClient = HttpApiClient.make(Api, {
   baseUrl: window.location.origin,
@@ -46,7 +79,7 @@ let client: Promise<Client> | undefined
 // Runs one API call. Failures the API declares come back as values, so each
 // screen can say what happened.
 export const call = async <A, E>(request: (client: Client) => Effect.Effect<A, E>): Promise<Result.Result<A, E>> => {
-  client ??= Effect.runPromise(makeClient)
+  client ??= deviceChecked.then(() => Effect.runPromise(makeClient))
   return Effect.runPromise(Effect.result(request(await client)))
 }
 

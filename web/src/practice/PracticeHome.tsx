@@ -156,10 +156,20 @@ export const PracticeHome = ({ onSessionLost, onStopped }: Props) => {
     }
   }, [handle, loadSets])
 
+  // A set another tab or device holds is ended here only once the Learner
+  // says to take it over.
+  const [confirming, setConfirming] = useState<PracticeSummary["id"]>()
   const end = async (id: PracticeSummary["id"]) => {
     const result = await call((client) => client.practice.finish({ params: { id } }))
+    if (result._tag === "Failure" && result.failure._tag === "HeldElsewhere") return setConfirming(id)
     if (result._tag === "Failure" && result.failure._tag !== "PracticeNotFound") return handle(result.failure)
     void loadSets()
+  }
+  const takeOverAndEnd = async (id: PracticeSummary["id"]) => {
+    const claimed = await call((client) => client.practice.claim({ params: { id } }))
+    if (claimed._tag === "Failure" && claimed.failure._tag !== "PracticeNotFound") return handle(claimed.failure)
+    setConfirming(undefined)
+    await end(id)
   }
 
   const active = sets?.filter((set) => set.status !== "finished") ?? []
@@ -193,6 +203,13 @@ export const PracticeHome = ({ onSessionLost, onStopped }: Props) => {
                 >
                   End
                 </button>
+                {confirming === set.id && (
+                  <EndElsewhere
+                    title={set.title}
+                    onEnd={() => void takeOverAndEnd(set.id)}
+                    onKeep={() => setConfirming(undefined)}
+                  />
+                )}
               </li>
             ))}
           </ul>
@@ -227,6 +244,22 @@ export const PracticeHome = ({ onSessionLost, onStopped }: Props) => {
         </section>
       )}
     </>
+  )
+}
+
+// Asked when the set to end is open in another tab or on another device.
+const EndElsewhere = (
+  { title, onEnd, onKeep }: { readonly title: string; readonly onEnd: () => void; readonly onKeep: () => void }
+) => {
+  const first = useFocusOnMount<HTMLButtonElement>()
+  return (
+    <div className="end-elsewhere" role="group" aria-label={`End ${title}`}>
+      <p>This set is open in another tab or on another device. End it from here anyway?</p>
+      <div className="actions">
+        <button type="button" className="button" ref={first} onClick={onEnd}>Take it over and end it</button>
+        <button type="button" className="button button-quiet" onClick={onKeep}>Keep it going</button>
+      </div>
+    </div>
   )
 }
 

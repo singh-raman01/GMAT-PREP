@@ -134,7 +134,7 @@ Checked against mba.com on 15 October 2026.
 - Data lives in the OS's app-data folder by default, and the location can be changed.
 - The stack is Effect 4 (stable since 1 October 2026) with the Bun platform package, and Drizzle 1.0's Effect driver for Bun SQLite, pinned while it is a release candidate. Database access sits behind repository services, so the stable fallback, @effect/sql-sqlite-bun with hand-written SQL, can replace the driver without touching callers (ADR 0011).
 - The API is HTTP JSON defined with Effect HttpApi and Schema. The web app calls it through a client derived from the same definitions. One Server-Sent Events stream per device, GET /api/events, pushes six events: clock sync, Section expired, Session claimed elsewhere, job progress, plan rebuilt and Review Queue changed. Job progress reaches the server through the database: each open stream reads changed jobs by revision twice a second. Each event's id is the revision it carries, so a page opens the stream after the job list it has read, and a browser that reconnects resumes from the last event it received. The stream's keep-alive checks the Curator unlock without counting as use, so an open page does not keep the Curator unlocked.
-- Derived numbers update in small steps after each Rated Response in Practice Sets, and when each Section closes in Mocks and Sectionals. Full rebuilds, for example after a Key Override, run in the worker.
+- Derived numbers update in small steps when a timed Practice Set ends, one Rated Response at a time, and when each Section closes in Mocks and Sectionals. Full rebuilds, for example after a Key Override, run in the worker.
 - The web app renders math with KaTeX, and both Question charts and analytics charts with Vega-Lite.
 
 ### Modules
@@ -329,7 +329,7 @@ The clock (ADR 0009) ticks every second on the server and saves elapsed time eve
 
 Every submit carries a per-Session sequence number, so a retry or double click is recorded once. One device holds a Session at a time. Opening it elsewhere asks whether to take over, and the old device turns read-only.
 
-In Review & Edit, each change is a new Response that supersedes the earlier one in that Session, and both stay on record. The final answer is scored and becomes the Rated Response, and the report shows whether the changes gained or lost points. Because answers can still change, Mocks and Sectionals update Difficulty and Ability only when the Section closes; Practice Sets update after each Rated Response.
+In Review & Edit, each change is a new Response that supersedes the earlier one in that Session, and both stay on record. The final answer is scored and becomes the Rated Response, and the report shows whether the changes gained or lost points. Because answers can still change, Mocks and Sectionals update Difficulty and Ability only when the Section closes. Timed Practice Sets update when the set ends, since a Score Estimate that moved after each answer would give away whether it was right.
 
 When time runs out with a Question on screen, that Question gets a time-out Response with no selection. It counts as wrong, enters the Error Log with Time pressure and counts against the Mock Section score, but it is never a Rated Response.
 
@@ -605,9 +605,12 @@ These came up while building a ticket. Like the starting values above, they can 
 8. Untimed time spent is wall-clock time from serving to answering, with no pauses recorded, so it says little about pace. Rules about slow answers, such as the Error Log's, read timed Responses only.
 9. Until the set screen shows Stimuli and several Parts, Practice Sets take single-Part Questions only.
 10. Timed sets (ticket 07): each browser tab is a device of its own, named in the `X-GP-Device` header and kept for the tab's life, so a reload keeps holding the set. A request without the header acts as any device.
-11. The clock stops ticking while no timed set runs, and an answer that arrives after the time limit but before the next tick is refused: the set ends by time instead.
+11. The clock stops ticking while no timed set runs. Every request to a running set first ticks its clock, so an answer, pause, end or next that arrives after the time limit but before the clock's next tick ends the set by time instead, and one that follows a gap marks the Session interrupted. The clock is also saved whenever a Question is served, so after a restart it never stands before a Question already on screen.
 12. The timer turns to a warning in the last 5 minutes, or in the last fifth of a set shorter than 25 minutes, and says so once to a screen reader.
-13. A Score Estimate is kept after every Rated Response, for the trend; the Practice page shows each Section's estimate as it stands now.
+13. A timed set's Rated Responses count when it ends, in the order they were given: each moves its Question's Difficulty by the Section Ability before it, from the sets that ended earlier and the answers before it in the same set, and keeps a Score Estimate, for the trend. The Practice page shows each Section's estimate as it stands now, from ended sets. A paused set's answers wait until it ends.
+14. A set chosen by filters takes its Questions in an order seeded by the Profile and how many sets it has started, so its preview shows exactly the Questions, and the time limit, the set then gets, and each new set gets a new order.
+15. A paused set hides its Questions everywhere, the review of earlier ones included.
+16. Ending a set from the Practice page while another tab or device holds it asks first, then takes it over and ends it. A tab that comes back into view reads its set again.
 
 ### Taxonomy review notes
 
