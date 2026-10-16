@@ -394,6 +394,49 @@ describe("The cost preview", () => {
       AllJobKinds
     ))
 
+  test("without models for enrichment, it is not costed and no cap is suggested, until it is costed again", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* (yield* Settings).saveLlm({
+          baseUrl: "https://api.example.com/v1",
+          jsonMode: "json-schema",
+          models: [{ task: "book-map", model: "map-model" }, { task: "extraction", model: "text-model" }],
+          prices: [
+            { model: "map-model", inputPerMillion: 1, outputPerMillion: 4 },
+            { model: "text-model", inputPerMillion: 2, outputPerMillion: 8 }
+          ],
+          readsImages: []
+        })
+        yield* (yield* ApiKeyStore).save("sk-test-12345678")
+        yield* surveyByHeading
+        const fake = yield* FakeLlm
+        const curator = yield* curatorBrowser
+        const book = yield* Effect.promise(() => makeBook({ psPages: 10 }))
+        const { book: view } = added(yield* upload(curator.cookie, book.bytes, { title: "Big Practice" }))
+        const previewed = yield* waitForStatus(curator.api, view.id, "previewed")
+        expect(previewed.book.preview?.steps[2]).toMatchObject({
+          name: "Enrichment",
+          sampledPages: 0,
+          projectedPages: 31,
+          projectedCost: 0,
+          costed: false
+        })
+        const sampleRequests = (yield* fake.requests).length
+
+        // Once the models are set, the sample is taken again; only the
+        // enrichment calls are new.
+        yield* configure()
+        yield* curator.api.books.readAgain({ params: { id: view.id } })
+        const costed = yield* waitForStatus(curator.api, view.id, "previewed")
+        expect(costed.book.preview?.steps[2]).toMatchObject({ sampledPages: 2, projectedPages: 31, costed: true })
+        expect((yield* fake.requests).length - sampleRequests).toBe(10)
+        // A preview with every step costed is not taken again.
+        const refused = yield* curator.api.books.readAgain({ params: { id: view.id } }).pipe(Effect.flip)
+        expect(refused).toMatchObject({ _tag: "BookNotReady" })
+      }),
+      AllJobKinds
+    ))
+
   test("the full run needs the Book Map model set up first", () =>
     runWithWorker(
       Effect.gen(function*() {

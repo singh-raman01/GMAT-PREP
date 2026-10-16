@@ -29,8 +29,9 @@ export const PagesPerStep = 100
 export const SamplePages = 10
 
 // Dollars the sample may spend unless the Curator raises it: room for about
-// twenty calls with two-page prompts on a costly model.
-export const SampleCap = 2
+// thirty calls, the survey, extraction and two Questions' enrichment, with
+// two-page prompts on a costly model.
+export const SampleCap = 3
 
 const Params = Schema.Struct({ bookId: Schema.String, title: Schema.String })
 
@@ -121,7 +122,8 @@ const projectStep = (
   name: string,
   sampled: { readonly pages: number; readonly tokens: number; readonly cost: number },
   remainingPages: number,
-  unit: "page" | "question" = "page"
+  unit: "page" | "question" = "page",
+  costed = true
 ) =>
   new CostStep({
     name,
@@ -131,7 +133,8 @@ const projectStep = (
     sampleCost: sampled.cost,
     projectedPages: remainingPages,
     projectedTokens: sampled.pages === 0 ? 0 : Math.round(sampled.tokens / sampled.pages * remainingPages),
-    projectedCost: sampled.pages === 0 ? 0 : sampled.cost / sampled.pages * remainingPages
+    projectedCost: sampled.pages === 0 ? 0 : sampled.cost / sampled.pages * remainingPages,
+    costed
   })
 
 // The full run on 10 pages spread through the Book: the Book Map model
@@ -204,9 +207,11 @@ const sampleStep = (jobId: string, bookId: string) =>
     // Questions in the same share of the Book as in the sample.
     const projectedQuestions = sample.length === 0 ? 0 : Math.round(sampledQuestions.length / sample.length * textPages.length)
     const enrichCalls = ["tagging", "solving", "approaches"].map(of)
+    // A sample Question's enrichment ends with its Approaches call.
     const [enriched] = yield* db.select({ n: count() }).from(llmCalls)
-      .where(and(inArray(llmCalls.jobId, intakeJobs), eq(llmCalls.task, "tagging"), eq(llmCalls.outcome, "ok")))
+      .where(and(inArray(llmCalls.jobId, intakeJobs), eq(llmCalls.task, "approaches")))
       .pipe(Effect.orDie)
+    const enrichmentCosted = projectedQuestions === 0 || (enriched?.n ?? 0) > 0
     const steps = [
       // The full run surveys every page with text, the sampled ones again.
       projectStep("Book Map", { pages: sample.length, ...of("book-map") }, textPages.length),
@@ -225,7 +230,8 @@ const sampleStep = (jobId: string, bookId: string) =>
           cost: enrichCalls.reduce((total, call) => total + call.cost, 0)
         },
         projectedQuestions,
-        "question"
+        "question",
+        enrichmentCosted
       )
     ]
     const preview = new CostPreview({
@@ -260,8 +266,9 @@ const sampleStep = (jobId: string, bookId: string) =>
 // Enriches up to two of the sample's Questions, only to cost enrichment: they
 // are tagged, solved three times and given Approaches, and the replies are
 // not kept. Their key is not known yet, so the first solve's answer stands in.
-// Skipped when the enrichment models are not set, or when an earlier try of
-// this step already did it.
+// Skipped when the enrichment models are not set, so the step is not costed.
+// A try of this step that stopped part way picks up at the first Question
+// with no Approaches call, doing that one again in full.
 const SampleQuestions = 2
 
 const sampleEnrichment = (jobId: string, sampled: ReadonlyArray<QuestionText>) =>
@@ -270,12 +277,12 @@ const sampleEnrichment = (jobId: string, sampled: ReadonlyArray<QuestionText>) =
     const llm = yield* (yield* Settings).llm
     const hasKey = Option.isSome(yield* (yield* ApiKeyStore).read)
     const ready = (["tagging", "solving", "approaches"] as const).every((task) => missingSettings(llm, hasKey, task).length === 0)
+    if (!ready) return
     const [done] = yield* db.select({ n: count() }).from(llmCalls)
-      .where(and(eq(llmCalls.jobId, jobId), inArray(llmCalls.task, ["tagging", "solving", "approaches"])))
+      .where(and(eq(llmCalls.jobId, jobId), eq(llmCalls.task, "approaches")))
       .pipe(Effect.orDie)
-    if (!ready || (done?.n ?? 0) > 0) return
     const taxonomy = (yield* Taxonomy).view
-    for (const question of sampled.slice(0, SampleQuestions)) {
+    for (const question of sampled.slice(done?.n ?? 0, SampleQuestions)) {
       yield* unlessInvalid(tagQuestion(jobId, taxonomy, question))
       const answers: Array<string> = []
       for (let run = 1; run <= SolverRuns; run++) {

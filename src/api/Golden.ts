@@ -23,6 +23,9 @@ export class GoldenCandidate extends Schema.Class<GoldenCandidate>("gmat-prep/ap
   stem: Schema.String,
   options: Schema.Array(Schema.Struct({ label: Schema.String, text: Schema.String })),
   key: Schema.NullOr(Schema.String),
+  // The key the Book prints for the item, which a check expects even when
+  // the Curator overrode the Question's key.
+  bookKey: Schema.NullOr(Schema.String),
   status: QuestionStatus,
   // The model's tags, or once approved, the Curator's.
   primarySkill: Schema.NullOr(Schema.String),
@@ -86,6 +89,13 @@ export class GoldenSetEmpty extends Schema.TaggedError<GoldenSetEmpty>()(
   { httpApiStatus: 409 }
 ) {}
 
+// One check at a time: a check is queued, running or paused already.
+export class GoldenCheckRunning extends Schema.TaggedError<GoldenCheckRunning>()(
+  "GoldenCheckRunning",
+  {},
+  { httpApiStatus: 409 }
+) {}
+
 // Tags the Curator gave that do not fit the Taxonomy or the Question Type.
 export class GoldenTagsInvalid extends Schema.TaggedError<GoldenTagsInvalid>()(
   "GoldenTagsInvalid",
@@ -117,7 +127,7 @@ export class GoldenApi extends HttpApiGroup.make("golden")
     HttpApiEndpoint.post("check", "/golden/check", {
       payload: Schema.Struct({ spendCap: SpendCap }),
       success: GoldenView,
-      error: [GoldenSetEmpty, LlmNotConfigured]
+      error: [GoldenSetEmpty, LlmNotConfigured, GoldenCheckRunning]
     })
   )
   .middleware(CuratorSession)

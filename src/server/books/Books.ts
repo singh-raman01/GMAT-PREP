@@ -278,7 +278,13 @@ export class Books extends Context.Service<Books, {
           const job = yield* jobOf(row)
           const settled = job === undefined || job.status === "failed" || job.status === "cancelled" ||
             job.status === "done"
-          if ((row.status !== "added" && row.status !== "unreadable") || !settled) {
+          // A preview with a step it could not cost may be taken again.
+          const uncosted = row.status === "previewed" && row.preview !== null &&
+            Option.match(decodePreview(row.preview), {
+              onNone: () => false,
+              onSome: (preview) => preview.steps.some((step) => !step.costed)
+            })
+          if ((row.status !== "added" && row.status !== "unreadable" && !uncosted) || !settled) {
             return yield* new BookNotReady({ status: row.status as BookStatus })
           }
           if (job?.status === "failed") yield* store.cancel(JobId.make(job.id)).pipe(Effect.ignore)

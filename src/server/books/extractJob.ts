@@ -6,7 +6,8 @@ import { Db } from "../db/Database.ts"
 import { bookMaps, bookPages, books, pageReadings, questions, sources } from "../db/schema.ts"
 import type { JobKind } from "../jobs/JobKind.ts"
 import { runGate } from "../review/gate.ts"
-import { assignReserve } from "../review/reserve.ts"
+import { assignReserve, assignUndecided } from "../review/reserve.ts"
+import { strandedDrafts } from "../review/stranded.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { heldPages, holdUnreadPage, type Linked, linkCandidate, loadBank, recordSkip, retireStale } from "./bankWrites.ts"
 import { enrichQuestion } from "./enrichment.ts"
@@ -222,7 +223,9 @@ const linkStep = (params: typeof Params.Type, setsLinked: number, stepsDone: num
   })
 
 // Draft Questions with a Source in the Book, oldest first: the Book's new
-// Questions, and those its re-linking sent back to the Publish Gate.
+// Questions, and those its re-linking sent back to the Publish Gate. Then any
+// draft no job would check, such as one this run's re-linking sent back
+// through another Book's Source (see review/stranded.ts).
 const draftsOf = (bookId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
@@ -232,7 +235,8 @@ const draftsOf = (bookId: string) =>
       .where(eq(questions.status, "draft"))
       .orderBy(asc(questions.createdAt), asc(sql`${questions}.rowid`))
       .pipe(Effect.orDie)
-    return rows.map((row) => row.id)
+    if (rows.length > 0) return rows.map((row) => row.id)
+    return yield* strandedDrafts.pipe(Effect.orDie)
   })
 
 const enrichStep = (jobId: string, params: typeof Params.Type, setsLinked: number, stepsDone: number) =>
@@ -246,8 +250,14 @@ const enrichStep = (jobId: string, params: typeof Params.Type, setsLinked: numbe
       yield* db.update(books).set({ status: "extracted", updatedAt: now })
         .where(and(eq(books.id, params.bookId), eq(books.status, "extracting")))
         .pipe(Effect.orDie)
+      // Questions of other Books this run published.
+      yield* assignUndecided.pipe(Effect.orDie)
+      // The Book's own Questions, not those it only added a Source to.
       const own = yield* db.select({ status: questions.status, n: count() }).from(questions)
-        .innerJoin(sources, and(eq(sources.questionId, questions.id), eq(sources.bookId, params.bookId)))
+        .innerJoin(
+          sources,
+          and(eq(sources.questionId, questions.id), eq(sources.bookId, params.bookId), eq(sources.merged, false))
+        )
         .where(inArray(questions.status, ["published", "held"]))
         .groupBy(questions.status)
         .pipe(Effect.orDie)

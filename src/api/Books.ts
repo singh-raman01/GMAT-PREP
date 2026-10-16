@@ -106,7 +106,10 @@ export class CostStep extends Schema.Class<CostStep>("gmat-prep/api/CostStep")({
   sampleCost: Schema.Number,
   projectedPages: Schema.Int,
   projectedTokens: Schema.Int,
-  projectedCost: Schema.Number
+  projectedCost: Schema.Number,
+  // False when the sample could not try the step, as when Settings had no
+  // models for it: its projection is then unknown, not zero.
+  costed: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true)))
 }) {}
 
 export class CostPreview extends Schema.Class<CostPreview>("gmat-prep/api/CostPreview")({
@@ -275,7 +278,8 @@ export class BooksApi extends HttpApiGroup.make("books")
       success: BookDetail,
       error: BookNotFound
     }),
-    // Reads the file again, for a Book whose reading was cancelled or failed.
+    // Reads the file again, for a Book whose reading was cancelled or failed,
+    // or whose cost preview could not cost a step.
     HttpApiEndpoint.post("readAgain", "/books/:id/read", {
       ...bookParams,
       success: BookView,

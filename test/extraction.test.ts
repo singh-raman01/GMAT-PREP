@@ -1,12 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import { and, asc, eq } from "drizzle-orm"
-import { Effect, Fiber, Option, Schema } from "effect"
-import { HttpClient, HttpClientRequest } from "effect/http"
-import { AddedBook, type BookDetail, type BookId, BookUploadPath, type MapRangeInput } from "../src/api/Books.ts"
-import type { ReviewItemView } from "../src/api/Review.ts"
+import { Effect, Fiber } from "effect"
+import type { MapRangeInput } from "../src/api/Books.ts"
 import { Db } from "../src/server/db/Database.ts"
 import {
   approaches,
+  jobs,
   keyOverrides,
   llmCalls,
   optionNotes,
@@ -19,128 +18,21 @@ import {
 } from "../src/server/db/schema.ts"
 import { AllJobKinds } from "../src/server/jobs/kinds/index.ts"
 import { FakeLlm } from "../src/server/llm/LlmTransport.ts"
-import { ApiKeyStore } from "../src/server/settings/ApiKeyStore.ts"
-import { Settings } from "../src/server/settings/Settings.ts"
-import { type FakeEnrichment, fakeBookModel, makeFakeBookModel } from "./fakeBookModel.ts"
-import { makeBook } from "./fixtures/book.ts"
+import { fakeBookModel, makeFakeBookModel } from "./fakeBookModel.ts"
+import {
+  bankItem,
+  byNumber,
+  codes,
+  configure,
+  confirmAndExtract,
+  curatorBrowser,
+  proposedBook,
+  rangesOf,
+  sentFor,
+  waitFor,
+  withModel
+} from "./bookFlow.ts"
 import { advanceUntil, openInspectableBrowser, runWithWorker, runWithWorkers, TestWorkers } from "./harness.ts"
-
-const passphrase = "correct horse battery"
-
-const configure = Effect.gen(function*() {
-  const settings = yield* Settings
-  yield* settings.saveLlm({
-    baseUrl: "https://api.example.com/v1",
-    jsonMode: "json-schema",
-    models: [
-      { task: "book-map", model: "map-model" },
-      { task: "extraction", model: "text-model" },
-      { task: "tagging", model: "text-model" },
-      { task: "solving", model: "text-model" },
-      { task: "approaches", model: "text-model" }
-    ],
-    prices: [
-      { model: "map-model", inputPerMillion: 1, outputPerMillion: 4 },
-      { model: "text-model", inputPerMillion: 2, outputPerMillion: 8 }
-    ],
-    readsImages: []
-  })
-  yield* (yield* ApiKeyStore).save("sk-test-12345678")
-  yield* (yield* FakeLlm).respondWith(fakeBookModel)
-})
-
-const curatorBrowser = Effect.gen(function*() {
-  const browser = yield* openInspectableBrowser
-  yield* browser.api.curatorAccess.setPassphrase({ payload: { passphrase } })
-  const token = Option.getOrThrow(yield* browser.cookie("gp_curator"))
-  return { api: browser.api, cookie: `gp_curator=${token}` }
-})
-type Curator = Effect.Success<typeof curatorBrowser>
-
-const decodeAdded = Schema.decodeUnknownSync(Schema.fromJsonString(AddedBook))
-
-const upload = (curator: Curator, bytes: Uint8Array, title: string) =>
-  Effect.gen(function*() {
-    const client = yield* HttpClient.HttpClient
-    const response = yield* client.execute(
-      HttpClientRequest.post(`${BookUploadPath}?${new URLSearchParams({ title, edition: "", official: "true" })}`).pipe(
-        HttpClientRequest.setHeader("cookie", curator.cookie),
-        HttpClientRequest.bodyUint8Array(bytes, "application/pdf")
-      )
-    )
-    return decodeAdded(yield* response.text).book
-  })
-
-const waitFor = (curator: Curator, id: BookId, ready: (detail: BookDetail) => boolean) =>
-  advanceUntil(
-    curator.api.books.get({ params: { id } }).pipe(Effect.map((detail) => (ready(detail) ? detail : undefined))),
-    { step: "200 millis", maxSteps: 3000 }
-  )
-
-const statusIs = (status: string) => (detail: BookDetail) => detail.book.status === status
-
-const rangesOf = (detail: BookDetail): Array<MapRangeInput> =>
-  (detail.proposal?.ranges ?? []).map((range) => ({
-    role: range.role,
-    firstPage: range.firstPage,
-    lastPage: range.lastPage,
-    set: range.set,
-    group: range.group
-  }))
-
-// A Book through its cost preview and Book Map run, up to the proposal.
-const proposedBook = (
-  curator: Curator,
-  edition = "First edition",
-  psPages?: number,
-  keys?: Readonly<Record<number, string>>
-) =>
-  Effect.gen(function*() {
-    const fixture = yield* Effect.promise(() =>
-      makeBook({ edition, ...(psPages === undefined ? {} : { psPages }), ...(keys === undefined ? {} : { keys }) })
-    )
-    const book = yield* upload(curator, fixture.bytes, `Practice Questions, ${edition}`)
-    yield* waitFor(curator, book.id, statusIs("previewed"))
-    yield* curator.api.books.start({ params: { id: book.id }, payload: { spendCap: 1 } })
-    return yield* waitFor(curator, book.id, statusIs("map-proposed"))
-  })
-
-const confirmAndExtract = (curator: Curator, id: BookId, ranges: ReadonlyArray<MapRangeInput>) =>
-  Effect.gen(function*() {
-    const confirmed = yield* curator.api.books.confirmMap({ params: { id }, payload: { ranges } })
-    const version = confirmed.confirmed!.version
-    return yield* waitFor(curator, id, (detail) => detail.book.status === "extracted" && detail.book.mapVersion === version)
-  })
-
-const byNumber = (items: ReadonlyArray<ReviewItemView>, number: number) =>
-  items.find((item) => item.question?.sources.some((source) => source.number === number))!
-
-const codes = (item: ReviewItemView) => item.reasons.map((reason) => reason.code)
-
-// A Book's own item in the Question Bank, by number, as stored.
-const bankItem = (bookId: BookId, number: number) =>
-  Effect.gen(function*() {
-    const db = yield* Db
-    const [row] = yield* db.select({ question: questions, key: parts.key, keyBasis: parts.keyBasis, partId: parts.id })
-      .from(sources)
-      .innerJoin(questions, eq(questions.id, sources.questionId))
-      .innerJoin(parts, and(eq(parts.questionId, questions.id), eq(parts.position, 0)))
-      .where(and(eq(sources.bookId, bookId), eq(sources.number, number)))
-      .pipe(Effect.orDie)
-    return row!
-  })
-
-// The requests the fake model was sent for a kind of work.
-const sentFor = (marker: string) =>
-  Effect.gen(function*() {
-    const requests = yield* (yield* FakeLlm).requests
-    return requests.filter((request) => (request.messages[0]?.content ?? "").includes(marker))
-  })
-
-const withModel = (options: FakeEnrichment) =>
-  Effect.gen(function*() {
-    yield* (yield* FakeLlm).respondWith(makeFakeBookModel(options))
-  })
 
 describe("Extracting Problem Solving Questions", () => {
   test("passing Questions are published on their own; the rest wait in the Review Queue with every reason", () =>
@@ -417,6 +309,53 @@ describe("Extracting Problem Solving Questions", () => {
     ), 20_000)
 })
 
+describe("Enriching after a stop", () => {
+  test("a worker killed while enriching resumes without tagging or solving any Question twice", () =>
+    runWithWorkers(
+      Effect.gen(function*() {
+        yield* configure
+        const fake = yield* FakeLlm
+        const curator = yield* curatorBrowser
+        const workers = yield* TestWorkers
+        const first = yield* workers.start
+        const proposed = yield* proposedBook(curator)
+        // The API goes down at the full run's first Approaches call, after
+        // that Question's tags and solves are stored, and the worker is
+        // killed while it waits to try again.
+        let written = 0
+        let down = false
+        yield* fake.respondWith((request) => {
+          if ((request.messages[0]?.content ?? "").includes("You write teaching material")) {
+            written += 1
+            // The cost preview's sample wrote two.
+            if (written === 3) down = true
+            if (down) return { status: 503, message: "overloaded" }
+          }
+          return fakeBookModel(request)
+        })
+        yield* curator.api.books.confirmMap({ params: { id: proposed.book.id }, payload: { ranges: rangesOf(proposed) } })
+        yield* advanceUntil(Effect.sync(() => (down ? true : undefined)), { step: "200 millis", maxSteps: 3000 })
+        yield* Fiber.interrupt(first)
+
+        down = false
+        yield* fake.respondWith(fakeBookModel)
+        yield* workers.start
+        yield* waitFor(curator, proposed.book.id, (detail) => detail.book.status === "extracted")
+        const db = yield* Db
+        const extraction = yield* db.select({ id: jobs.id }).from(jobs).where(eq(jobs.kind, "book-extract")).pipe(Effect.orDie)
+        const okCalls = (task: string) =>
+          db.select().from(llmCalls)
+            .where(and(eq(llmCalls.task, task), eq(llmCalls.outcome, "ok"), eq(llmCalls.jobId, extraction[0]!.id)))
+            .pipe(Effect.orDie)
+        // Seven Questions are enriched: each tagged once and solved three times.
+        expect(yield* okCalls("tagging")).toHaveLength(7)
+        expect(yield* okCalls("solving")).toHaveLength(21)
+        expect(yield* okCalls("approaches")).toHaveLength(7)
+      }),
+      AllJobKinds
+    ), 20_000)
+})
+
 describe("The Publish Gate", () => {
   test("an Approach that misses the key is written once more; one that misses it again holds the Question", () =>
     runWithWorker(
@@ -452,7 +391,7 @@ describe("The Publish Gate", () => {
       AllJobKinds
     ))
 
-  test("a tag the Question Type does not allow, or a Book Label two bands from the estimate, holds the Question", () =>
+  test("a Skill the reply schema refuses leaves the Question untagged and held, as does a Book Label two bands off", () =>
     runWithWorker(
       Effect.gen(function*() {
         yield* configure
@@ -519,6 +458,62 @@ describe("The Publish Gate", () => {
         expect((yield* sentFor("You write teaching material")).length).toBe(written + 1)
         const db = yield* Db
         expect(yield* db.select().from(keyOverrides).pipe(Effect.orDie)).toHaveLength(1)
+      }),
+      AllJobKinds
+    ))
+
+  test("after a Key Override, the Book's explanation stays an Approach only if it reaches the new key", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        // The explanations state no letter, and the second argues for the
+        // Book's C, an erratum: every solve says D.
+        const base = makeFakeBookModel({ solve: (stem) => (stem.startsWith("A shirt") ? "D" : "C") })
+        yield* (yield* FakeLlm).respondWith((request) => {
+          const reply = base(request)
+          if (!("content" in reply) || !(request.messages[0]?.content ?? "").includes("worked explanations")) return reply
+          const value = JSON.parse(reply.content) as {
+            explanations: Array<{ number: number; explanation: string; answer: string | null }>
+          }
+          return {
+            ...reply,
+            content: JSON.stringify({
+              explanations: value.explanations.map((item) => ({
+                ...item,
+                answer: null,
+                explanation: item.number === 2 ? "Divide $25 by 0.8 to get $31.25, so choose C." : item.explanation
+              }))
+            })
+          }
+        })
+        const curator = yield* curatorBrowser
+        const proposed = yield* proposedBook(curator)
+        yield* confirmAndExtract(curator, proposed.book.id, rangesOf(proposed))
+        // An explanation stating no letter reaches its own Book's key.
+        const db = yield* Db
+        const first = yield* bankItem(proposed.book.id, 1)
+        const routesOf = (questionId: string) =>
+          db.select().from(approaches).where(eq(approaches.questionId, questionId)).orderBy(asc(approaches.position))
+            .pipe(Effect.orDie)
+        expect((yield* routesOf(first.question.id)).map((route) => [route.author, route.answer])).toEqual([
+          ["book", "C"],
+          ["llm", "C"]
+        ])
+        const second = byNumber(yield* curator.api.review.list(), 2)
+        expect(codes(second)).toEqual(["solver-disagreement"])
+        const written = (yield* sentFor("You write teaching material")).length
+
+        yield* curator.api.review.overrideKey({ params: { id: second.id }, payload: { key: "D", reason: "Erratum: D." } })
+        const id = second.question!.id
+        yield* advanceUntil(bankItem(proposed.book.id, 2).pipe(
+          Effect.map((row) => (row.question.status !== "draft" ? row : undefined))
+        ), { step: "200 millis", maxSteps: 3000 })
+        expect((yield* bankItem(proposed.book.id, 2)).question.status).toBe("published")
+        expect((yield* routesOf(id)).map((route) => [route.author, route.answer])).toEqual([["llm", "D"]])
+        // The model was not shown the explanation that argues for C.
+        const rewrite = (yield* sentFor("You write teaching material")).slice(written)
+        expect(rewrite).toHaveLength(1)
+        expect(rewrite[0]?.messages.at(-1)?.content).not.toContain("so choose C")
       }),
       AllJobKinds
     ))
@@ -604,24 +599,95 @@ describe("Fixing a Book Map", () => {
       AllJobKinds
     ))
 
-  test("an explanation that comes or goes is checked again, even when the key stays", () =>
+  test("an explanation that comes or goes is checked again and its Approach follows it, even when the key stays", () =>
     runWithWorker(
       Effect.gen(function*() {
         yield* configure
         const curator = yield* curatorBrowser
         const proposed = yield* proposedBook(curator)
         const full = rangesOf(proposed)
+        const db = yield* Db
+        const authorsOf = (number: number) =>
+          Effect.gen(function*() {
+            const item = yield* bankItem(proposed.book.id, number)
+            const routes = yield* db.select({ author: approaches.author }).from(approaches)
+              .where(eq(approaches.questionId, item.question.id)).orderBy(asc(approaches.position)).pipe(Effect.orDie)
+            return routes.map((route) => route.author)
+          })
         yield* confirmAndExtract(curator, proposed.book.id, withoutRole(full, "explanations"))
         expect((yield* bankItem(proposed.book.id, 6)).question.status).toBe("published")
+        expect(yield* authorsOf(1)).toEqual(["llm"])
 
         // The sixth explanation says D, against the key's C.
         yield* confirmAndExtract(curator, proposed.book.id, full)
         const items = yield* curator.api.review.list()
         expect(byNumber(items, 6).question).toMatchObject({ key: "C", status: "held" })
         expect(codes(byNumber(items, 6))).toEqual(["key-conflict"])
+        expect(yield* authorsOf(1)).toEqual(["book", "llm"])
 
         yield* confirmAndExtract(curator, proposed.book.id, withoutRole(full, "explanations"))
         expect((yield* bankItem(proposed.book.id, 6)).question.status).toBe("published")
+        expect(yield* authorsOf(1)).toEqual(["llm"])
+      }),
+      AllJobKinds
+    ))
+
+  test("a Book Label that a fix brings sends the Question through the gate again", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        // The Book labels the first question hard; the model estimates it easy.
+        yield* withModel({
+          label: (number) => (number === 1 ? "hard" : null),
+          difficulty: (stem) => (stem.startsWith("If \\(3x + 1") ? -1.2 : 0)
+        })
+        const curator = yield* curatorBrowser
+        const proposed = yield* proposedBook(curator)
+        const full = rangesOf(proposed)
+        // The labels are printed with the explanations.
+        yield* confirmAndExtract(curator, proposed.book.id, withoutRole(full, "explanations"))
+        expect((yield* bankItem(proposed.book.id, 1)).question).toMatchObject({
+          status: "published",
+          difficultySeed: -1.2,
+          difficultyBasis: "estimate"
+        })
+        yield* confirmAndExtract(curator, proposed.book.id, full)
+        expect((yield* bankItem(proposed.book.id, 1)).question).toMatchObject({
+          status: "held",
+          bookLabel: "hard",
+          difficultySeed: 1,
+          difficultyBasis: "book-label"
+        })
+        expect(codes(byNumber(yield* curator.api.review.list(), 1))).toEqual(["difficulty"])
+      }),
+      AllJobKinds
+    ))
+
+  test("a fix keeps the questions about a key that a Key Override settled", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const proposed = yield* proposedBook(curator)
+        const full = rangesOf(proposed)
+        yield* confirmAndExtract(curator, proposed.book.id, full)
+        const sixth = byNumber(yield* curator.api.review.list(), 6)
+        expect(codes(sixth)).toEqual(["key-conflict"])
+        yield* curator.api.review.overrideKey({ params: { id: sixth.id }, payload: { key: "D", reason: "Errata say D." } })
+        const back = yield* advanceUntil(
+          curator.api.review.list().pipe(Effect.map((items) => items.find((item) => item.id === sixth.id))),
+          { step: "200 millis", maxSteps: 3000 }
+        )
+        expect(codes(back)).toEqual(["solver-disagreement"])
+        yield* curator.api.review.publish({ params: { id: back.id } })
+
+        // The answer key range is dropped, then restored.
+        yield* confirmAndExtract(curator, proposed.book.id, withoutRole(full, "answer-key"))
+        yield* confirmAndExtract(curator, proposed.book.id, full)
+        const now = yield* bankItem(proposed.book.id, 6)
+        expect(now).toMatchObject({ key: "D", keyBasis: "override" })
+        expect(now.question.status).toBe("published")
+        expect(now.question.linkReasons).not.toContain("key-conflict")
       }),
       AllJobKinds
     ))
@@ -744,6 +810,184 @@ describe("Fixing a Book Map", () => {
     ))
 })
 
+describe("When a reply or a job falls short", () => {
+  const withoutRole = (ranges: ReadonlyArray<MapRangeInput>, role: MapRangeInput["role"]) =>
+    ranges.filter((range) => !(range.role === role && range.group === "ps"))
+
+  test("a Question another Book's fix sends back is checked by that Book's run", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const first = yield* proposedBook(curator)
+        yield* confirmAndExtract(curator, first.book.id, rangesOf(first))
+        const third = yield* bankItem(first.book.id, 3)
+        const second = yield* proposedBook(curator, "Second edition", undefined, { 3: "B" })
+        const secondRanges = rangesOf(second)
+        // Without its answer key, the second edition's third question joins
+        // the first edition's; with it, its key B holds that Question.
+        yield* confirmAndExtract(curator, second.book.id, withoutRole(secondRanges, "answer-key"))
+        yield* confirmAndExtract(curator, second.book.id, secondRanges)
+        expect((yield* bankItem(first.book.id, 3)).question.status).toBe("held")
+
+        // The second edition's first page of questions leaves its map, and
+        // with it the Source that disagreed.
+        const later = secondRanges.map((range) =>
+          range.role === "questions" && range.group === "ps" ? { ...range, firstPage: 3 } : range
+        )
+        yield* confirmAndExtract(curator, second.book.id, later)
+        const now = yield* bankItem(first.book.id, 3)
+        expect(now.question.id).toBe(third.question.id)
+        expect(now.question.status).toBe("published")
+        expect(yield* curator.api.review.drafts()).toMatchObject({ checking: 0, stranded: 0 })
+      }),
+      AllJobKinds
+    ))
+
+  test("a draft whose job was cancelled is counted, and checked when the Curator asks", () =>
+    runWithWorkers(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const workers = yield* TestWorkers
+        const worker = yield* workers.start
+        const proposed = yield* proposedBook(curator)
+        yield* confirmAndExtract(curator, proposed.book.id, rangesOf(proposed))
+        const sixth = byNumber(yield* curator.api.review.list(), 6)
+        // With no worker running, the Key Override's job waits, and is
+        // cancelled.
+        yield* Fiber.interrupt(worker)
+        yield* curator.api.review.overrideKey({ params: { id: sixth.id }, payload: { key: "D", reason: "Errata." } })
+        expect(yield* curator.api.review.drafts()).toMatchObject({ checking: 1, stranded: 0 })
+        const db = yield* Db
+        const [refresh] = yield* db.select().from(jobs).where(eq(jobs.kind, "question-refresh")).pipe(Effect.orDie)
+        yield* curator.api.jobs.cancel({ params: { id: refresh!.id as never } })
+        expect(yield* curator.api.review.drafts()).toMatchObject({ checking: 0, stranded: 1 })
+
+        expect(yield* curator.api.review.checkDrafts()).toMatchObject({ checking: 1, stranded: 0 })
+        yield* workers.start
+        const back = yield* advanceUntil(
+          curator.api.review.list().pipe(Effect.map((items) => items.find((item) => item.id === sixth.id))),
+          { step: "200 millis", maxSteps: 3000 }
+        )
+        expect(back.question).toMatchObject({ key: "D", status: "held" })
+        expect(codes(back)).toEqual(["solver-disagreement"])
+      }),
+      AllJobKinds
+    ))
+
+  test("Check again asks again for tags an unusable reply left out", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        // A Verbal Skill for the first question, which the reply schema
+        // refuses twice.
+        yield* withModel({
+          skill: (stem, offered) => (stem.startsWith("If \\(3x + 1") ? "verbal.cr-reasoning.assumptions" : offered[0]!)
+        })
+        const curator = yield* curatorBrowser
+        const proposed = yield* proposedBook(curator)
+        yield* confirmAndExtract(curator, proposed.book.id, rangesOf(proposed))
+        const first = byNumber(yield* curator.api.review.list(), 1)
+        expect(codes(first)).toEqual(["tags"])
+        expect(first.checkable).toBe(true)
+        // Items whose reasons a new reply cannot settle are not checkable,
+        // nor is text in doubt, which is not enriched at all.
+        expect(byNumber(yield* curator.api.review.list(), 6).checkable).toBe(false)
+        expect(codes(byNumber(yield* curator.api.review.list(), 9))).toEqual(["render"])
+        expect(byNumber(yield* curator.api.review.list(), 9).checkable).toBe(false)
+        const notCheckable = yield* curator.api.review.checkAgain({ params: { id: byNumber(yield* curator.api.review.list(), 6).id } })
+          .pipe(Effect.flip)
+        expect(notCheckable._tag).toBe("ReviewItemNotOpen")
+
+        yield* (yield* FakeLlm).respondWith(fakeBookModel)
+        const tagged = (yield* sentFor("You tag a GMAT question")).length
+        const checking = yield* curator.api.review.checkAgain({ params: { id: first.id } })
+        expect(checking.question?.status).toBe("draft")
+        yield* advanceUntil(
+          bankItem(proposed.book.id, 1).pipe(Effect.map((row) => (row.question.status !== "draft" ? row : undefined))),
+          { step: "200 millis", maxSteps: 3000 }
+        )
+        expect((yield* bankItem(proposed.book.id, 1)).question.status).toBe("published")
+        expect((yield* sentFor("You tag a GMAT question")).length).toBe(tagged + 1)
+      }),
+      AllJobKinds
+    ))
+
+  test("Check again writes again the Approaches that missed the key", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        let fourth = false
+        const respond = makeFakeBookModel({ approachAnswer: (key) => (fourth ? "A" : key) })
+        yield* (yield* FakeLlm).respondWith((request) => {
+          fourth = (request.messages[1]?.content ?? "").includes("In how many ways")
+          return respond(request)
+        })
+        const curator = yield* curatorBrowser
+        const proposed = yield* proposedBook(curator)
+        yield* confirmAndExtract(curator, proposed.book.id, rangesOf(proposed))
+        const item = byNumber(yield* curator.api.review.list(), 4)
+        expect(codes(item)).toEqual(["approach-misses-key"])
+        yield* (yield* FakeLlm).respondWith(fakeBookModel)
+        const written = (yield* sentFor("You write teaching material")).length
+        yield* curator.api.review.checkAgain({ params: { id: item.id } })
+        yield* advanceUntil(
+          bankItem(proposed.book.id, 4).pipe(Effect.map((row) => (row.question.status !== "draft" ? row : undefined))),
+          { step: "200 millis", maxSteps: 3000 }
+        )
+        expect((yield* bankItem(proposed.book.id, 4)).question.status).toBe("published")
+        expect((yield* sentFor("You write teaching material")).length).toBe(written + 1)
+      }),
+      AllJobKinds
+    ))
+
+  test("a merge that would lose a Key Override is refused, and a merge into a Question being checked waits", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const proposed = yield* proposedBook(curator)
+        yield* confirmAndExtract(curator, proposed.book.id, rangesOf(proposed))
+        const eighth = byNumber(yield* curator.api.review.list(), 8)
+        expect(codes(eighth)).toEqual(["near-match"])
+        yield* curator.api.review.overrideKey({ params: { id: eighth.id }, payload: { key: "D", reason: "Errata say D." } })
+        const back = yield* advanceUntil(
+          curator.api.review.list().pipe(Effect.map((items) => items.find((item) => item.id === eighth.id))),
+          { step: "200 millis", maxSteps: 3000 }
+        )
+        const refused = yield* curator.api.review.merge({ params: { id: back.id } }).pipe(Effect.flip)
+        expect(refused).toMatchObject({ _tag: "KeysDiffer", key: "D", relatedKey: "C" })
+        const db = yield* Db
+        expect(yield* db.select().from(keyOverrides).pipe(Effect.orDie)).toHaveLength(1)
+
+        // While the related Question is being checked, a merge into it waits.
+        yield* db.update(questions).set({ status: "draft" }).where(eq(questions.id, back.related!.id)).pipe(Effect.orDie)
+        const waits = yield* curator.api.review.merge({ params: { id: back.id } }).pipe(Effect.flip)
+        expect(waits._tag).toBe("ReviewItemNotOpen")
+      }),
+      AllJobKinds
+    ))
+
+  test("a Question of the first Book that the second Book's run publishes joins the Reserve decision", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const first = yield* proposedBook(curator)
+        // Without its answer key and explanations the first edition has no
+        // keys, so its Questions are held.
+        yield* confirmAndExtract(curator, first.book.id, rangesOf(first).filter((range) => range.role === "questions"))
+        const second = yield* proposedBook(curator, "Second edition")
+        yield* confirmAndExtract(curator, second.book.id, rangesOf(second))
+        const third = yield* bankItem(first.book.id, 3)
+        expect(third.question.status).toBe("published")
+        expect(third.question.reserve).not.toBeNull()
+      }),
+      AllJobKinds
+    ))
+})
+
 describe("The golden set", () => {
   test("the Curator approves the first Book's Questions with tags, and a check reports exactness and tag agreement", () =>
     runWithWorker(
@@ -815,6 +1059,64 @@ describe("The golden set", () => {
         )
         expect(passed.report).toMatchObject({ items: 2, tagAgreement: 1, passed: true, misses: [] })
         expect(passed.job?.result).toBe("Golden set of 2: text exact on 2, Parts on 2, keys on 2; tags agree on 100%. Passed.")
+      }),
+      AllJobKinds
+    ))
+
+  test("a check expects the Book's key, tags as production does, covers the set it started with, and runs alone", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const proposed = yield* proposedBook(curator)
+        yield* confirmAndExtract(curator, proposed.book.id, rangesOf(proposed))
+        // The Curator overrides the sixth's key to its explanation's D.
+        const sixth = byNumber(yield* curator.api.review.list(), 6)
+        yield* curator.api.review.overrideKey({ params: { id: sixth.id }, payload: { key: "D", reason: "Errata." } })
+        yield* advanceUntil(
+          curator.api.review.list().pipe(Effect.map((items) => items.find((item) => item.id === sixth.id))),
+          { step: "200 millis", maxSteps: 3000 }
+        )
+        const golden = curator.api.golden
+        const view = yield* golden.get()
+        const candidate = (number: number) => view.candidates.find((each) => each.number === number)!
+        expect(candidate(6)).toMatchObject({ key: "D", bookKey: "C" })
+        for (const number of [1, 6]) {
+          yield* golden.approve({
+            params: { questionId: candidate(number).questionId },
+            payload: { primarySkill: candidate(number).primarySkill!, secondarySkills: [] }
+          })
+        }
+        // Tagging during the check waits until released, so the Curator can
+        // approve another Question while it runs.
+        let hold = true
+        let asked = 0
+        yield* (yield* FakeLlm).respondWith((request) => {
+          if ((request.messages[0]?.content ?? "").includes("You tag a GMAT question") && hold) {
+            asked += 1
+            return { status: 503, message: "busy" }
+          }
+          return fakeBookModel(request)
+        })
+        const tagRequests = (yield* sentFor("You tag a GMAT question")).length
+        yield* golden.check({ payload: { spendCap: 1 } })
+        const twice = yield* golden.check({ payload: { spendCap: 1 } }).pipe(Effect.flip)
+        expect(twice._tag).toBe("GoldenCheckRunning")
+        yield* advanceUntil(Effect.sync(() => (asked > 0 ? true : undefined)), { step: "200 millis", maxSteps: 3000 })
+        yield* golden.approve({
+          params: { questionId: candidate(4).questionId },
+          payload: { primarySkill: candidate(4).primarySkill!, secondarySkills: [] }
+        })
+        hold = false
+        const done = yield* advanceUntil(
+          golden.get().pipe(Effect.map((current) => (current.report !== null ? current : undefined))),
+          { step: "1 second", maxSteps: 3000 }
+        )
+        expect(done.report).toMatchObject({ items: 2, textExact: 2, keysExact: 2, passed: true })
+        const checkTags = (yield* sentFor("You tag a GMAT question")).slice(tagRequests)
+          .filter((request) => (request.messages.at(-1)?.content ?? "").length > 0)
+        expect(checkTags.some((request) => (request.messages.at(-1)?.content ?? "").includes("The book's explanation:")))
+          .toBe(true)
       }),
       AllJobKinds
     ))
