@@ -40,7 +40,13 @@ const practice: ReadonlyArray<readonly [string, string]> = [
 // questions to a page, each with a page of explanations; past nine, the
 // questions repeat.
 export const makeBook = async (
-  options: { readonly title?: string; readonly edition?: string; readonly psPages?: number } = {}
+  options: {
+    readonly title?: string
+    readonly edition?: string
+    readonly psPages?: number
+    // A key other than C for some questions, by number.
+    readonly keys?: Readonly<Record<number, string>>
+  } = {}
 ): Promise<BookFixture> => {
   const doc = await PDFDocument.create()
   doc.setTitle(options.title ?? "GMAT Practice Questions")
@@ -66,7 +72,7 @@ export const makeBook = async (
       })
     ])
   }
-  page(["Answer Key", ...Array.from({ length: questions }, (_, i) => `${i + 1}. C`)])
+  page(["Answer Key", ...Array.from({ length: questions }, (_, i) => `${i + 1}. ${options.keys?.[i + 1] ?? "C"}`)])
   for (let k = 1; k <= questions; k += 3) {
     page([
       "Answer Explanations",

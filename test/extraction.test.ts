@@ -72,9 +72,16 @@ const rangesOf = (detail: BookDetail): Array<MapRangeInput> =>
   }))
 
 // A Book through its cost preview and Book Map run, up to the proposal.
-const proposedBook = (curator: Curator, edition = "First edition", psPages?: number) =>
+const proposedBook = (
+  curator: Curator,
+  edition = "First edition",
+  psPages?: number,
+  keys?: Readonly<Record<number, string>>
+) =>
   Effect.gen(function*() {
-    const fixture = yield* Effect.promise(() => makeBook({ edition, ...(psPages === undefined ? {} : { psPages }) }))
+    const fixture = yield* Effect.promise(() =>
+      makeBook({ edition, ...(psPages === undefined ? {} : { psPages }), ...(keys === undefined ? {} : { keys }) })
+    )
     const book = yield* upload(curator, fixture.bytes, `Practice Questions, ${edition}`)
     yield* waitFor(curator, book.id, statusIs("previewed"))
     yield* curator.api.books.start({ params: { id: book.id }, payload: { spendCap: 1 } })
@@ -158,6 +165,48 @@ describe("Extracting Problem Solving Questions", () => {
           "Practice Questions, First edition",
           "Practice Questions, Second edition"
         ])
+      }),
+      AllJobKinds
+    ))
+
+  test("a Question repeated with another key is held beside the first, not merged", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const first = yield* proposedBook(curator)
+        yield* confirmAndExtract(curator, first.book.id, rangesOf(first))
+        // The second edition's key gives B for the third question, though its
+        // explanation still says C.
+        const second = yield* proposedBook(curator, "Second edition", undefined, { 3: "B" })
+        const extracted = yield* confirmAndExtract(curator, second.book.id, rangesOf(second))
+        expect(extracted.book.report).toMatchObject({ extracted: 8, merged: 7, held: 1 })
+        const items = yield* curator.api.review.list()
+        const repeat = items.find((item) => item.question?.sources[0]?.bookTitle === "Practice Questions, Second edition")!
+        expect(repeat.question).toMatchObject({ key: "B", sources: [{ number: 3 }] })
+        expect(codes(repeat)).toEqual(["key-conflict", "same-text-other-key"])
+        expect(repeat.related?.key).toBe("C")
+      }),
+      AllJobKinds
+    ))
+
+  test("Sentence Correction ranges are counted and skipped, not read as Questions", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const fake = yield* FakeLlm
+        const proposed = yield* proposedBook(curator)
+        // The Curator marks the page of two Data Sufficiency questions as
+        // Sentence Correction, to see it skipped.
+        const ranges = [
+          ...rangesOf(proposed).filter((range) => range.group !== "ds"),
+          { role: "questions", firstPage: 9, lastPage: 9, set: "Sentence Correction", group: "sc" } as const
+        ]
+        const extracted = yield* confirmAndExtract(curator, proposed.book.id, ranges)
+        expect(extracted.book.report).toMatchObject({ extracted: 8, skippedSentenceCorrection: 2, skippedGeometry: 1 })
+        const listed = (yield* fake.requests).filter((request) => request.messages[0]?.content.includes("list the question numbers"))
+        expect(listed).toHaveLength(1)
       }),
       AllJobKinds
     ))
