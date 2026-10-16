@@ -326,3 +326,54 @@ describe("While a Mock runs", () => {
       expect((yield* asha.first.sectionals.get({ params: { id: sectionNow(view) } })).heldHere).toBe(true)
     })))
 })
+
+describe("After the re-review", () => {
+  // Rewrites the Mock's config, as a stop between two writes leaves it.
+  const setMockConfig = (id: string, change: (config: { sections: Array<string>; flow: unknown }) => void) =>
+    Effect.gen(function*() {
+      const db = yield* Db
+      const [row] = yield* db.select({ config: sessions.config }).from(sessions).where(eq(sessions.id, id)).pipe(Effect.orDie)
+      const config = JSON.parse(row!.config)
+      change(config)
+      yield* db.update(sessions).set({ config: JSON.stringify(config) }).where(eq(sessions.id, id)).pipe(Effect.orDie)
+    })
+
+  test("a stop in going on, after the next Section began, is mended at once, keeping the break the Learner kept", () =>
+    runWithWorkers(Effect.gen(function*() {
+      yield* smallBlueprint
+      yield* seedExamBank()
+      const asha = yield* learner("Asha")
+      let mock = yield* asha.mocks.start({ payload: { order: ["quant", "verbal", "di"] } })
+      yield* finishSection(asha, sectionNow(mock))
+      const breakStartedAt = yield* Clock.currentTimeMillis
+      // Going on at 30 seconds keeps the break for after Section 2.
+      yield* TestClock.adjust("30 seconds")
+      mock = yield* asha.mocks.goOn({ params: { id: mock.id } })
+      const begun = sectionNow(mock)
+      yield* setMockConfig(mock.id, (config) => {
+        config.sections = config.sections.slice(0, 1)
+        config.flow = { started: 1, breakAfter: null, breakStartedAt, stage: "break" }
+      })
+      const mended = yield* asha.mocks.get({ params: { id: mock.id } })
+      expect(mended).toMatchObject({ stage: "section", current: 2, breakAfter: null })
+      expect(sectionNow(mended)).toBe(begun)
+    })))
+
+  test("taking over a closed Section of a running Mock leaves the Mock with the device running it", () =>
+    runWithWorkers(Effect.gen(function*() {
+      yield* smallBlueprint
+      yield* seedExamBank()
+      const asha = yield* twoTabs("Asha")
+      let mock = yield* asha.first.mocks.start({ payload: { order: ["quant", "verbal", "di"] } })
+      const first = sectionNow(mock)
+      yield* asha.second.sectionals.claim({ params: { id: first } })
+      yield* finishSection(asha.second, first)
+      mock = yield* asha.second.mocks.goOn({ params: { id: mock.id } })
+      const second = sectionNow(mock)
+      // Tab 1 still shows Section 1 running, and takes it over.
+      expect((yield* asha.first.sectionals.claim({ params: { id: first } })).stage).toBe("finished")
+      expect((yield* asha.first.mocks.get({ params: { id: mock.id } })).heldHere).toBe(false)
+      expect((yield* asha.second.mocks.get({ params: { id: mock.id } })).heldHere).toBe(true)
+      expect((yield* asha.second.sectionals.get({ params: { id: second } })).heldHere).toBe(true)
+    })))
+})

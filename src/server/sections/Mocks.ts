@@ -120,16 +120,20 @@ export class Mocks extends Context.Service<Mocks, {
       // Begins the Section at the next place, or takes up the one begun
       // there already: the Mock's config is saved after the Section begins,
       // so a stop in between leaves a Section the config does not name yet.
+      // The Section begun at this place of the Mock, if any.
+      const begunAt = (mock: SessionRow, place: number) =>
+        db.select({ id: sessions.id, createdAt: sessions.createdAt }).from(sessions)
+          .where(and(
+            eq(sessions.profileId, mock.profileId),
+            eq(sessions.kind, "mock-section"),
+            sql`json_extract(${sessions.config}, '$.mock.id') = ${mock.id}`,
+            sql`json_extract(${sessions.config}, '$.mock.place') = ${place}`
+          )).pipe(Effect.orDie, Effect.map((rows) => rows[0]))
+
       const beginNext = (mock: SessionRow, config: MockConfig) =>
         Effect.gen(function*() {
           const place = config.sections.length + 1
-          const [begun] = yield* db.select({ id: sessions.id }).from(sessions)
-            .where(and(
-              eq(sessions.profileId, mock.profileId),
-              eq(sessions.kind, "mock-section"),
-              sql`json_extract(${sessions.config}, '$.mock.id') = ${mock.id}`,
-              sql`json_extract(${sessions.config}, '$.mock.place') = ${place}`
-            )).pipe(Effect.orDie)
+          const begun = yield* begunAt(mock, place)
           const id = begun?.id ??
             (yield* sectionals.beginMockSection(callerOf(mock), config.order[place - 1]!, { id: mock.id, place }))
           return { ...config, sections: [...config.sections, id] } satisfies MockConfig
@@ -156,6 +160,14 @@ export class Mocks extends Context.Service<Mocks, {
               if (section?.status !== "finished") break
               config = { ...config, flow: afterSection(flow, section.finishedAt ?? now) }
             } else {
+              // A go-on that stopped between beginning the next Section and
+              // saving the Mock left that Section running: the Learner went on
+              // when it began, which also says whether the break was kept.
+              const begun = yield* begunAt(mock, config.sections.length + 1)
+              if (begun !== undefined) {
+                config = { ...config, flow: nextSection(flow, begun.createdAt) }
+                continue
+              }
               if (breakLeftMs(flow, now) > 0) break
               config = { ...config, flow: nextSection(flow, flow.breakStartedAt! + BreakMs) }
             }
@@ -373,7 +385,12 @@ export class Mocks extends Context.Service<Mocks, {
         const active = yield* db.select().from(sessions)
           .where(and(eq(sessions.kind, "mock"), eq(sessions.status, "active"))).pipe(Effect.orDie)
         if (active.length === 0) yield* wake.close
-        for (const mock of active) yield* settle(mock)
+        // One Mock that cannot move on does not hold up the others.
+        for (const mock of active) {
+          yield* settle(mock).pipe(
+            Effect.catchCause((cause) => Effect.logError(`The Mock ${mock.id} could not move on: ${Cause.pretty(cause)}`))
+          )
+        }
       }).pipe(
         oneAtATime,
         Effect.catchCause((cause) => Effect.logError(`The Mock clock could not tick: ${Cause.pretty(cause)}`))

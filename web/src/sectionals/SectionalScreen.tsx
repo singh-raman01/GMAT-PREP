@@ -705,8 +705,8 @@ const Report = ({ view, onFailure }: { readonly view: SectionalView; readonly on
         </ul>
       )}
       <p className="quiet">
-        Difficulty and your Score Estimates moved when the Section closed. Questions you had not seen before count toward
-        them.
+        Difficulty and your Score Estimates moved when the {view.mock === null ? "Section closed" : "Mock ended"}. Questions you
+        had not seen before count toward them.
       </p>
       <h2 className="results-title">Each Question</h2>
       <ol className="set-results">

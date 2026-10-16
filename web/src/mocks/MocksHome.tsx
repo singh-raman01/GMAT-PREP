@@ -167,7 +167,11 @@ export const MocksHome = ({ onSessionLost, onStopped }: Props) => {
             {done.map((each) => (
               <li key={each.id}>
                 <a className="set-name" {...linkProps(`/mocks/${each.id}`)}>
-                  {each.total === null ? "No Total" : `${each.total.score}, likely ${each.total.low} to ${each.total.high}`}
+                  {each.total === null
+                    ? "No Total"
+                    : `${each.total.score}, likely ${each.total.low} to ${each.total.high}${
+                      each.total.calibrated ? "" : ", not yet calibrated"
+                    }`}
                 </a>
                 <span className="set-facts">
                   {each.order.map((section) => section.name).join(", ")}, {dayAndTime(each.finishedAt ?? each.createdAt)}
