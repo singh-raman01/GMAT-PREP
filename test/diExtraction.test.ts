@@ -413,6 +413,56 @@ describe("The same Data Insights Question in two Books", () => {
     ), 180_000)
 })
 
+describe("A Key Override against another Book's key", () => {
+  test("overriding one Part leaves a Source's key for another Part holding the Question", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        yield* withModel({ solve: (stem) => (/clubs' members/.test(stem) ? "A,B,A" : undefined) })
+        const curator = yield* curatorBrowser
+        yield* extractBook(curator, yield* Effect.promise(() => clubBook("Club Drills", "1,200")), "Club Drills")
+        const reprint = yield* extractBook(
+          curator,
+          yield* Effect.promise(() => clubBook("Club Drills, reprint", "1,200")),
+          "Club Drills, reprint"
+        )
+        // The reprint's answer key read again, with Yes for the second
+        // statement.
+        const db = yield* Db
+        const [answerPage] = yield* db.select().from(pageReadings)
+          .where(and(eq(pageReadings.bookId, reprint.book.id), eq(pageReadings.role, "answer-key"))).pipe(Effect.orDie)
+        const stored = JSON.parse(answerPage!.items) as { answers: Array<Record<string, unknown>> }
+        yield* db.update(pageReadings).set({
+          items: JSON.stringify({
+            answers: stored.answers.map((answer) => (answer.number === 1 ? { ...answer, parts: ["Yes", "Yes", "Yes"] } : answer))
+          })
+        }).where(and(
+          eq(pageReadings.bookId, reprint.book.id),
+          eq(pageReadings.page, answerPage!.page),
+          eq(pageReadings.role, "answer-key"),
+          eq(pageReadings.group, answerPage!.group)
+        )).pipe(Effect.orDie)
+        yield* confirmAndExtract(curator, reprint.book.id, rangesOf(reprint))
+        const [held] = yield* advanceUntil(
+          curator.api.review.list().pipe(Effect.map((items) => (items.length > 0 ? items : undefined))),
+          { step: "200 millis", maxSteps: 3000 }
+        )
+        expect(held!.reasons.map((reason) => reason.code)).toEqual(["source-key"])
+        // The Curator overrides the first statement, which both Books agree on.
+        yield* curator.api.review.overrideKey({
+          params: { id: held!.id },
+          payload: { part: 0, key: "A", reason: "The errata say so." }
+        })
+        const [after] = yield* bankOf("di.ta")
+        expect(after!.reasons).toEqual([{
+          code: "source-key",
+          detail: "Club Drills, reprint, Data Insights, question 1 gives the key A,A,A; this Question's key is A,B,A."
+        }])
+      }),
+      AllJobKinds
+    ), 180_000)
+})
+
 describe("Readings stored in an older shape", () => {
   test("a mixed answer key read before keys had Parts is read again, so its Questions keep their keys", () =>
     runWithWorker(

@@ -150,11 +150,11 @@ export const gateReasons = (taxonomy: TaxonomyView, input: GateInput): ReadonlyA
       answers.length >= SolverRuns && answers.every((answer) => answer === own)
         ? {
           code: "inference",
-          detail: `Part ${part + 1} is an inference from the text that code cannot check; its three solves agree with its key, ${own}. Publish it once you have checked it.`
+          detail: `Statement ${part + 1} is an inference from the text that code cannot check; its three solves agree with its key, ${own}. Publish it once you have checked it.`
         }
         : {
           code: "inference-unconfirmed",
-          detail: `Part ${part + 1} is an inference from the text that code cannot check, and its solves answered ${
+          detail: `Statement ${part + 1} is an inference from the text that code cannot check, and its solves answered ${
             answers.length === 0 ? "nothing" : listed(answers)
           }; its key is ${own}.`
         }

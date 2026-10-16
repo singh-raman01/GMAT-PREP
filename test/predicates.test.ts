@@ -3,6 +3,17 @@ import fc from "fast-check"
 import type { Dataset } from "../src/api/dataset.ts"
 import { datasetOfDraft } from "../src/server/books/linking.ts"
 import {
+  buildGi,
+  buildMsr,
+  buildTa,
+  buildTpa,
+  disagreements,
+  type DraftItem,
+  type SecondReading
+} from "../src/server/generation/items.ts"
+import type { TaOutput, TpaOutput } from "../src/server/generation/prompts.ts"
+import { giItem, msrItem, taItem, tpaItem } from "./fakeGenerationModel.ts"
+import {
   columnKeys,
   dropdownKey,
   evaluate,
@@ -328,11 +339,13 @@ describe("Computed keys match a brute-force reading of the Dataset", () => {
       const better = stores.filter((each) => (order === "descending" ? each > stores[index]! : each < stores[index]!)).length
       expect(result(predicate(row("r", `Item ${index + 1}`), rank("place", "r", "Stores", order)), dataset))
         .toEqual({ kind: "number", value: better + 1 })
-      // The first row of the sort is the first row with the best value.
+      // The first row of the sort is the row with the best value, and a tie
+      // for the best has no first row.
       const best = order === "descending" ? Math.max(...stores) : Math.min(...stores)
       const first = stores.indexOf(best)
-      expect(result(predicate(sort("s", "Stores", order), pick("top", "s", 1), label("name", "top")), dataset))
-        .toEqual({ kind: "words", value: `item ${first + 1}` })
+      const top = evaluate(predicate(sort("s", "Stores", order), pick("top", "s", 1), label("name", "top")), dataset)
+      if (stores.filter((each) => each === best).length > 1) expect("problem" in top).toBe(true)
+      else expect(top).toEqual({ value: { kind: "words", value: `item ${first + 1}` } })
     }))
   })
 
@@ -355,5 +368,126 @@ describe("Computed keys match a brute-force reading of the Dataset", () => {
       if (Math.abs(change - nearest) <= 12.5) expect(key).toEqual({ key: "C" })
       else expect("problem" in key).toBe(true)
     }))
+  })
+})
+
+describe("Keys that the data leaves in doubt", () => {
+  test("a tie for a place in a sort has no row there, so a statement about it is sent back to the generator", () => {
+    const tied: TaOutput = {
+      ...taItem,
+      table: {
+        ...taItem.table,
+        rows: [
+          ["North", "$510", "3.5%", "12"],
+          ["South", "$380", "6%", "10"],
+          ["East", "$510", "-1.5%", "15"],
+          ["West", "$290", "8%", "7"],
+          ["Central", "$460", "2%", "13"],
+          ["Coastal", "$350", "4.5%", "9"]
+        ]
+      }
+    }
+    const built = buildTa(tied)
+    expect("problems" in built && built.problems).toEqual([
+      "Statement 2's predicate cannot be evaluated: Step top: rows tie on Sales at place 1, so no one row is there."
+    ])
+    // A tie further down the sort leaves the top alone.
+    const lower = pick("second", "bySales", 2)
+    const second = evaluate(predicate(sort("bySales", "Sales", "descending"), lower, label("name", "second")), datasetOfDraft({
+      columns: taItem.table.columns,
+      rows: [["North", "$510", "3.5%", "12"], ["South", "$380", "6%", "10"], ["East", "$380", "-1.5%", "15"]]
+    }))
+    expect("problem" in second).toBe(true)
+    expect(evaluate(predicate(sort("bySales", "Sales", "descending"), pick("top", "bySales", 1), label("name", "top")), datasetOfDraft({
+      columns: taItem.table.columns,
+      rows: [["North", "$510", "3.5%", "12"], ["South", "$380", "6%", "10"], ["East", "$380", "-1.5%", "15"]]
+    }))).toEqual({ value: { kind: "words", value: "north" } })
+  })
+
+  test("a Two-Part Analysis with two rows tied for a column's pick is sent back, not keyed by the table's order", () => {
+    const tied: TpaOutput = {
+      ...tpaItem,
+      table: {
+        ...tpaItem.table,
+        rows: tpaItem.table.rows.map((cells) => (cells[0] === "Fable" ? ["Fable", "$9", "6", "4.0"] : cells))
+      }
+    }
+    const built = buildTpa(tied)
+    expect("problems" in built).toBe(true)
+  })
+
+  test("an exact blank compares every option at the finest places any of them prints", () => {
+    const options = ["1.5", "2", "2.5", "3"].map((text, index) => ({ label: "ABCD"[index]!, text }))
+    expect(dropdownKey({ kind: "number", value: 2.3 }, options, false)).toEqual({
+      problem: "no option fits the computed value, 2.3"
+    })
+    expect(dropdownKey({ kind: "number", value: 2.04 }, options, false)).toEqual({ key: "B" })
+    expect(dropdownKey({ kind: "number", value: 2.5 }, options, false)).toEqual({ key: "C" })
+  })
+
+  test("a date filter compares dates at the coarser of the two, and refuses words that are no date", () => {
+    const months = datasetOfDraft({
+      columns: [{ name: "Month", type: "date", unit: "" }, { name: "Sales", type: "number", unit: "" }],
+      rows: [["Nov 2019", "10"], ["Dec 2019", "12"], ["Jan 2020", "14"], ["Feb 2020", "9"]]
+    })
+    const counted = (comparison: "<" | ">" | "=" | ">=", given: { readonly number: number } | { readonly text: string }) =>
+      evaluate(predicate(filter("kept", "Month", comparison, given), count("n", "kept")), months)
+    expect(counted(">", { text: "2019" })).toEqual({ value: { kind: "number", value: 2 } })
+    expect(counted(">", { number: 2019 })).toEqual({ value: { kind: "number", value: 2 } })
+    expect(counted("=", { text: "2019" })).toEqual({ value: { kind: "number", value: 2 } })
+    expect(counted(">", { text: "Dec 2019" })).toEqual({ value: { kind: "number", value: 2 } })
+    expect(counted(">=", { text: "2019-12" })).toEqual({ value: { kind: "number", value: 3 } })
+    expect(counted("<", { text: "Q1 2020" })).toEqual({ value: { kind: "number", value: 2 } })
+    expect(counted(">", { text: "last winter" })).toMatchObject({ problem: expect.stringContaining("needs a date") })
+  })
+
+  test("a missing cell passes no filter, != included", () => {
+    const table = datasetOfDraft({
+      columns: [{ name: "Store", type: "text", unit: "" }, { name: "Region", type: "text", unit: "" }],
+      rows: [["A", "West"], ["B", ""], ["C", "East"]]
+    })
+    expect(evaluate(predicate(filter("rows", "Region", "!=", { text: "West" }), count("n", "rows")), table))
+      .toEqual({ value: { kind: "number", value: 1 } })
+  })
+})
+
+describe("The second reading's own choices", () => {
+  const readingsOf = (item: DraftItem, change: (reading: SecondReading, part: number) => SecondReading = (reading) => reading) =>
+    item.questions.map((question) =>
+      question.parts.map((part, index) =>
+        part.statement.kind === "computed"
+          ? change({
+            predicate: part.statement.predicate,
+            approximate: part.statement.approximate,
+            dataset: item.datasets.length > 1 ? part.statement.dataset : null
+          }, index)
+          : null
+      )
+    )
+  const built = (result: ReturnType<typeof buildGi>) => {
+    if ("problems" in result) throw new Error(result.problems.join(" "))
+    return result.item
+  }
+
+  test("a blank the generator calls approximate and the second reading calls exact is held", () => {
+    const item = built(buildGi(giItem))
+    const approximate = giItem.blanks.findIndex((blank) => blank.approximate)
+    expect(approximate).toBeGreaterThanOrEqual(0)
+    const readings = readingsOf(item, (reading, part) => (part === approximate ? { ...reading, approximate: false } : reading))
+    expect(disagreements(item.questions[0]!, item.datasets, readings[0]!)).toEqual([{
+      code: "predicate-disagreement",
+      detail: `Blank ${approximate + 1}: it is keyed as an approximate value, but a second reading of its words asks for an exact value.`
+    }])
+    expect(disagreements(item.questions[0]!, item.datasets, readingsOf(item)[0]!)).toEqual([])
+  })
+
+  test("an MSR statement whose second reading chooses another tab is held", () => {
+    const item = built(buildMsr(msrItem))
+    const readings = readingsOf(item, (reading, part) => (part === 0 ? { ...reading, dataset: 0 } : reading))
+    expect(disagreements(item.questions[0]!, item.datasets, readings[0]!, ["Policy", "Loans", "Survey"])).toEqual([{
+      code: "predicate-disagreement",
+      detail: "Statement 1: its predicate reads the tab Loans, but a second reading of its words reads the tab Policy."
+    }])
+    expect(disagreements(item.questions[0]!, item.datasets, readingsOf(item)[0]!, ["Policy", "Loans", "Survey"])).toEqual([])
   })
 })

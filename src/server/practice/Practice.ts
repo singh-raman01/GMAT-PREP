@@ -54,6 +54,7 @@ import {
   bookmarkedBy,
   difficultyOf,
   encodeSelection,
+  heldBySections,
   historyOf,
   isCorrect,
   keysOf,
@@ -62,7 +63,15 @@ import {
   readSelection,
   seenBy
 } from "./history.ts"
-import { bookOrder, type BookItem, openToPractice, pickByFilters, pickSimilar, type SkippedItem } from "./selection.ts"
+import {
+  bookOrder,
+  type BookItem,
+  matchesFilters,
+  openToPractice,
+  pickByFilters,
+  pickSimilar,
+  type SkippedItem
+} from "./selection.ts"
 
 // Practice Sets. A set's Questions are chosen when it starts and served one
 // at a time; serving a Question makes it Seen. Responses are facts:
@@ -124,6 +133,10 @@ interface Plan {
   readonly places: NonNullable<PracticeConfig["places"]>
   readonly heldForMocks: ReadonlyArray<SkippedItem>
   readonly unavailable: ReadonlyArray<SkippedItem>
+  // How many Questions it leaves out because a running Sectional chose them,
+  // and for a book-order set, their items.
+  readonly inSection: number
+  readonly inSectionItems: ReadonlyArray<SkippedItem>
 }
 
 // What a selection gets wrong: each of the Question's Parts takes one of its
@@ -273,11 +286,17 @@ export class Practice extends Context.Service<Practice, {
       const plan = (profileId: string, choice: PracticeChoice, salt: string) =>
         Effect.gen(function*() {
           const history = yield* run(historyOf(profileId))
+          const held = yield* run(heldBySections(profileId))
           if (choice.kind === "filters") {
             const problems = filterProblems(choice)
             if (problems.length > 0) return yield* new FiltersInvalid({ problems })
             const pool = yield* run(publishedPool)
-            const picked = pickByFilters(pool, history, choice, salt)
+            const picked = pickByFilters(pool.filter((question) => !held.has(question.id)), history, choice, salt)
+            // Under missed, counted whatever their status, which would say
+            // how an answer went.
+            const counted = choice.status === "missed" ? { ...choice, status: "any" as const } : choice
+            const inSection = pool.filter((question) => held.has(question.id) && matchesFilters(question, counted, history))
+              .length
             const words = [
               choice.questionType === undefined
                 ? choice.section === undefined ? "Every Section" : names.named(choice.section).name
@@ -287,7 +306,7 @@ export class Practice extends Context.Service<Practice, {
               ...(statusWords[choice.status] === undefined ? [] : [statusWords[choice.status]])
             ]
             return {
-              plan: { ...picked, places: [], heldForMocks: [], unavailable: [] } satisfies Plan,
+              plan: { ...picked, places: [], heldForMocks: [], unavailable: [], inSection, inSectionItems: [] } satisfies Plan,
               title: words.join(", "),
               bookId: null
             }
@@ -295,14 +314,19 @@ export class Practice extends Context.Service<Practice, {
           const problems = rangeProblems(choice)
           if (problems.length > 0) return yield* new FiltersInvalid({ problems })
           const book = yield* bookOf(choice.bookId)
-          const order = bookOrder(yield* bookItems(book.id), history.seen, choice)
+          const order = bookOrder(yield* bookItems(book.id), history.seen, choice, held)
           const items = choice.set === undefined
             ? "every set"
             : choice.from === undefined && choice.to === undefined
             ? choice.set.trim()
             : `${choice.set.trim()} ${choice.from ?? 1} to ${choice.to ?? "the end"}`
           return {
-            plan: { ...order, matching: order.questionIds.length } satisfies Plan,
+            plan: {
+              ...order,
+              matching: order.questionIds.length,
+              inSection: order.inSection.length,
+              inSectionItems: order.inSection
+            } satisfies Plan,
             title: `${book.title}, ${items}`,
             bookId: book.id
           }
@@ -385,12 +409,14 @@ export class Practice extends Context.Service<Practice, {
       // The Question to serve at a position. A planned Question that left the
       // Question Bank since the set began gives way to the one it was merged
       // into, unless the set has that one already; otherwise it leaves the
-      // set. Undefined when no planned Question is left.
+      // set, as does one a running Sectional chose since. Undefined when no
+      // planned Question is left.
       const servable = (session: SessionRow, position: number) =>
         Effect.gen(function*() {
           const config = decodeConfig(session.config)
           const planned = [...config.planned]
           const resolve = yield* run(mergeTargets)
+          const held = yield* run(heldBySections(session.profileId))
           const statusOf = (questionId: string) =>
             db.select({ status: questions.status }).from(questions).where(eq(questions.id, questionId)).pipe(
               Effect.orDie,
@@ -399,6 +425,11 @@ export class Practice extends Context.Service<Practice, {
           let changed = false
           while (position < planned.length) {
             const planId = planned[position]!
+            if (held.has(resolve(planId))) {
+              planned.splice(position, 1)
+              changed = true
+              continue
+            }
             if ((yield* statusOf(planId)) === "published") break
             const target = resolve(planId)
             const replaced = target !== planId && !planned.includes(target) && (yield* statusOf(target)) === "published"
@@ -580,7 +611,8 @@ export class Practice extends Context.Service<Practice, {
         Effect.gen(function*() {
           const pool = yield* run(publishedPool)
           const seen = yield* run(seenBy(profileId))
-          const open = pool.filter((question) => openToPractice(question, seen))
+          const held = yield* run(heldBySections(profileId))
+          const open = pool.filter((question) => openToPractice(question, seen) && !held.has(question.id))
           const allSkills = taxonomy.sections.flatMap((each) => each.topics.flatMap((topic) => topic.skills))
           const sections = taxonomy.sections.map((section) => {
             const mine = open.filter((question) => question.section === section.id)
@@ -666,6 +698,7 @@ export class Practice extends Context.Service<Practice, {
             matching: planned.matching,
             heldForMocks: planned.heldForMocks.length,
             unavailable: planned.unavailable.length,
+            inSection: planned.inSection,
             limitMs: choice.timed === true ? yield* limitFor(planned.questionIds) : null
           })
         })
@@ -677,7 +710,8 @@ export class Practice extends Context.Service<Practice, {
           if (chosen.plan.questionIds.length === 0) {
             return yield* new NoQuestionsMatch({
               heldForMocks: chosen.plan.heldForMocks.length,
-              unavailable: chosen.plan.unavailable.length
+              unavailable: chosen.plan.unavailable.length,
+              inSection: chosen.plan.inSection
             })
           }
           return yield* begin(caller, {
@@ -689,7 +723,7 @@ export class Practice extends Context.Service<Practice, {
             planned: chosen.plan.questionIds,
             places: chosen.plan.places,
             heldForMocks: chosen.plan.heldForMocks,
-            unavailable: chosen.plan.unavailable
+            unavailable: [...chosen.plan.unavailable, ...chosen.plan.inSectionItems]
           }, id, choice.timed === true)
         }).pipe(oneAtATime)
 
@@ -969,13 +1003,16 @@ export class Practice extends Context.Service<Practice, {
             questionType: questions.questionType,
             primarySkill: questions.primarySkill
           }).from(questions).where(eq(questions.id, questionId)).pipe(Effect.orDie)
-          if (target === undefined) return yield* new QuestionNotFound()
+          // A running Sectional's Question says nothing to Practice until the
+          // Section closes.
+          const held = yield* run(heldBySections(caller.profileId))
+          if (target === undefined || held.has(target.id)) return yield* new QuestionNotFound()
           const level = (yield* run(difficultyOf(questionId))) ?? 0
-          const pool = yield* run(publishedPool)
+          const pool = (yield* run(publishedPool)).filter((question) => !held.has(question.id))
           const seen = yield* run(seenBy(caller.profileId))
           const id = crypto.randomUUID()
           const picked = pickSimilar(pool, seen, { ...target, difficulty: level }, SimilarCount, id)
-          if (picked.length === 0) return yield* new NoQuestionsMatch({ heldForMocks: 0, unavailable: 0 })
+          if (picked.length === 0) return yield* new NoQuestionsMatch({ heldForMocks: 0, unavailable: 0, inSection: 0 })
           const about = target.primarySkill === null ? [] : [names.named(target.primarySkill).name]
           return yield* begin(caller, {
             title: `Similar: ${[...about, names.named(target.questionType).name].join(", ")}`,

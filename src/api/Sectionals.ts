@@ -53,7 +53,7 @@ export class SectionalResult extends Schema.Class<SectionalResult>("gmat-prep/ap
   position: Schema.Int,
   questionId: QuestionId,
   questionType: Named,
-  // As it stood when the Section closed, which the score used.
+  // As it stood when the Section closed, which the score uses.
   difficulty: Schema.Number,
   band: DifficultyBand,
   correct: Schema.Boolean,
@@ -62,7 +62,7 @@ export class SectionalResult extends Schema.Class<SectionalResult>("gmat-prep/ap
   unanswered: Schema.Boolean,
   timeSpentMs: Schema.Int,
   bookmarked: Schema.Boolean,
-  // Seen before this Section.
+  // Seen by the Profile before this Section chose it.
   repeat: Schema.Boolean,
   // A Review & Edit change: whether the first answer and the final one were right.
   change: Schema.NullOr(Schema.Struct({ wasCorrect: Schema.Boolean, isCorrect: Schema.Boolean }))
@@ -82,15 +82,21 @@ export class SectionalReport extends Schema.Class<SectionalReport>("gmat-prep/ap
   repeats: Schema.Int,
   changes: Schema.Int,
   // The points Review & Edit gained (above 0) or lost (below 0).
-  editPoints: Schema.Int
+  editPoints: Schema.Int,
+  // A key changed since the Section closed, and the report follows it.
+  rescored: Schema.Boolean
 }) {}
 
 export class SectionalView extends Schema.Class<SectionalView>("gmat-prep/api/SectionalView")({
   id: SessionId,
   section: Named,
   stage: SectionalStage,
-  // The Section's slots, as its Blueprint gave them at the start.
+  // The Questions it serves, as far as known now: those served, and those
+  // still to come for the slots open and the passage or set on screen. Fewer
+  // than its Blueprint count once a slot is left unfilled.
   total: Schema.Int,
+  // Of those, the ones still to come after the Question on screen.
+  remaining: Schema.Int,
   // Questions answered so far.
   answered: Schema.Int,
   // The Question on screen, while one is.

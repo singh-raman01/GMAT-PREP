@@ -1,6 +1,6 @@
 import { Schema } from "effect"
 import type { CellValue, ColumnType, Dataset } from "../../api/dataset.ts"
-import { compareCells } from "../../api/dataset.ts"
+import { compareCells, parseDate } from "../../api/dataset.ts"
 
 // The DI evaluator (ADR 0003): a small query language over a Dataset, and the
 // rules that turn its result into a Generated Question's key. A predicate is
@@ -84,13 +84,21 @@ export type Predicate = typeof Predicate.Type
 export const MaxSteps = 12
 
 export type Value =
-  | { readonly kind: "rows"; readonly rows: ReadonlyArray<number> }
+  // A list of rows, with the column a sort ordered it by, so a pick can tell
+  // a tie.
+  | { readonly kind: "rows"; readonly rows: ReadonlyArray<number>; readonly sortedBy?: SortKey }
   | { readonly kind: "row"; readonly row: number }
   | { readonly kind: "number"; readonly value: number }
   | { readonly kind: "boolean"; readonly value: boolean }
   | { readonly kind: "words"; readonly value: string }
 
 export type Evaluated = { readonly value: Value } | { readonly problem: string }
+
+interface SortKey {
+  readonly column: number
+  readonly type: ColumnType
+  readonly name: string
+}
 
 const NumericTypes: ReadonlySet<ColumnType> = new Set(["number", "percent", "currency"])
 
@@ -181,10 +189,11 @@ const evaluateStep = (step: Step, scope: Scope): Evaluated => {
     if (!(kinds as ReadonlyArray<string>).includes(value.kind)) return `${reference} is not ${kinds.join(" or ")}`
     return value as Kinded<K>
   }
+  const listOf = (reference: string | null): Kinded<"rows"> | string =>
+    reference === null ? { kind: "rows", rows: scope.all } : get(reference, "rows")
   const rowsOf = (reference: string | null): ReadonlyArray<number> | string => {
-    if (reference === null) return scope.all
-    const value = get(reference, "rows")
-    return typeof value === "string" ? value : value.rows
+    const list = listOf(reference)
+    return typeof list === "string" ? list : list.rows
   }
   const columnOf = (column: string) => {
     const index = dataset.columns.findIndex((each) => plainWords(each.name) === plainWords(column))
@@ -200,44 +209,72 @@ const evaluateStep = (step: Step, scope: Scope): Evaluated => {
 
   switch (step.op) {
     case "filter": {
-      const rows = rowsOf(step.from)
-      if (typeof rows === "string") return fail(rows)
+      const list = listOf(step.from)
+      if (typeof list === "string") return fail(list)
       const column = columnOf(step.column)
       if (typeof column === "string") return fail(column)
-      const keep = (row: number) => {
-        const cell = dataset.rows[row]?.[column.index]
-        if (NumericTypes.has(column.type)) {
-          const value = numberOf(cell)
-          return value !== undefined && compareNumbers(value, step.comparison, step.number!)
-        }
-        if (column.type === "date") {
-          const value = cell?.value
-          return typeof value === "string" && compareWords(value, step.comparison, step.text ?? String(step.number))
-        }
-        return compareWords(plainWords(cell?.text ?? ""), step.comparison, plainWords(step.text!))
-      }
       if (NumericTypes.has(column.type) && step.number === null) return fail(`a filter on ${step.column} needs a number`)
-      if (column.type === "date" && step.text === null && step.number === null) {
-        return fail(`a filter on ${step.column} needs a date`)
+      // A date compares with a date as the table prints them, at the coarser
+      // of the two: "after 2019" leaves out November 2019.
+      const date = column.type === "date" ? parseDate((step.text ?? (step.number === null ? "" : String(step.number))).trim()) : undefined
+      if (column.type === "date" && date === undefined) {
+        return fail(`a filter on ${step.column} needs a date, such as 2019, Mar 2019 or 3/15/2019`)
       }
       if (column.type === "text") {
         if (step.text === null) return fail(`a filter on ${step.column} needs words`)
         if (step.comparison !== "=" && step.comparison !== "!=") return fail(`words compare only with = or !=`)
       }
-      return ok({ kind: "rows", rows: rows.filter(keep) })
+      // A missing cell never passes a filter.
+      const keep = (row: number) => {
+        const cell = dataset.rows[row]?.[column.index]
+        if (cell === undefined || isMissing(column.type, cell)) return false
+        if (NumericTypes.has(column.type)) {
+          const value = numberOf(cell)
+          return value !== undefined && compareNumbers(value, step.comparison, step.number!)
+        }
+        if (column.type === "date") {
+          const value = cell.value
+          if (typeof value !== "string") return false
+          const length = Math.min(value.length, date!.length)
+          return compareWords(value.slice(0, length), step.comparison, date!.slice(0, length))
+        }
+        return compareWords(plainWords(cell.text), step.comparison, plainWords(step.text!))
+      }
+      return ok({
+        kind: "rows",
+        rows: list.rows.filter(keep),
+        ...(list.sortedBy === undefined ? {} : { sortedBy: list.sortedBy })
+      })
     }
     case "sort": {
       const rows = rowsOf(step.from)
       if (typeof rows === "string") return fail(rows)
       const column = columnOf(step.column)
       if (typeof column === "string") return fail(column)
-      return ok({ kind: "rows", rows: sortedRows(dataset, rows, column.index, column.type, step.order) })
+      return ok({
+        kind: "rows",
+        rows: sortedRows(dataset, rows, column.index, column.type, step.order),
+        sortedBy: { column: column.index, type: column.type, name: step.column }
+      })
     }
     case "pick": {
-      const rows = rowsOf(step.from)
-      if (typeof rows === "string") return fail(rows)
-      const row = rows[step.position - 1]
-      return row === undefined ? fail(`the list has no row at place ${step.position}`) : ok({ kind: "row", row })
+      const list = listOf(step.from)
+      if (typeof list === "string") return fail(list)
+      const row = list.rows[step.position - 1]
+      if (row === undefined) return fail(`the list has no row at place ${step.position}`)
+      // A row that ties with the one before or after it on the sort's column
+      // has no place of its own, so the pick would be the table's order.
+      const by = list.sortedBy
+      if (by !== undefined) {
+        const own = dataset.rows[row]?.[by.column]
+        const tied = [list.rows[step.position - 2], list.rows[step.position]].some((other) => {
+          const cell = other === undefined ? undefined : dataset.rows[other]?.[by.column]
+          return own !== undefined && cell !== undefined && !isMissing(by.type, own) && !isMissing(by.type, cell) &&
+            sameCell(by.type, own, cell)
+        })
+        if (tied) return fail(`rows tie on ${by.name} at place ${step.position}, so no one row is there`)
+      }
+      return ok({ kind: "row", row })
     }
     case "row": {
       const wanted = plainWords(step.label)
@@ -435,7 +472,7 @@ export const ApproximateMargin = 0.25
 const lettersOf = (options: ReadonlyArray<KeyOption>) => options.map((option) => option.label).join(" and ")
 
 // A dropdown's key: the one option that fits the computed value. A number
-// fits an option it rounds to, at the option's printed places; for an
+// fits an option it rounds to, at the finest places the options print; for an
 // approximate blank the nearest option counts, and it must be near enough
 // that rounding cannot change the answer. Words fit the option with the same
 // words.
@@ -454,7 +491,10 @@ export const dropdownKey = (value: Value, options: ReadonlyArray<KeyOption>, app
   const read = numbers.map((each) => ({ option: each.option, ...each.number! }))
   const shown = Number(value.value.toPrecision(6))
   if (!approximate) {
-    const fitting = read.filter((each) => Math.abs(each.value - value.value) <= 0.5 * 10 ** -each.places + 1e-9)
+    // Every option at the finest places any of them prints, so 2.3 fits none
+    // of 1.5, 2, 2.5 and 3 rather than the 2 it rounds to.
+    const finest = Math.max(...read.map((each) => each.places))
+    const fitting = read.filter((each) => Math.abs(each.value - value.value) <= 0.5 * 10 ** -finest + 1e-9)
     if (fitting.length === 1) return { key: fitting[0]!.option.label }
     return fitting.length === 0
       ? { problem: `no option fits the computed value, ${shown}` }

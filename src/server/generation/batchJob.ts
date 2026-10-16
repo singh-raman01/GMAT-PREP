@@ -25,11 +25,11 @@ const Params = Schema.Struct({ batchId: Schema.String })
 const Checkpoint = Schema.Struct({
   stage: Schema.Literals(["generate", "enrich"]),
   // The next item to write, from 1.
-  item: Schema.Int
+  item: Schema.Int,
+  // How many items before it could not be made valid. The batch's count is
+  // set from it, so a step run again after a stop counts its item once.
+  failed: Schema.optional(Schema.Int)
 })
-
-// Dollars a batch may spend unless the Curator sets a cap.
-export const GenerationCap = 2
 
 const batchOf = (batchId: string) =>
   Effect.gen(function*() {
@@ -66,19 +66,29 @@ const chartChecks = (item: DraftItem) =>
     return checks
   })
 
-const generateStep = (jobId: string, batchId: string, item: number) =>
+const generateStep = (jobId: string, batchId: string, item: number, failedBefore: number) =>
   Effect.gen(function*() {
     const db = yield* Db
     const batch = yield* batchOf(batchId)
     if (batch === undefined) return { _tag: "Finished", result: "The batch is gone." } as const
     if (item > batch.count) {
-      return { _tag: "Continue", checkpoint: { stage: "enrich", item }, stepsTotal: null, note: "Checking each Question" } as const
+      return {
+        _tag: "Continue",
+        checkpoint: { stage: "enrich", item, failed: failedBefore },
+        stepsTotal: null,
+        note: "Checking each Question"
+      } as const
     }
-    const next = { stage: "generate" as const, item: item + 1 }
+    const next = { stage: "generate" as const, item: item + 1, failed: failedBefore }
+    const setFailed = (failed: number) =>
+      db.update(generationBatches).set({ failed }).where(eq(generationBatches.id, batchId)).pipe(Effect.orDie)
     // A step run again after a stop finds its item already written.
     const [written] = yield* db.select({ n: count() }).from(questions)
       .where(and(eq(questions.batchId, batchId), eq(questions.batchItem, item))).pipe(Effect.orDie)
-    if ((written?.n ?? 0) > 0) return { _tag: "Continue", checkpoint: next, stepsTotal: null, note: null } as const
+    if ((written?.n ?? 0) > 0) {
+      yield* setFailed(failedBefore)
+      return { _tag: "Continue", checkpoint: next, stepsTotal: null, note: null } as const
+    }
     const taxonomy = (yield* Taxonomy).view
     const spec = {
       questionType: batch.questionType as GeneratedType,
@@ -88,15 +98,15 @@ const generateStep = (jobId: string, batchId: string, item: number) =>
     }
     const generated = yield* generateItem(jobId, taxonomy, spec, item, yield* earlierTopics(batchId, item))
     if ("failed" in generated) {
-      yield* db.update(generationBatches).set({ failed: sql`${generationBatches.failed} + 1` })
-        .where(eq(generationBatches.id, batchId)).pipe(Effect.orDie)
+      yield* setFailed(failedBefore + 1)
       return {
         _tag: "Continue",
-        checkpoint: next,
+        checkpoint: { ...next, failed: failedBefore + 1 },
         stepsTotal: null,
         note: `Item ${item} of ${batch.count} could not be made valid: ${generated.failed.slice(0, 2).join(" ")}`
       } as const
     }
+    yield* setFailed(failedBefore)
     const checks = yield* chartChecks(generated.item)
     const seconds = yield* readAgain(jobId, generated.item)
     yield* db.transaction(() =>
@@ -127,13 +137,13 @@ const draftsOf = (batchId: string) =>
     return rows.map((row) => row.id)
   })
 
-const enrichStep = (jobId: string, batchId: string, item: number, stepsDone: number) =>
+const enrichStep = (jobId: string, batchId: string, item: number, failed: number, stepsDone: number) =>
   Effect.gen(function*() {
     const db = yield* Db
     const drafts = yield* draftsOf(batchId)
     const next = drafts[0]
     if (next === undefined) {
-      const joined = yield* assignReserveFor({ batchId }).pipe(Effect.orDie)
+      yield* assignReserveFor({ batchId }).pipe(Effect.orDie)
       // Questions of other origins this batch's checks may have published.
       yield* assignUndecided.pipe(Effect.orDie)
       const own = yield* db.select({ status: questions.status, n: count() }).from(questions)
@@ -141,8 +151,10 @@ const enrichStep = (jobId: string, batchId: string, item: number, stepsDone: num
         .groupBy(questions.status)
         .pipe(Effect.orDie)
       const of = (status: string) => own.find((row) => row.status === status)?.n ?? 0
-      const batch = yield* batchOf(batchId)
-      const failed = batch?.failed ?? 0
+      // Counted from the Question Bank, so a step run again says the same.
+      const [held] = yield* db.select({ n: count() }).from(questions)
+        .where(and(eq(questions.batchId, batchId), eq(questions.reserve, true))).pipe(Effect.orDie)
+      const joined = held?.n ?? 0
       return {
         _tag: "Finished",
         result: `${of("published")} Questions published, ${of("held")} held in the Review Queue; ${joined} joined the Mock Reserve.${
@@ -155,7 +167,7 @@ const enrichStep = (jobId: string, batchId: string, item: number, stepsDone: num
     const outcome = yield* runGate(next, taxonomy).pipe(Effect.orDie)
     return {
       _tag: "Continue",
-      checkpoint: { stage: "enrich", item },
+      checkpoint: { stage: "enrich", item, failed },
       stepsTotal: stepsDone + drafts.length + 1,
       note: `Checked a Question: ${outcome === "published" ? "published" : "held for review"} (${drafts.length - 1} left)`
     } as const
@@ -166,14 +178,14 @@ export const GenerationBatch: JobKind<typeof Params.Type, typeof Checkpoint.Type
   params: Params,
   checkpoint: Checkpoint,
   label: () => "Generating Data Insights Questions",
-  start: () => ({ stage: "generate", item: 1 }),
+  start: () => ({ stage: "generate", item: 1, failed: 0 }),
   stepsTotal: () => null,
   // A batch that ends early still decides the Reserve for what it published.
   stopped: (params) => assignReserveFor({ batchId: params.batchId }).pipe(Effect.orDie, Effect.asVoid),
   step: ({ jobId, params, checkpoint, stepsDone }) =>
     checkpoint.stage === "generate"
-      ? generateStep(jobId, params.batchId, checkpoint.item)
-      : enrichStep(jobId, params.batchId, checkpoint.item, stepsDone)
+      ? generateStep(jobId, params.batchId, checkpoint.item, checkpoint.failed ?? 0)
+      : enrichStep(jobId, params.batchId, checkpoint.item, checkpoint.failed ?? 0, stepsDone)
 }
 
 export const isGeneratedType = (type: string): type is GeneratedType => (GeneratedTypes as ReadonlyArray<string>).includes(type)

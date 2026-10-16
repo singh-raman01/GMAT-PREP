@@ -1,4 +1,4 @@
-import { count, desc, eq, inArray, max } from "drizzle-orm"
+import { count, desc, eq, inArray, max, sql } from "drizzle-orm"
 import { Clock, Context, Effect, Layer, Option, Semaphore } from "effect"
 import { BatchView, type GeneratedQuestionType, SkillNotForType } from "../../api/Generation.ts"
 import type { DifficultyBand } from "../../api/difficulty.ts"
@@ -45,9 +45,16 @@ export class Generation extends Context.Service<Generation, {
             .orderBy(desc(generationBatches.number))
           if (rows.length === 0) return []
           const batchIds = rows.map((row) => row.id)
-          const counts = yield* db.select({ batchId: questions.batchId, status: questions.status, reserve: questions.reserve, n: count() })
+          const released = sql<number>`${questions.releasedAt} is not null`
+          const counts = yield* db.select({
+            batchId: questions.batchId,
+            status: questions.status,
+            reserve: questions.reserve,
+            released,
+            n: count()
+          })
             .from(questions).where(inArray(questions.batchId, batchIds))
-            .groupBy(questions.batchId, questions.status, questions.reserve)
+            .groupBy(questions.batchId, questions.status, questions.reserve, released)
           const jobIds = rows.flatMap((row) => (row.jobId === null ? [] : [row.jobId]))
           const jobRows = jobIds.length === 0 ? [] : yield* db.select().from(jobs).where(inArray(jobs.id, jobIds))
           return rows.map((row) => {
@@ -67,7 +74,7 @@ export class Generation extends Context.Service<Generation, {
               held: of("held"),
               checking: of("draft"),
               withdrawn: of("withdrawn"),
-              reserved: mine.filter((each) => each.reserve === true && each.status !== "withdrawn")
+              reserved: mine.filter((each) => each.reserve === true && !each.released && each.status !== "withdrawn")
                 .reduce((sum, each) => sum + each.n, 0),
               job: job === undefined ? null : toJobView(job, kinds),
               createdAt: row.createdAt

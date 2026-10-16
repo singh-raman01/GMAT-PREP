@@ -168,11 +168,11 @@ export const SettingsHandlers = HttpApiBuilder.group(
       }),
       blueprint: () =>
         settings.blueprint.pipe(
-          Effect.map((blueprint) => new BlueprintView({ blueprint, defaults: DefaultBlueprint, released: null }))
+          Effect.map((blueprint) => new BlueprintView({ blueprint, defaults: DefaultBlueprint, released: null, joined: null }))
         ),
       saveBlueprint: Effect.fn(function*({ payload }) {
-        const released = yield* settings.saveBlueprint(payload.blueprint)
-        return new BlueprintView({ blueprint: yield* settings.blueprint, defaults: DefaultBlueprint, released })
+        const { released, joined } = yield* settings.saveBlueprint(payload.blueprint)
+        return new BlueprintView({ blueprint: yield* settings.blueprint, defaults: DefaultBlueprint, released, joined })
       })
     })
   })

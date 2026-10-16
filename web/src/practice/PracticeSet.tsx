@@ -561,7 +561,8 @@ const SkipLabels: Record<ItemRef["reason"], string> = {
   reserve: "Held for Mocks",
   undecided: "Held until the Mock Reserve is decided",
   checking: "Not in the Question Bank yet",
-  withdrawn: "Withdrawn from the Question Bank"
+  withdrawn: "Withdrawn from the Question Bank",
+  "in-section": "In your Sectional, until it ends"
 }
 
 // The book's items the set leaves out, and why.

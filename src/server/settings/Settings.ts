@@ -71,8 +71,9 @@ export class Settings extends Context.Service<Settings, {
   saveTargetTimes(times: Readonly<Record<string, number>>): Effect.Effect<Readonly<Record<string, number>>>
   // The Section Blueprint, as set or by default.
   readonly blueprint: Effect.Effect<Blueprint>
-  // Saves it; returns how many Reserve passages and sets it released.
-  saveBlueprint(blueprint: Blueprint): Effect.Effect<number>
+  // Saves it; returns how many Reserve passages and sets it released, and
+  // how many Questions joined the Reserve for the slot sizes it added.
+  saveBlueprint(blueprint: Blueprint): Effect.Effect<{ readonly released: number; readonly joined: number }>
 }>()("gmat-prep/server/Settings") {
   static readonly layer = Layer.effect(
     Settings,

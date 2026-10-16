@@ -337,14 +337,26 @@ export const buildItem = (type: GeneratedType, output: unknown): Built => {
 export const partReasonPrefix = (kind: PartKind, index: number) =>
   kind === "dropdown" ? `Blank ${index + 1}:` : kind === "column-choice" ? "The columns:" : `Statement ${index + 1}:`
 
+// A second reading of a Part's words, as generate.ts asks for it: its
+// predicate, whether it reads a blank as approximate, and the tab it reads,
+// by place from 0, null for an item with one table.
+export interface SecondReading {
+  readonly predicate: Predicate
+  readonly approximate: boolean
+  readonly dataset: number | null
+}
+
 // Where a Question's second readings disagree with its predicates: a Part
-// whose two predicates give different results on the Dataset, or whose second
-// reading cannot be run. For a Two-Part Analysis, both columns' predicates
-// are read again together and must be met by the same pairs.
+// whose two predicates give different results, whose second reading reads
+// another tab or takes a blank as approximate where the generator did not (or
+// the reverse), or whose second reading cannot be run. For a Two-Part
+// Analysis, both columns' predicates are read again together and must be met
+// by the same pairs. titles names an MSR set's tabs.
 export const disagreements = (
   question: DraftQuestion,
   datasets: ReadonlyArray<Dataset | null>,
-  seconds: ReadonlyArray<Predicate | null>
+  seconds: ReadonlyArray<SecondReading | null>,
+  titles: ReadonlyArray<string> = []
 ): ReadonlyArray<Reason> => {
   const reasons: Array<Reason> = []
   const disagree = (detail: string) => reasons.push({ code: "predicate-disagreement", detail })
@@ -352,8 +364,8 @@ export const disagreements = (
     const first = question.parts.map((part) => part.statement)
     const dataset = datasets[0]
     if (first.length !== 2 || dataset === null || dataset === undefined) return reasons
-    const [a, b] = seconds
-    if (a === null || a === undefined || b === null || b === undefined) {
+    const [a, b] = seconds.map((second) => second?.predicate)
+    if (a === undefined || b === undefined) {
       disagree("The columns: the second reading of the problem gave no usable predicates.")
       return reasons
     }
@@ -373,6 +385,7 @@ export const disagreements = (
     }
     return reasons
   }
+  const tabName = (place: number) => (titles[place] === undefined ? `tab ${place + 1}` : `the tab ${titles[place]}`)
   for (const [index, part] of question.parts.entries()) {
     if (part.statement.kind !== "computed") continue
     const where = partReasonPrefix(part.kind, index).replace(/:$/, "")
@@ -383,7 +396,21 @@ export const disagreements = (
       disagree(`${where}: the second reading of its words gave no usable predicate.`)
       continue
     }
-    const outcome = evaluate(second, dataset)
+    // In a set of sources the second reading chooses its own tab.
+    if (datasets.length > 1 && second.dataset !== part.statement.dataset) {
+      disagree(`${where}: its predicate reads ${tabName(part.statement.dataset)}, but a second reading of its words reads ${
+        second.dataset === null ? "no tab" : tabName(second.dataset)
+      }.`)
+      continue
+    }
+    if (part.kind === "dropdown" && second.approximate !== part.statement.approximate) {
+      const as = (approximate: boolean) => (approximate ? "an approximate value" : "an exact value")
+      disagree(`${where}: it is keyed as ${as(part.statement.approximate)}, but a second reading of its words asks for ${
+        as(second.approximate)
+      }.`)
+      continue
+    }
+    const outcome = evaluate(second.predicate, dataset)
     if ("problem" in outcome) {
       disagree(`${where}: the second reading of its words cannot be checked: ${outcome.problem}.`)
       continue
