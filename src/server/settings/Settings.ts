@@ -10,17 +10,26 @@ export interface LlmSettings {
   readonly jsonMode: JsonMode
   readonly models: Partial<Record<LlmTask, string>>
   readonly prices: Readonly<Record<string, { readonly input: number; readonly output: number }>>
+  // Models that accept images.
+  readonly readsImages: ReadonlyArray<string>
 }
 
 const StoredLlmSettings = Schema.Struct({
   baseUrl: Schema.NullOr(Schema.String),
   jsonMode: JsonMode,
   models: Schema.Record(LlmTask, Schema.optional(Schema.String)),
-  prices: Schema.Record(Schema.String, Schema.Struct({ input: Schema.Number, output: Schema.Number }))
+  prices: Schema.Record(Schema.String, Schema.Struct({ input: Schema.Number, output: Schema.Number })),
+  readsImages: Schema.Array(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed([])))
 })
 const decodeStored = Schema.decodeUnknownOption(Schema.fromJsonString(StoredLlmSettings))
 
-export const emptyLlmSettings: LlmSettings = { baseUrl: null, jsonMode: "json-schema", models: {}, prices: {} }
+export const emptyLlmSettings: LlmSettings = {
+  baseUrl: null,
+  jsonMode: "json-schema",
+  models: {},
+  prices: {},
+  readsImages: []
+}
 
 const LlmKey = "llm"
 
@@ -33,6 +42,12 @@ export const missingSettings = (llm: LlmSettings, hasApiKey: boolean, task: LlmT
     ...(model === undefined ? [`a model for ${LlmTaskLabels[task]}`] : []),
     ...(model !== undefined && llm.prices[model] === undefined ? [`prices for ${model}`] : [])
   ]
+}
+
+// Whether the model set for a task accepts images.
+export const taskReadsImages = (llm: LlmSettings, task: LlmTask): boolean => {
+  const model = llm.models[task]
+  return model !== undefined && llm.readsImages.includes(model)
 }
 
 // The URL the chat completions request goes to.
@@ -75,7 +90,8 @@ export class Settings extends Context.Service<Settings, {
           baseUrl: input.baseUrl.trim(),
           jsonMode: input.jsonMode,
           models,
-          prices
+          prices,
+          readsImages: [...new Set(input.readsImages.map((model) => model.trim()))]
         }
         const updatedAt = yield* Clock.currentTimeMillis
         yield* db.insert(settings)

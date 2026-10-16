@@ -105,6 +105,7 @@ export const SettingsHandlers = HttpApiBuilder.group(
         prices: Object.entries(llm.prices).map(([model, price]) =>
           new ModelPrice({ model, inputPerMillion: price.input, outputPerMillion: price.output })
         ),
+        readsImages: llm.readsImages,
         apiKey: yield* keyStatus
       })
     })
