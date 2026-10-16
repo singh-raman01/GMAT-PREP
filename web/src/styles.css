@@ -2726,11 +2726,23 @@ input[type="date"] {
 /* The Error Log: filters over the list, then one entry per Question, which
    opens to the Question, its Debrief and every answer given to it. */
 
+.error-filters {
+  margin: 1.5rem 0 0;
+  max-width: 64rem;
+}
+
+.error-filters summary {
+  min-height: 2.75rem;
+  padding: 0.6rem 0;
+  font-weight: 700;
+  cursor: pointer;
+}
+
 .filter-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
   gap: 0.75rem 1.25rem;
-  max-width: 64rem;
+  margin-top: 0.5rem;
 }
 
 .filter-grid select,
@@ -2739,7 +2751,7 @@ input[type="date"] {
 }
 
 .filter-count {
-  margin: 0.75rem 0 0;
+  margin: 0.75rem 0 1rem;
   color: var(--pencil);
   font-size: var(--step-0);
 }

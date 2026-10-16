@@ -62,6 +62,8 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
   const [filters, setFilters] = useState<Filters>({})
   const [log, setLog] = useState<ErrorLogView>()
   const [open, setOpen] = useState<string>()
+  // The filters start open on a wide screen, folded on a narrow one.
+  const [filtersOpen, setFiltersOpen] = useState(() => window.matchMedia("(min-width: 48rem)").matches)
   const request = useRef(0)
 
   const handle = useCallback(
@@ -98,8 +100,10 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
         ? <p className="empty">Nothing yet. Questions you miss in Practice Sets, Sectionals and Mocks come here.</p>
         : (
           <>
-            <section className="group error-filters" aria-labelledby={`${ids.base}-filters`}>
-              <h2 id={`${ids.base}-filters`} className="visually-hidden">Filters</h2>
+            <details className="error-filters" open={filtersOpen} onToggle={(event) => setFiltersOpen(event.currentTarget.open)}>
+              <summary>
+                Filters{filtered ? ` (${Object.keys(filters).length} in use)` : ""}
+              </summary>
               <div className="filter-grid">
                 {selects.map(([key, label, facet]) => {
                   const values = log.facets[facet]
@@ -128,7 +132,8 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
                   <input id={ids.to} type="date" value={filters.to ?? ""} onChange={(event) => set("to", event.target.value)} />
                 </div>
               </div>
-              <p className="filter-count" role="status">
+            </details>
+            <p className="filter-count" role="status">
                 {filtered ? `${log.entries.length} of ${plural(log.total, "entry", "entries")}` : plural(log.total, "entry", "entries")}
                 {filtered && (
                   <>
@@ -136,8 +141,7 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
                     <button type="button" className="link-button" onClick={() => setFilters({})}>Clear the filters</button>
                   </>
                 )}
-              </p>
-            </section>
+            </p>
             <ol className="error-list">
               {log.entries.map((entry) => (
                 <EntryRow
@@ -184,9 +188,11 @@ const EntryRow = (
           <span className="visually-hidden"> the entry, {about}</span>
         </button>
       </div>
-      <div className="error-stem">
-        <RichText source={entry.stem} />
-      </div>
+      {!open && (
+        <div className="error-stem">
+          <RichText source={entry.stem} />
+        </div>
+      )}
       <p className="set-facts">
         {whyText(entry)}. {entry.misses === 1 ? "Missed once" : `Missed ${entry.misses} times`}, last{" "}
         {dayAndTime(entry.lastMissedAt)}
