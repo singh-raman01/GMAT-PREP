@@ -694,10 +694,19 @@ const SectionBlueprint = ({ onFailure }: { readonly onFailure: (failure: { reado
     setView(result.success)
     setTyped(typedOf(result.success.blueprint))
     const released = result.success.released ?? 0
+    const joined = result.success.joined ?? 0
     setSaved(
-      released === 0
-        ? "Blueprint saved."
-        : `Blueprint saved. ${released} ${released === 1 ? "passage or set" : "passages and sets"} held for Mocks fit no slot now and went to Practice Sets.`
+      [
+        "Blueprint saved.",
+        released === 0
+          ? undefined
+          : `${released} ${released === 1 ? "passage or set" : "passages and sets"} held for Mocks fit no slot now and went to Practice Sets.`,
+        joined === 0
+          ? undefined
+          : `${joined} ${joined === 1 ? "Question" : "Questions"} in passages and sets the new slot sizes take ${
+            joined === 1 ? "is" : "are"
+          } now held for Mocks.`
+      ].filter((part) => part !== undefined).join(" ")
     )
   }
 

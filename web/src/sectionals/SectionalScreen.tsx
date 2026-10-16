@@ -158,6 +158,7 @@ const Running = (
   const [calculating, setCalculating] = useState(false)
   const [ending, setEnding] = useState(false)
   const calculatorToggle = useRef<HTMLButtonElement>(null)
+  const endToggle = useRef<HTMLButtonElement>(null)
   const mainHeading = useRef<HTMLHeadingElement>(null)
   const dataInsights = view.section.id === "di"
   const remaining = useRemaining(reading)
@@ -214,7 +215,13 @@ const Running = (
             </button>
           )}
           {view.heldHere && view.stage === "question" && (
-            <button type="button" className="link-button set-end" aria-expanded={ending} onClick={() => setEnding(true)}>
+            <button
+              ref={endToggle}
+              type="button"
+              className="link-button set-end"
+              aria-expanded={ending}
+              onClick={() => setEnding(true)}
+            >
               End the Section
             </button>
           )}
@@ -229,7 +236,10 @@ const Running = (
             setEnding(false)
             finish()
           }}
-          onNo={() => setEnding(false)}
+          onNo={() => {
+            setEnding(false)
+            endToggle.current?.focus()
+          }}
         />
       )}
       {dataInsights && calculating && (
@@ -352,7 +362,7 @@ const QuestionStage = (
     return () => document.removeEventListener("keydown", onKey)
   })
 
-  const last = current.position + 1 >= view.total
+  const last = view.remaining === 0
   const work = (
     <>
       <div className="question-body">
@@ -415,6 +425,7 @@ const ReviewStage = (
   const [opened, setOpened] = useState<Opened>({ _tag: "List" })
   const [onlyMarked, setOnlyMarked] = useState(false)
   const [finishing, setFinishing] = useState(false)
+  const finishToggle = useRef<HTMLButtonElement>(null)
   const listHeading = useRef<HTMLHeadingElement>(null)
   const filterId = useId()
 
@@ -475,7 +486,7 @@ const ReviewStage = (
       {actions.problem !== undefined && <p className="problem" role="alert">{actions.problem}</p>}
       {view.heldHere && (
         <div className="actions">
-          <button type="button" className="button" onClick={() => setFinishing(true)} disabled={actions.busy}>
+          <button ref={finishToggle} type="button" className="button" onClick={() => setFinishing(true)} disabled={actions.busy}>
             Finish the Section
           </button>
         </div>
@@ -489,7 +500,10 @@ const ReviewStage = (
             setFinishing(false)
             onFinish()
           }}
-          onNo={() => setFinishing(false)}
+          onNo={() => {
+            setFinishing(false)
+            finishToggle.current?.focus()
+          }}
         />
       )}
     </>
@@ -648,6 +662,9 @@ const Report = ({ view, onFailure }: { readonly view: SectionalView; readonly on
       : undefined,
     report.repeats > 0
       ? `${plural(report.repeats, "Question you had seen before was", "Questions you had seen before were")} served, since too few unseen ones were left.`
+      : undefined,
+    report.rescored
+      ? "An answer key changed after the Section closed, so these results and the score follow the new key."
       : undefined
   ].filter((note) => note !== undefined)
   return (

@@ -61,6 +61,27 @@ describe("Editing the Section Blueprint", () => {
       expect(released.map((row) => row.id).toSorted()).toEqual([1, 2, 3, 4].map((n) => seeded.ids.get(n)!).toSorted())
     })))
 
+  test("a passage kept out only for its size joins the Reserve when a slot of that size is added", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const curator = yield* curatorBrowser
+      const rc = { questionType: "verbal.rc-detail", primarySkill: "verbal.reading.detail", reserve: false, seed: 0 }
+      // Five passages of three and one of five, none held: a quarter of the
+      // twenty Questions is five.
+      const seeded = yield* seedBook("Verbal Review", [
+        ...[1, 2, 3, 4, 5].flatMap((p) => numbered(3, { ...rc, passage: `Passage ${p}.` }, p * 10)),
+        ...numbered(5, { ...rc, passage: "A passage of five." }, 100)
+      ])
+      const five = [100, 101, 102, 103, 104].map((n) => seeded.ids.get(n)!)
+      const saved = yield* curator.settings.saveBlueprint({ payload: { blueprint: { ...DefaultBlueprint, rc: [5, 3, 3, 3] } } })
+      expect(saved).toMatchObject({ released: 0, joined: 5 })
+      const db = yield* Db
+      const held = yield* db.select({ id: questions.id }).from(questions).where(eq(questions.reserve, true)).pipe(Effect.orDie)
+      expect(held.map((row) => row.id).toSorted()).toEqual(five.toSorted())
+      // Saving again changes nothing.
+      expect(yield* curator.settings.saveBlueprint({ payload: { blueprint: { ...DefaultBlueprint, rc: [5, 3, 3, 3] } } }))
+        .toMatchObject({ released: 0, joined: 0 })
+    })))
+
   test("a group with no Questions, or a unit bigger than six, is refused", () =>
     runWithApp(Effect.gen(function*() {
       yield* curatorBrowser

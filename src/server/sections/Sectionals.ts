@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm"
-import { Cause, Clock, Context, Effect, Latch, Layer, Schema, Semaphore } from "effect"
-import { Blueprint, type GroupId, GroupIds, groupOf, groupsOf, sectionCount } from "../../api/blueprint.ts"
+import { Cause, Clock, Context, Effect, Latch, Layer, Semaphore } from "effect"
+import { type Blueprint, type GroupId, groupOf, groupsOf, sectionCount } from "../../api/blueprint.ts"
 import { bandOf } from "../../api/difficulty.ts"
 import {
   Named,
@@ -51,8 +51,9 @@ import { ratedAmong } from "../ratings/rated.ts"
 import { rateSession } from "../ratings/rateSession.ts"
 import { Settings } from "../settings/Settings.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
-import { nextUnit, openSlots, sectionEstimate, sectionStock, seededRandom, type ServedUnit, type Unit } from "./adaptive.ts"
-import { editPoints, sectionScoreOf } from "./score.ts"
+import { nextUnit, openSlots, sectionEstimate, sectionStock, seededRandom, type Unit } from "./adaptive.ts"
+import { decodeConfig, encodeConfig, passedOf, type SectionalConfig, servedUnitsOf } from "./config.ts"
+import { judge, rescore, scored } from "./report.ts"
 
 // Sectionals: one Section alone under Mock rules (docs/design.md,
 // "Sessions"). The next unit is chosen after each Response, adaptively; a
@@ -60,37 +61,6 @@ import { editPoints, sectionScoreOf } from "./score.ts"
 // back. When time remains after the last Question, Review & Edit allows up
 // to three changed answers. The Section is scored, and Difficulty and
 // Ability move, only when it closes.
-
-const Tier = Schema.Literals(["reserve-near", "near", "reserve-far", "far", "seen"])
-
-const ServedUnitRecord = Schema.Struct({
-  unitId: Schema.String,
-  group: Schema.Literals(GroupIds),
-  // Its Questions in serving order, as they stood when it was chosen.
-  questionIds: Schema.Array(Schema.String),
-  tier: Tier,
-  slot: Schema.Literals(["own", "passed"])
-})
-
-// What a Session of kind sectional stores in its config.
-const SectionalConfig = Schema.Struct({
-  section: Schema.String,
-  // The Blueprint as it stood at the start.
-  blueprint: Blueprint,
-  // The units served, in order.
-  units: Schema.Array(ServedUnitRecord),
-  // Slots passed on by groups no unit could fill, by group.
-  passed: Schema.Record(Schema.String, Schema.Int),
-  stage: Schema.Literals(["question", "review"]),
-  // Slots nothing was left to fill when Review & Edit began, which are not
-  // scored.
-  unfilled: Schema.Int,
-  // Kept when the Section closes, so later Difficulty moves leave it as it was.
-  report: Schema.NullOr(SectionalReport)
-})
-type SectionalConfig = typeof SectionalConfig.Type
-const encodeConfig = Schema.encodeSync(Schema.fromJsonString(SectionalConfig))
-const decodeConfig = Schema.decodeUnknownSync(Schema.fromJsonString(SectionalConfig))
 
 type SessionRow = typeof sessions.$inferSelect
 type ResponseRow = typeof responses.$inferSelect
@@ -102,11 +72,6 @@ export interface Change {
   readonly questionId: QuestionId
   readonly selection: Selection
 }
-
-const servedUnitsOf = (config: SectionalConfig): ReadonlyArray<ServedUnit> =>
-  config.units.map((unit) => ({ unitId: unit.unitId, group: unit.group, size: unit.questionIds.length, slot: unit.slot }))
-
-const passedOf = (config: SectionalConfig) => config.passed as Readonly<Partial<Record<GroupId, number>>>
 
 const sorted = (selection: Selection) => selection.toSorted((a, b) => a.part - b.part)
 
@@ -181,6 +146,9 @@ export class Sectionals extends Context.Service<Sectionals, {
       // together, with whether they are held for Mocks and when the Profile
       // last saw one of them.
       const poolFor = (profileId: string, section: string) =>
+        poolAndSightings(profileId, section).pipe(Effect.map((found) => found.units))
+
+      const poolAndSightings = (profileId: string, section: string) =>
         Effect.gen(function*() {
           const published = (yield* run(publishedPool))
             .filter((question) => question.section === section && question.reserve !== null)
@@ -195,7 +163,7 @@ export class Sectionals extends Context.Service<Sectionals, {
             unit.members.push(question)
             units.set(unitId, unit)
           }
-          return [...units].map(([id, unit]): Unit => {
+          const pool = [...units].map(([id, unit]): Unit => {
             const seenAt = unit.members.flatMap((member) => {
               const at = lastSeen.get(member.id)
               return at === undefined ? [] : [at]
@@ -209,6 +177,7 @@ export class Sectionals extends Context.Service<Sectionals, {
               lastSeenAt: seenAt.length === 0 ? null : Math.max(...seenAt)
             }
           })
+          return { units: pool, lastSeen }
         })
 
       const readiness = (profileId: string, section: string) =>
@@ -303,22 +272,55 @@ export class Sectionals extends Context.Service<Sectionals, {
           return new Map([...stored].map(([id, question]) => [id, question.difficulty] as const))
         })
 
+      // The unit's Questions not served or passed over yet, in serving order,
+      // with whether each is still in the Question Bank.
+      const restOf = (unit: SectionalConfig["units"][number], served: ReadonlyArray<{ readonly questionId: string }>) =>
+        Effect.gen(function*() {
+          const gone = new Set([...served.map((row) => row.questionId), ...unit.skipped])
+          const rest = unit.questionIds.filter((id) => !gone.has(id))
+          if (rest.length === 0) return []
+          const statuses = yield* db.select({ id: questions.id, status: questions.status }).from(questions)
+            .where(inArray(questions.id, rest)).pipe(Effect.orDie)
+          return rest.map((id) => ({ id, published: statuses.some((row) => row.id === id && row.status === "published") }))
+        })
+
+      // How many Questions are still to come after the one on screen: those
+      // of its unit still in the Question Bank, and the open slots.
+      const remainingOf = (config: SectionalConfig, served: ReadonlyArray<{ readonly questionId: string }>) =>
+        Effect.gen(function*() {
+          if (config.stage !== "question") return 0
+          const last = config.units.at(-1)
+          const rest = last === undefined ? [] : yield* restOf(last, served)
+          const open = openSlots(config.blueprint, config.section, servedUnitsOf(config), passedOf(config))
+          return rest.filter((question) => question.published).length +
+            [...open.own.values()].flat().reduce((sum, size) => sum + size, 0) + open.passed
+        })
+
       // Serves the next Question: the rest of the unit on screen, else the
       // unit the selection picks. When nothing more can be served, Review &
       // Edit begins.
-      const serveNext = (session: SessionRow, config: SectionalConfig, elapsedMs: number) =>
+      const serveNext = (session: SessionRow, chosen: SectionalConfig, elapsedMs: number) =>
         Effect.gen(function*() {
+          let config = chosen
           const served = yield* servedOf(session.id)
           const position = served.length
-          const servedIds = new Set(served.map((row) => row.questionId))
           const last = config.units.at(-1)
-          const rest = last?.questionIds.filter((id) => !servedIds.has(id)) ?? []
-          const statuses = rest.length === 0 ? [] : yield* db.select({ id: questions.id, status: questions.status })
-            .from(questions).where(inArray(questions.id, rest)).pipe(Effect.orDie)
-          // A Question that left the Question Bank since its unit was chosen is passed over.
-          const nextInUnit = rest.find((id) => statuses.some((row) => row.id === id && row.status === "published"))
-          if (nextInUnit !== undefined) return yield* serve(session.id, position, nextInUnit, elapsedMs)
-          const pool = yield* poolFor(session.profileId, config.section)
+          const rest = last === undefined ? [] : yield* restOf(last, served)
+          // A Question that left the Question Bank since its unit was chosen
+          // is passed over, and its slot left unfilled.
+          const nextAt = rest.findIndex((question) => question.published)
+          const passedOver = (nextAt === -1 ? rest : rest.slice(0, nextAt)).map((question) => question.id)
+          if (passedOver.length > 0) {
+            config = {
+              ...config,
+              units: config.units.map((unit, index) =>
+                index === config.units.length - 1 ? { ...unit, skipped: [...unit.skipped, ...passedOver] } : unit
+              )
+            }
+            yield* saveConfig(session.id, config)
+          }
+          if (nextAt !== -1) return yield* serve(session.id, position, rest[nextAt]!.id, elapsedMs)
+          const { units: pool, lastSeen } = yield* poolAndSightings(session.profileId, config.section)
           const estimate = yield* estimateOf(served, yield* responsesOf(session.id))
           const step = nextUnit({
             blueprint: config.blueprint,
@@ -343,6 +345,8 @@ export class Sectionals extends Context.Service<Sectionals, {
               unitId: pick.unit.id,
               group: pick.unit.group,
               questionIds: [...pick.unit.questionIds],
+              seen: pick.unit.questionIds.filter((id) => lastSeen.has(id)),
+              skipped: [],
               tier: pick.tier,
               slot: pick.slot
             }]
@@ -363,15 +367,10 @@ export class Sectionals extends Context.Service<Sectionals, {
             .from(questions).where(inArray(questions.id, ids)).pipe(Effect.orDie)
           const marked = yield* run(bookmarkedBy(session.profileId))
           const resolve = yield* run(mergeTargets)
-          const repeatIds = new Set(config.units.filter((unit) => unit.tier === "seen").flatMap((unit) => unit.questionIds))
-          const right = (answer: ResponseRow | undefined, questionId: string) =>
-            answer !== undefined && answer.kind !== "time-out" &&
-            isCorrect(readSelection(answer.selection), keys.get(questionId) ?? [])
+          const repeatIds = new Set(config.units.flatMap((unit) => unit.seen))
           const results = served.map((row) => {
             const mine = answers.filter((each) => each.questionId === row.questionId)
-            const first = mine[0]
             const final = mine.at(-1)
-            const edited = mine.some((each) => each.kind === "edit")
             const difficulty = levels.get(row.questionId) ?? 0
             return new SectionalResult({
               position: row.position,
@@ -379,40 +378,33 @@ export class Sectionals extends Context.Service<Sectionals, {
               questionType: names.named(types.find((type) => type.id === row.questionId)?.questionType ?? ""),
               difficulty,
               band: bandOf(difficulty),
-              correct: right(final, row.questionId),
+              ...judge(row.questionId, answers, keys),
               timedOut: final?.kind === "time-out",
               unanswered: final === undefined,
-              timeSpentMs: first?.timeSpentMs ?? Math.max(0, elapsedMs - (row.servedElapsedMs ?? 0)),
+              timeSpentMs: mine[0]?.timeSpentMs ?? Math.max(0, elapsedMs - (row.servedElapsedMs ?? 0)),
               bookmarked: marked.has(resolve(row.questionId)),
-              repeat: repeatIds.has(row.questionId),
-              change: edited ? { wasCorrect: right(first, row.questionId), isCorrect: right(final, row.questionId) } : null
+              repeat: repeatIds.has(row.questionId)
             })
           })
-          // Slots left open, and the rest of a unit cut short, were never reached.
-          const unreached = config.stage === "review" ? 0 : (() => {
-            const open = openSlots(config.blueprint, config.section, servedUnitsOf(config), passedOf(config))
-            const servedIds = new Set(ids)
-            const cut = config.units.at(-1)?.questionIds.filter((id) => !servedIds.has(id)).length ?? 0
-            return [...open.own.values()].flat().reduce((sum, size) => sum + size, 0) + open.passed + cut
-          })()
-          const finalAnswers = results.map((result) => ({ difficulty: result.difficulty, correct: result.correct }))
-          const firstAnswers = results.map((result) => ({
-            difficulty: result.difficulty,
-            correct: result.change === null ? result.correct : result.change.wasCorrect
-          }))
-          const scored = sectionScoreOf(finalAnswers, unreached)
+          // Slots left open, and the rest of a unit cut short, were never
+          // reached; Questions of that rest no longer in the Question Bank,
+          // like those passed over, leave their slots unfilled.
+          const skipped = config.units.reduce((sum, unit) => sum + unit.skipped.length, 0)
+          const last = config.units.at(-1)
+          const rest = config.stage === "review" || last === undefined ? [] : yield* restOf(last, served)
+          const cut = rest.filter((question) => question.published).length
+          const open = openSlots(config.blueprint, config.section, servedUnitsOf(config), passedOf(config))
+          const unreached = config.stage === "review"
+            ? 0
+            : [...open.own.values()].flat().reduce((sum, size) => sum + size, 0) + open.passed + cut
           return new SectionalReport({
-            score: scored.estimate.score,
-            low: scored.estimate.low,
-            high: scored.estimate.high,
-            ability: scored.fit.ability,
-            standardError: scored.fit.standardError,
+            ...scored(results, unreached),
             results,
             unreached,
-            unfilled: config.unfilled,
+            unfilled: config.unfilled + skipped + (rest.length - cut),
             repeats: results.filter((result) => result.repeat).length,
             changes: answers.filter((answer) => answer.kind === "edit").length,
-            editPoints: editPoints(firstAnswers, finalAnswers, unreached)
+            rescored: false
           })
         })
 
@@ -525,11 +517,13 @@ export class Sectionals extends Context.Service<Sectionals, {
           }
           const { ticked, elapsedMs } = peek(session, now)
           const limitMs = session.timeLimitMs ?? LimitMs
+          const remaining = over ? 0 : yield* remainingOf(config, served)
           return new SectionalView({
             id: SessionId.make(session.id),
             section: sectionName(config.section),
             stage,
-            total: sectionCount(config.blueprint, config.section),
+            total: served.length + remaining,
+            remaining,
             answered: new Set(answers.map((answer) => answer.questionId)).size,
             current,
             review,
@@ -542,7 +536,9 @@ export class Sectionals extends Context.Service<Sectionals, {
             }),
             heldHere: holdsIt(session, device),
             endedBy: session.endedBy === "time" ? "time" : session.endedBy === "finished" ? "finished" : null,
-            report: over ? config.report : null,
+            report: over && config.report !== null
+              ? rescore(config.report, answers, yield* run(keysOf(config.report.results.map((result) => result.questionId))))
+              : null,
             createdAt: session.createdAt,
             finishedAt: session.finishedAt
           })
@@ -628,15 +624,23 @@ export class Sectionals extends Context.Service<Sectionals, {
           const rows = yield* db.select().from(sessions)
             .where(and(eq(sessions.profileId, profileId), eq(sessions.kind, "sectional")))
             .orderBy(desc(sessions.createdAt)).pipe(Effect.orDie)
+          const configs = new Map(rows.map((row) => [row.id, decodeConfig(row.config)] as const))
+          const reported = rows.filter((row) => configs.get(row.id)!.report !== null).map((row) => row.id)
+          const answers = reported.length === 0 ? [] : yield* db.select().from(responses)
+            .where(inArray(responses.sessionId, reported)).orderBy(asc(responses.seq)).pipe(Effect.orDie)
+          const keys = yield* run(keysOf([...new Set(answers.map((answer) => answer.questionId))]))
           return rows.map((row) => {
-            const config = decodeConfig(row.config)
+            const config = configs.get(row.id)!
+            const report = config.report === null
+              ? null
+              : rescore(config.report, answers.filter((answer) => answer.sessionId === row.id), keys)
             return new SectionalSummary({
               id: SessionId.make(row.id),
               section: sectionName(config.section),
               finished: row.status === "finished",
-              score: config.report?.score ?? null,
-              low: config.report?.low ?? null,
-              high: config.report?.high ?? null,
+              score: report?.score ?? null,
+              low: report?.low ?? null,
+              high: report?.high ?? null,
               createdAt: row.createdAt,
               finishedAt: row.finishedAt
             })
@@ -647,15 +651,20 @@ export class Sectionals extends Context.Service<Sectionals, {
         own(caller.profileId, id).pipe(Effect.flatMap((session) => viewOf(session, caller.device)))
 
       // The same submit sent again is recorded once; another with its
-      // number comes from a screen out of date.
+      // number, or with a number before the last Response's, comes from a
+      // screen out of date. So the Session's Responses are in the order they
+      // were given.
       const repeated = (session: SessionRow, caller: Caller, submit: Change) =>
         Effect.gen(function*() {
-          const [repeat] = yield* db.select().from(responses)
-            .where(and(eq(responses.sessionId, session.id), eq(responses.seq, submit.seq))).pipe(Effect.orDie)
-          if (repeat === undefined) return false
+          const given = yield* responsesOf(session.id)
+          const repeat = given.find((each) => each.seq === submit.seq)
+          const stale = session.status === "finished" ? "finished" : "not-current"
+          if (repeat === undefined) {
+            return submit.seq > (given.at(-1)?.seq ?? 0) ? false : yield* outOfStep(session, caller.device, stale)
+          }
           const same = repeat.questionId === submit.questionId && repeat.selection === encodeSelection(sorted(submit.selection))
           if (same) return true
-          return yield* outOfStep(session, caller.device, session.status === "finished" ? "finished" : "not-current")
+          return yield* outOfStep(session, caller.device, stale)
         })
 
       const answer = (caller: Caller, id: SessionId, submit: Change) =>

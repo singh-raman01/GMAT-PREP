@@ -139,8 +139,10 @@ export class BlueprintView extends Schema.Class<BlueprintView>("gmat-prep/api/Bl
   blueprint: Blueprint,
   defaults: Blueprint,
   // After a save: how many passages and sets held for Mocks fit no slot now
-  // and went to Practice Sets.
-  released: Schema.NullOr(Schema.Int)
+  // and went to Practice Sets, and how many Questions joined the Reserve
+  // because a slot now takes their passage's or set's size.
+  released: Schema.NullOr(Schema.Int),
+  joined: Schema.NullOr(Schema.Int)
 }) {}
 
 export class SettingsApi extends HttpApiGroup.make("settings")
@@ -175,7 +177,8 @@ export class SettingsApi extends HttpApiGroup.make("settings")
       success: BlueprintView
     }),
     // Saves the Section Blueprint. Passages and sets held for Mocks that fit
-    // none of its slots are released into Practice Sets.
+    // none of its slots are released into Practice Sets, and those kept out
+    // only for their size are decided again.
     HttpApiEndpoint.put("saveBlueprint", "/settings/blueprint", {
       payload: Schema.Struct({ blueprint: Blueprint }),
       success: BlueprintView

@@ -160,7 +160,8 @@ const SectionStart = (
             ))}
           </ul>
           <p className="hint">
-            The Curator holds a quarter of each book's Questions back for Mocks and Sectionals, so more books add more.
+            The app holds back a quarter of each Book's Questions, and of each batch the Curator generates, for Mocks and
+            Sectionals, so more Books add more.
           </p>
         </div>
       )}

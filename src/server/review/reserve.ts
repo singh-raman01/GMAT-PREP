@@ -243,17 +243,51 @@ export const releaseUnfitting = Effect.gen(function*() {
   return unfitting.length
 })
 
-// Saves the Curator's Blueprint and releases the passages and sets in the
-// Reserve that fit none of its slots now. Returns how many were released.
+// Passages and sets kept out of the Reserve because no slot of the old
+// Blueprint took their size, which a slot of the new one takes: their
+// decision is undone, so the next decision can take them in. Returns how
+// many.
+const reopenFitting = (before: Blueprint, after: Blueprint) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const outside = db.selectDistinct({ stimulusId: questions.stimulusId }).from(questions)
+      .where(and(isNotNull(questions.stimulusId), eq(questions.reserve, false)))
+    const passages = yield* db.select({
+      stimulusId: questions.stimulusId,
+      questionType: questions.questionType,
+      size: count()
+    }).from(questions)
+      .where(and(
+        inArray(questions.stimulusId, outside),
+        or(eq(questions.status, "published"), and(ne(questions.status, "withdrawn"), isNotNull(questions.reserve)))
+      ))
+      .groupBy(questions.stimulusId)
+    const reopened = passages.filter((passage) =>
+      !fitsSlot(passage.questionType, passage.size, before) && fitsSlot(passage.questionType, passage.size, after)
+    ).map((passage) => passage.stimulusId!)
+    if (reopened.length > 0) {
+      yield* db.update(questions).set({ reserve: null, reserveDecidedAt: null })
+        .where(and(inArray(questions.stimulusId, reopened), eq(questions.reserve, false)))
+    }
+    return reopened.length
+  })
+
+// Saves the Curator's Blueprint. Passages and sets in the Reserve that fit
+// none of its slots now are released; those kept out only because no slot
+// took their size are decided again. Returns how many were released, and how
+// many Questions joined the Reserve.
 export const changeBlueprint = (blueprint: Blueprint) =>
   Effect.gen(function*() {
     const db = yield* Db
-    return yield* db.transaction(() =>
+    const { released, reopened } = yield* db.transaction(() =>
       Effect.gen(function*() {
+        const before = yield* loadBlueprint
         yield* storeBlueprint(blueprint)
-        return yield* releaseUnfitting
+        const released = yield* releaseUnfitting
+        return { released, reopened: yield* reopenFitting(before, blueprint) }
       })
     )
+    return { released, joined: reopened === 0 ? 0 : yield* assignUndecided }
   })
 
 // Decides the Reserve for every Book whose run has ended, finished or not,

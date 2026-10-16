@@ -603,11 +603,12 @@ export const sessions = sqliteTable(
   {
     id: text("id").primaryKey(),
     profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
-    // practice, for now
+    // practice or sectional
     kind: text("kind").notNull(),
     timed: integer("timed", { mode: "boolean" }).notNull(),
-    // JSON: how the Session was chosen, the Questions planned in order, and
-    // those held for Mocks.
+    // JSON, by kind: for a Practice Set, how it was chosen, the Questions
+    // planned in order and those it skips; for a Sectional, its Blueprint,
+    // the units it chose and its report once closed.
     config: text("config").notNull(),
     // active, paused or finished
     status: text("status").notNull(),

@@ -71,9 +71,9 @@ export class Named extends Schema.Class<Named>("gmat-prep/api/Named")({
 }) {}
 
 // A Book's item a set skips, and why: its Question is in the Mock Reserve or
-// waits for that decision, or it is not in the Question Bank, being checked
-// or withdrawn.
-export const SkipReason = Schema.Literals(["reserve", "undecided", "checking", "withdrawn"])
+// waits for that decision; it is not in the Question Bank, being checked or
+// withdrawn; or a Sectional still running chose it.
+export const SkipReason = Schema.Literals(["reserve", "undecided", "checking", "withdrawn", "in-section"])
 
 export class ItemRef extends Schema.Class<ItemRef>("gmat-prep/api/ItemRef")({
   set: Schema.String,
@@ -249,6 +249,8 @@ export class PracticePreview extends Schema.Class<PracticePreview>("gmat-prep/ap
   matching: Schema.Int,
   heldForMocks: Schema.Int,
   unavailable: Schema.Int,
+  // Left out while the Sectional that chose them runs.
+  inSection: Schema.Int,
   // A timed set's time limit: its Questions' Target Times added up.
   limitMs: Schema.NullOr(Schema.Int)
 }) {}
@@ -299,7 +301,7 @@ export class FiltersInvalid extends Schema.TaggedError<FiltersInvalid>()(
 
 export class NoQuestionsMatch extends Schema.TaggedError<NoQuestionsMatch>()(
   "NoQuestionsMatch",
-  { heldForMocks: Schema.Int, unavailable: Schema.Int },
+  { heldForMocks: Schema.Int, unavailable: Schema.Int, inSection: Schema.Int },
   { httpApiStatus: 409 }
 ) {}
 
