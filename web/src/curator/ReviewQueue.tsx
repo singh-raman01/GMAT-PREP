@@ -26,7 +26,12 @@ const ReasonLabels: Record<ReasonCode, string> = {
   "same-text-other-key": "Same text, other key",
   "near-match": "Near match",
   "key-changed": "Key changed",
-  "unread-page": "Page not read"
+  "unread-page": "Page not read",
+  "tags": "Tags",
+  "solver-disagreement": "Solver disagreement",
+  "approach-misses-key": "Approach misses the key",
+  "option-notes": "Option notes",
+  "difficulty": "Difficulty"
 }
 
 const RepeatCodes: ReadonlySet<ReasonCode> = new Set(["near-match", "same-text-other-key"])

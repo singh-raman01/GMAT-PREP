@@ -228,10 +228,39 @@ export const questions = sqliteTable(
     taxonomyVersion: integer("taxonomy_version").notNull(),
     model: text("model").notNull(),
     promptVersion: text("prompt_version").notNull(),
+    // Tags from the Taxonomy, and the LLM's Difficulty estimate on the
+    // Difficulty scale, with the model and prompt that gave them.
+    primarySkill: text("primary_skill"),
+    // JSON array of up to two Skill ids.
+    secondarySkills: text("secondary_skills").notNull().default("[]"),
+    difficultyEstimate: real("difficulty_estimate"),
+    tagsModel: text("tags_model"),
+    tagsPromptVersion: text("tags_prompt_version"),
+    taggedAt: integer("tagged_at"),
+    // The starting Difficulty: from the Book Label, else the estimate.
+    difficultySeed: real("difficulty_seed"),
+    // book-label or estimate
+    difficultyBasis: text("difficulty_basis"),
+    // JSON array of { code, detail }: what extraction and linking found,
+    // such as a missing key or a near match, for the Publish Gate.
+    linkReasons: text("link_reasons").notNull().default("[]"),
+    // The Question this one may repeat: a near match, or the same text.
+    relatedQuestionId: text("related_question_id"),
+    // What enrichment still owes the Question: pending (all of it),
+    // key-content (Approaches and wrong-option notes after a key change)
+    // or done.
+    enrichment: text("enrichment").notNull().default("pending"),
+    // Whether the Question belongs to the Mock Reserve; null until decided.
+    reserve: integer("reserve", { mode: "boolean" }),
+    reserveDecidedAt: integer("reserve_decided_at"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull()
   },
-  (t) => [index("questions_hash").on(t.normalizedHash), index("questions_status").on(t.status)]
+  (t) => [
+    index("questions_hash").on(t.normalizedHash),
+    index("questions_status").on(t.status),
+    index("questions_enrichment").on(t.enrichment)
+  ]
 )
 
 export const parts = sqliteTable(
@@ -326,3 +355,89 @@ export const reviewItems = sqliteTable(
     uniqueIndex("review_items_page").on(t.bookId, t.page)
   ]
 )
+
+// Independent LLM solves of a Question, kept so a key change can be checked
+// against them without solving again.
+export const solverRuns = sqliteTable(
+  "solver_runs",
+  {
+    questionId: text("question_id").notNull().references(() => questions.id, { onDelete: "cascade" }),
+    run: integer("run").notNull(),
+    // The option the solver chose.
+    answer: text("answer").notNull(),
+    model: text("model").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    createdAt: integer("created_at").notNull()
+  },
+  (t) => [primaryKey({ columns: [t.questionId, t.run] })]
+)
+
+// Worked routes to a Question's answer, each with one Strategy. The Book's
+// own explanation is one.
+export const approaches = sqliteTable(
+  "approaches",
+  {
+    id: text("id").primaryKey(),
+    questionId: text("question_id").notNull().references(() => questions.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    // A Strategy id from the Taxonomy.
+    strategy: text("strategy").notNull(),
+    // Markdown with LaTeX.
+    steps: text("steps").notNull(),
+    expectedSeconds: integer("expected_seconds").notNull(),
+    validWhen: text("valid_when").notNull(),
+    // book or llm
+    author: text("author").notNull(),
+    // The option the Approach arrives at.
+    answer: text("answer"),
+    model: text("model").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    createdAt: integer("created_at").notNull()
+  },
+  (t) => [index("approaches_question").on(t.questionId)]
+)
+
+// For each wrong option: why it tempts, the Mistake Type it most likely
+// signals and, where one fits, its Trap Pattern.
+export const optionNotes = sqliteTable(
+  "option_notes",
+  {
+    partId: text("part_id").notNull().references(() => parts.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    trapNote: text("trap_note").notNull(),
+    mistakeType: text("mistake_type").notNull(),
+    trapPattern: text("trap_pattern"),
+    model: text("model").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    createdAt: integer("created_at").notNull()
+  },
+  (t) => [primaryKey({ columns: [t.partId, t.position] })]
+)
+
+// Curator decisions that replace a Book's key, with the reason.
+export const keyOverrides = sqliteTable(
+  "key_overrides",
+  {
+    id: text("id").primaryKey(),
+    partId: text("part_id").notNull().references(() => parts.id, { onDelete: "cascade" }),
+    previousKey: text("previous_key"),
+    newKey: text("new_key").notNull(),
+    reason: text("reason").notNull(),
+    createdAt: integer("created_at").notNull()
+  },
+  (t) => [index("key_overrides_part").on(t.partId)]
+)
+
+// The golden set: the first Questions the Curator approves from the first
+// Book, with the text, Parts, key and tags the Curator confirmed. Prompt and
+// model changes are measured against it.
+export const goldenQuestions = sqliteTable("golden_questions", {
+  questionId: text("question_id").primaryKey().references(() => questions.id, { onDelete: "cascade" }),
+  bookId: text("book_id").notNull().references(() => books.id, { onDelete: "cascade" }),
+  set: text("set_name").notNull(),
+  number: integer("number").notNull(),
+  page: integer("page").notNull(),
+  // JSON: stem, options, key, question type, primary and secondary Skills.
+  expected: text("expected").notNull(),
+  approvedAt: integer("approved_at").notNull()
+})
