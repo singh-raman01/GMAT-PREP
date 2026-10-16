@@ -1,8 +1,18 @@
-import { and, asc, eq, isNotNull, isNull, lt, max, ne } from "drizzle-orm"
+import { and, asc, eq, isNotNull, isNull, lt, max, ne, sql } from "drizzle-orm"
 import { Clock, Effect, Option, Schema } from "effect"
 import { sha256 } from "../access/tokens.ts"
 import { Db } from "../db/Database.ts"
-import { books, bookSkips, options, parts, questions, reviewItems, sources, taxonomyVersions } from "../db/schema.ts"
+import {
+  books,
+  bookSkips,
+  goldenQuestions,
+  options,
+  parts,
+  questions,
+  reviewItems,
+  sources,
+  taxonomyVersions
+} from "../db/schema.ts"
 import {
   type Candidate,
   candidateProblems,
@@ -117,6 +127,31 @@ const sourceKeyReasons = (questionId: string) =>
     }))
   })
 
+// The explanation a Question's Approaches are written with: its own
+// Source's, else the oldest other Source's that has one. With it, the answer
+// it reaches: the one it states, else its own Book's key for the item. One
+// that states none is not taken to reach a key from elsewhere, such as a Key
+// Override.
+export const explanationOf = (questionId: string) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const given = yield* db.select({
+      explanation: sources.explanation,
+      answer: sources.explanationAnswer,
+      bookKey: sources.bookKey
+    }).from(sources).where(eq(sources.questionId, questionId))
+      .orderBy(asc(sources.merged), asc(sources.createdAt), asc(sql`${sources}.rowid`))
+    const explained = given.find((source) => source.explanation !== null)
+    return {
+      explanation: explained?.explanation ?? null,
+      reaches: explained === undefined ? null : explained.answer ?? explained.bookKey
+    }
+  })
+
+type Explanation = Effect.Success<ReturnType<typeof explanationOf>>
+
+const sameExplanation = (a: Explanation, b: Explanation) => a.explanation === b.explanation && a.reaches === b.reaches
+
 // What changed about a Question besides its reasons: its key or the Book's
 // explanation, which its Approaches and wrong-option notes are written
 // against, or something else the Publish Gate reads, such as its Book Label.
@@ -157,7 +192,7 @@ export const settle = (
 
 // Works out a Question's source keys again, as when another Book's item for
 // it changed or left the map, or the Curator merged a Question into it.
-export const recheckSources = (questionId: string) =>
+export const recheckSources = (questionId: string, changes: Changes = {}) =>
   Effect.gen(function*() {
     const db = yield* Db
     const [question] = yield* db.select({ linkReasons: questions.linkReasons, related: questions.relatedQuestionId })
@@ -165,7 +200,7 @@ export const recheckSources = (questionId: string) =>
     if (question === undefined) return
     const before = readLinkReasons(question.linkReasons)
     const reasons = [...before.filter((reason) => reason.code !== "source-key"), ...yield* sourceKeyReasons(questionId)]
-    yield* settle(questionId, reasons, question.related)
+    yield* settle(questionId, reasons, question.related, changes)
   })
 
 // Whether a Question named by the bank is still there to match against: the
@@ -198,6 +233,7 @@ export const linkCandidate = (
         if (source !== undefined) {
           const changed = source.bookKey !== candidate.key || source.explanation !== candidate.explanation ||
             source.explanationAnswer !== candidate.explanationAnswer || source.bookLabel !== candidate.label
+          const explainedBefore = changed ? yield* explanationOf(source.questionId) : undefined
           yield* db.update(sources)
             .set({
               set,
@@ -209,8 +245,9 @@ export const linkCandidate = (
             })
             .where(eq(sources.id, source.id))
           if (!changed) return "unchanged" as const
-          const explanationChanged = source.explanation !== candidate.explanation ||
-            source.explanationAnswer !== candidate.explanationAnswer
+          // Whether the explanation the Approaches are written with, or the
+          // answer it reaches, changed: this item's may not be the one used.
+          const explanationChanged = !sameExplanation(explainedBefore!, yield* explanationOf(source.questionId))
           // Another Book's item for the Question: its key bears on it, and its
           // explanation may be the one the Question's Approaches use.
           if (source.merged) {
@@ -283,9 +320,18 @@ export const linkCandidate = (
             createdAt: now
           })
 
-        // The same Question again: another Source for it.
+        // The same Question again: another Source for it. Its explanation
+        // becomes the one the Approaches use when the Question had none.
         if (exact !== undefined && !unsure && (candidate.key === null || exact.key === candidate.key)) {
+          const explainedBefore = yield* explanationOf(exact.id)
           yield* addSource(exact.id, true)
+          if (!sameExplanation(explainedBefore, yield* explanationOf(exact.id))) {
+            const [question] = yield* db.select({ linkReasons: questions.linkReasons, related: questions.relatedQuestionId })
+              .from(questions).where(eq(questions.id, exact.id))
+            if (question !== undefined) {
+              yield* settle(exact.id, readLinkReasons(question.linkReasons), question.related, { content: true })
+            }
+          }
           return "merged" as const
         }
         // The same Question, which had no key: it takes this Book's key and
@@ -426,8 +472,10 @@ export const heldPages = (bookId: string) =>
 
 // After a Book Map version is linked: items it no longer produces have left
 // the map. A Question left with no Source is withdrawn; one with Sources from
-// other Books keeps them. Skips and unread pages the map no longer covers go
-// too.
+// other Books keeps them, and its Approaches are written again if the
+// explanation they used left. Skips and unread pages the map no longer covers
+// go too. Returns how many items left, and the Questions sent back to draft
+// that have no Source left in the Book, which its run will not check.
 export const retireStale = (bookId: string, mapVersion: number, unreadPages: ReadonlySet<number>) =>
   Effect.gen(function*() {
     const db = yield* Db
@@ -436,21 +484,39 @@ export const retireStale = (bookId: string, mapVersion: number, unreadPages: Rea
       Effect.gen(function*() {
         const stale = yield* db.select().from(sources)
           .where(and(eq(sources.bookId, bookId), lt(sources.mapVersion, mapVersion)))
-        const touched = new Set(stale.map((source) => source.questionId))
+        const touched = [...new Set(stale.map((source) => source.questionId))]
+        const explainedBefore = new Map<string, Explanation>()
+        for (const questionId of touched) explainedBefore.set(questionId, yield* explanationOf(questionId))
         for (const source of stale) yield* db.delete(sources).where(eq(sources.id, source.id))
+        const sentBack: Array<string> = []
         for (const questionId of touched) {
           const remaining = yield* db.select().from(sources).where(eq(sources.questionId, questionId))
-            .orderBy(asc(sources.createdAt))
+            .orderBy(asc(sources.createdAt), asc(sql`${sources}.rowid`))
           if (remaining.length === 0) {
             yield* db.update(questions).set({ status: "withdrawn", updatedAt: now }).where(eq(questions.id, questionId))
             yield* db.update(reviewItems).set({ status: "decided", decision: "withdrawn", decidedAt: now })
               .where(and(eq(reviewItems.questionId, questionId), eq(reviewItems.status, "open")))
-            continue
+          } else {
+            if (remaining.every((source) => source.merged)) {
+              yield* db.update(sources).set({ merged: false }).where(eq(sources.id, remaining[0]!.id))
+            }
+            const content = !sameExplanation(explainedBefore.get(questionId)!, yield* explanationOf(questionId))
+            yield* recheckSources(questionId, { content })
+            const [after] = yield* db.select({ status: questions.status }).from(questions)
+              .where(eq(questions.id, questionId))
+            if (after?.status === "draft" && !remaining.some((source) => source.bookId === bookId)) {
+              sentBack.push(questionId)
+            }
           }
-          if (remaining.every((source) => source.merged)) {
-            yield* db.update(sources).set({ merged: false }).where(eq(sources.id, remaining[0]!.id))
+          // A golden-set approval is of the Question's own item in its Book;
+          // it goes when that item does.
+          const [golden] = yield* db.select({ bookId: goldenQuestions.bookId }).from(goldenQuestions)
+            .where(eq(goldenQuestions.questionId, questionId))
+          if (golden !== undefined) {
+            const [own] = yield* db.select({ id: sources.id }).from(sources)
+              .where(and(eq(sources.questionId, questionId), eq(sources.bookId, golden.bookId), eq(sources.merged, false)))
+            if (own === undefined) yield* db.delete(goldenQuestions).where(eq(goldenQuestions.questionId, questionId))
           }
-          yield* recheckSources(questionId)
         }
         yield* db.delete(bookSkips).where(and(eq(bookSkips.bookId, bookId), lt(bookSkips.mapVersion, mapVersion)))
         const pages = yield* db.select({ id: reviewItems.id, page: reviewItems.page }).from(reviewItems)
@@ -461,7 +527,7 @@ export const retireStale = (bookId: string, mapVersion: number, unreadPages: Rea
               .where(eq(reviewItems.id, item.id))
           }
         }
-        return stale.length
+        return { retired: stale.length, sentBack }
       })
     ).pipe(Effect.orDie)
   })

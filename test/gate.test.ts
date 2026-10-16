@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { fitsSlot } from "../src/api/blueprint.ts"
+import { approachesProblems, type ApproachesReply, type QuestionText } from "../src/server/books/enrichment.ts"
 import { type GateInput, gateReasons } from "../src/server/review/gate.ts"
 import { reserveDecisions, type ReserveUnit } from "../src/server/review/reserve.ts"
 import { parseTaxonomy } from "../src/server/taxonomy/Taxonomy.ts"
@@ -112,6 +113,38 @@ describe("The Publish Gate", () => {
 
 const unit = (id: string, questionType: string, band: ReserveUnit["band"], reserve: boolean | null = null, size = 1) =>
   ({ id, size, questionType, band, hash: `hash-${id}`, reserve }) satisfies ReserveUnit
+
+describe("An Approaches reply", () => {
+  const explained: QuestionText = {
+    questionType: "quant.ps",
+    stem: "If \\(3x + 1 = 13\\), what is the value of x?",
+    options: ["A", "B", "C", "D", "E"].map((label) => ({ label, text: label })),
+    key: "C",
+    explanation: "Subtract 1 and divide by 3."
+  }
+  const reply = (bookApproach: ApproachesReply["bookApproach"]) =>
+    ({
+      approaches: [{ strategy: "quant.strategy.solve-directly", steps: "1. Solve.", expectedSeconds: 60, validWhen: "Always.", answer: "C" }],
+      bookApproach,
+      wrongOptions: ["A", "B", "D", "E"].map((label) => ({
+        label,
+        trapNote: `${label} comes from a slip.`,
+        mistakeType: "calculation-slip",
+        trapPattern: null
+      }))
+    }) as unknown as ApproachesReply
+
+  test("is asked for again when the Book's Approach cannot be shown, or is missing for a shown explanation", () => {
+    const strategy = "quant.strategy.solve-directly"
+    expect(approachesProblems(reply({ strategy, expectedSeconds: 60, validWhen: "Always." }), explained)).toEqual([])
+    expect(approachesProblems(reply({ strategy, expectedSeconds: 60, validWhen: " " }), explained)).toEqual([
+      "The book's Approach's validWhen cannot be shown: it is empty."
+    ])
+    expect(approachesProblems(reply(null), explained)).toEqual(["The book gives an explanation: give its bookApproach."])
+    // With no explanation shown, the Book's Approach is not asked for.
+    expect(approachesProblems(reply(null), { ...explained, explanation: null })).toEqual([])
+  })
+})
 
 describe("The Mock Reserve", () => {
   test("a quarter of a Book's Section joins, spread over Question Types and Difficulty Bands, the same way every time", () => {

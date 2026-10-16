@@ -43,8 +43,9 @@ const decodeRanges = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array
 export const encodeReport = Schema.encodeSync(Schema.fromJsonString(GoldenReport))
 export const decodeReport = Schema.decodeUnknownOption(Schema.fromJsonString(GoldenReport))
 
-// The golden Questions the check covers, where their Book now has them, in
-// book order.
+// The golden Questions the check covers, at their own items in their Book
+// as it has them now, in book order. Another Source the Question has in that
+// Book is another item, not the one approved.
 const goldenRows = (questionIds: ReadonlyArray<string> | undefined) =>
   Effect.gen(function*() {
     const db = yield* Db
@@ -57,7 +58,14 @@ const goldenRows = (questionIds: ReadonlyArray<string> | undefined) =>
       number: sources.number,
       explanation: sources.explanation
     }).from(goldenQuestions)
-      .innerJoin(sources, and(eq(sources.questionId, goldenQuestions.questionId), eq(sources.bookId, goldenQuestions.bookId)))
+      .innerJoin(
+        sources,
+        and(
+          eq(sources.questionId, goldenQuestions.questionId),
+          eq(sources.bookId, goldenQuestions.bookId),
+          eq(sources.merged, false)
+        )
+      )
       .where(questionIds === undefined ? undefined : inArray(goldenQuestions.questionId, [...questionIds]))
       .orderBy(asc(sources.page), asc(sources.number))
       .pipe(Effect.orDie)
