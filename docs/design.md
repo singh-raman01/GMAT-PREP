@@ -591,6 +591,15 @@ The session did not discuss these. All are starting values that a rebuild can ch
 20. The plan-rebuilt and Review-Queue-changed events.
 21. Option tags never carry Time pressure; it comes only from Response timing.
 
+### Decisions made while building
+
+These came up while building a ticket. Like the starting values above, they can change without a data migration.
+
+1. Practice Sets (ticket 06): "missed" means the Profile's latest Response to the Question is wrong against the current key. A Skill filter matches the primary or a secondary Skill, primary first, and the "any" status serves unseen Questions before Seen ones. A book-order set lists the items it skips: unseen Mock Reserve Questions as held for Mocks, and items not published as not in the Question Bank yet. "Practise 3 similar" starts with however many it finds when fewer than 3 qualify.
+2. Releasing the Mock Reserve takes each Question from the Question Type and Difficulty Band holding the most, so what stays held keeps its spread.
+3. A Question merged into another after a Session served it is withdrawn instead of deleted, so its Responses stay on record.
+4. A Book's explanation is an Approach only when it states the key, or states no letter and its own Book gives that key; so after a Key Override an explanation written for the old key is left out.
+
 ### Taxonomy review notes
 
 The drafting pass for Mistake Types, Trap Patterns and Strategies left these judgement calls for review:

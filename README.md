@@ -53,9 +53,15 @@ The rest wait in the Review Queue, each with every reason:
 
 You can publish past a solver's doubt or a difficulty mismatch, change the key with a reason (the question's Approaches and notes are written again and it is checked again), keep a near match as a Variant or merge it into the other question, or withdraw it. Fixing the Book Map checks each question again, and questions it no longer covers leave the bank. The book's page shows what became of every question it held.
 
-A quarter of each book's questions is held back for Mocks, spread over question types and difficulty bands. On the Books screen, Skills with fewer than 15 questions are listed for merging.
+A quarter of each book's questions is held back for Mocks, spread over question types and difficulty bands. The Books screen shows how many each Section holds back and can release some into Practice Sets; release cannot be undone. It also lists Skills with fewer than 15 questions.
+
+If a reply was unusable, "Check again" asks once more for the tags, solves, Approaches or notes. Questions waiting for a check that no job will run, as after a cancelled job, are counted at the top of the Review Queue with a button to check them.
 
 Under Golden set, approve the first book's questions with their Skills, up to a hundred. Checking the golden set reads their pages again and tags them again with the current models. It passes when text, answer choices and keys are all exact and the Skills match yours on 90% or more. Run it after changing a model or prompt.
+
+## Practise
+
+Open your Profile and choose Practice. Pick Questions by Section, Question Type, Skill, Difficulty and whether you have seen, missed or Bookmarked them, or follow a book in its own order, as in one book's Data Sufficiency 1 to 30. A set shows one Question at a time: choose with A to E, mark it as a guess if it was one, and submit with Enter. The Debrief follows straight away: why the option you picked tempts, and the ways to solve it, fastest first. "Practise 3 similar" starts a short set of unseen Questions with the same main Skill and Question Type and a similar Difficulty. Questions held back for Mocks stay out of your sets until the Curator releases them or you have seen them; in a book-order set they are listed as held for Mocks. Untimed sets never change your scores.
 
 A forgotten passphrase is cleared on the computer the app runs on, with the app running or not:
 
