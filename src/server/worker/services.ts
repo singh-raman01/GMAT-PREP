@@ -10,6 +10,7 @@ import { LlmAdapter } from "../llm/LlmAdapter.ts"
 import { type LlmTransport, LlmTransportHttp } from "../llm/LlmTransport.ts"
 import { ApiKeyStore } from "../settings/ApiKeyStore.ts"
 import { Settings } from "../settings/Settings.ts"
+import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 
 // What the job worker runs on, over a given LLM transport and job kinds.
 // Requires AppConfig.
@@ -19,7 +20,9 @@ export const workerServices = <E, R>(
 ) =>
   JobRunner.layer.pipe(
     Layer.provideMerge(LlmAdapter.layer),
-    Layer.provideMerge(Layer.mergeAll(JobStore.layer, Settings.layer, ApiKeyStore.layer, BookFiles.layer, transport)),
+    Layer.provideMerge(
+      Layer.mergeAll(JobStore.layer, Settings.layer, ApiKeyStore.layer, BookFiles.layer, Taxonomy.layer, transport)
+    ),
     Layer.provideMerge(kinds),
     Layer.provideMerge(ReadyDatabaseLive)
   )

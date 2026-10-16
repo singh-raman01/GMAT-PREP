@@ -3,6 +3,7 @@ import type { BookFiles } from "../books/BookFiles.ts"
 import type { Db } from "../db/Database.ts"
 import type { LlmAdapter, LlmError } from "../llm/LlmAdapter.ts"
 import type { Settings } from "../settings/Settings.ts"
+import type { Taxonomy } from "../taxonomy/Taxonomy.ts"
 
 // A kind of job: what its parameters and checkpoint look like, and one step
 // of work. The runner saves the checkpoint after every step, so a job that
@@ -30,7 +31,7 @@ export interface StepInput<P, C> {
 }
 
 // What a step may use.
-export type StepServices = LlmAdapter | Db | Settings | BookFiles
+export type StepServices = LlmAdapter | Db | Settings | BookFiles | Taxonomy
 
 export interface JobKind<P, C> {
   readonly kind: string

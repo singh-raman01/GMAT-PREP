@@ -19,7 +19,9 @@ import {
 // transaction and found again by its Book, the page it starts on and its
 // number, so a run that stops part way, a Book Map fix or a renamed set
 // writes each item once. A Question keeps the reasons linking found, which
-// are worked out again whenever what the Book gives for it changes.
+// are worked out again whenever what the Book gives for it changes. A new
+// Question, or one whose reasons or key changed, is a draft: enrichment and
+// the Publish Gate decide whether it is published or held.
 
 // A Question as compared with new items.
 export interface BankEntry {
@@ -67,7 +69,7 @@ export const RepeatCodes: ReadonlySet<ReasonCode> = new Set(["near-match", "same
 const UnsureCodes: ReadonlySet<ReasonCode> = new Set(["structure", "render", "figure"])
 
 // Opens a review item for a Question, or updates the open one.
-const holdForReview = (questionId: string, reasons: ReadonlyArray<Reason>, relatedQuestionId: string | null) =>
+export const holdForReview = (questionId: string, reasons: ReadonlyArray<Reason>, relatedQuestionId: string | null) =>
   Effect.gen(function*() {
     const db = yield* Db
     const now = yield* Clock.currentTimeMillis
@@ -112,27 +114,33 @@ const sourceKeyReasons = (questionId: string) =>
     }))
   })
 
-// Keeps a Question's reasons and decides where it stands. Every reason holds
-// it for the Curator, and so does a changed key; a published Question with
-// no reason stays published. A withdrawn Question only keeps its reasons.
+// Keeps a Question's reasons. When they or its key changed, it goes back to
+// draft for the Publish Gate, and a changed key owes it new key-dependent
+// content: its Approaches and wrong-option notes. Its tags, Difficulty
+// estimate and solver runs stay. A withdrawn Question only keeps its reasons.
 export const settle = (
   questionId: string,
   reasons: ReadonlyArray<Reason>,
   relatedQuestionId: string | null,
-  keyChange: Reason | undefined
+  keyChanged: boolean
 ) =>
   Effect.gen(function*() {
     const db = yield* Db
     const now = yield* Clock.currentTimeMillis
-    const [question] = yield* db.select({ status: questions.status }).from(questions).where(eq(questions.id, questionId))
+    const [question] = yield* db.select().from(questions).where(eq(questions.id, questionId))
     if (question === undefined) return
+    const encoded = JSON.stringify(reasons)
+    const changed = keyChanged || encoded !== question.linkReasons || relatedQuestionId !== question.relatedQuestionId
+    if (!changed) return
     yield* db.update(questions)
-      .set({ linkReasons: JSON.stringify(reasons), relatedQuestionId, updatedAt: now })
+      .set({
+        linkReasons: encoded,
+        relatedQuestionId,
+        ...(question.status === "withdrawn" ? {} : { status: "draft" }),
+        ...(keyChanged && question.enrichment === "done" ? { enrichment: "key-content" } : {}),
+        updatedAt: now
+      })
       .where(eq(questions.id, questionId))
-    if (question.status === "withdrawn") return
-    if (question.status === "published" && reasons.length === 0 && keyChange === undefined) return
-    yield* db.update(questions).set({ status: "held", updatedAt: now }).where(eq(questions.id, questionId))
-    yield* holdForReview(questionId, keyChange === undefined ? reasons : [...reasons, keyChange], relatedQuestionId)
   })
 
 // Works out a Question's source keys again, as when another Book's item for
@@ -145,8 +153,7 @@ export const recheckSources = (questionId: string) =>
     if (question === undefined) return
     const before = readLinkReasons(question.linkReasons)
     const reasons = [...before.filter((reason) => reason.code !== "source-key"), ...yield* sourceKeyReasons(questionId)]
-    if (JSON.stringify(reasons) === JSON.stringify(before)) return
-    yield* settle(questionId, reasons, question.related, undefined)
+    yield* settle(questionId, reasons, question.related, false)
   })
 
 // Whether a Question named by the bank is still there to match against: the
@@ -202,14 +209,10 @@ export const linkCandidate = (
             .where(eq(questions.id, source.questionId))
           const [part] = yield* db.select().from(parts)
             .where(and(eq(parts.questionId, source.questionId), eq(parts.position, 0)))
-          let keyChange: Reason | undefined
-          if (part !== undefined && part.keyBasis !== "override" && part.key !== candidate.key) {
+          const keyChanged = part !== undefined && part.keyBasis !== "override" && part.key !== candidate.key
+          if (keyChanged) {
             yield* db.update(parts).set({ key: candidate.key, keyBasis: candidate.key === null ? null : "book" })
               .where(eq(parts.id, part.id))
-            keyChange = {
-              code: "key-changed",
-              detail: `A Book Map fix changed its key from ${part.key ?? "none"} to ${candidate.key ?? "none"}.`
-            }
           }
           const [question] = yield* db.select({ linkReasons: questions.linkReasons, related: questions.relatedQuestionId })
             .from(questions).where(eq(questions.id, source.questionId))
@@ -218,7 +221,7 @@ export const linkCandidate = (
             source.questionId,
             [...candidateProblems(candidate), ...repeats, ...yield* sourceKeyReasons(source.questionId)],
             question?.related ?? null,
-            keyChange
+            keyChanged
           )
           return "relinked" as const
         }
@@ -260,7 +263,7 @@ export const linkCandidate = (
           return "merged" as const
         }
         // The same Question, which had no key: it takes this Book's key and
-        // waits for the Curator.
+        // goes back through the Publish Gate.
         if (exact !== undefined && !unsure && exact.key === null) {
           yield* addSource(exact.id, true)
           const [part] = yield* db.select().from(parts).where(and(eq(parts.questionId, exact.id), eq(parts.position, 0)))
@@ -271,10 +274,7 @@ export const linkCandidate = (
             .from(questions).where(eq(questions.id, exact.id))
           const kept = readLinkReasons(question?.linkReasons ?? "[]")
             .filter((reason) => reason.code !== "no-key" && reason.code !== "source-key")
-          yield* settle(exact.id, [...kept, ...yield* sourceKeyReasons(exact.id)], question?.related ?? null, {
-            code: "key-changed",
-            detail: `It had no key; ${set}, question ${candidate.number} of another Book gives ${candidate.key}.`
-          })
+          yield* settle(exact.id, [...kept, ...yield* sourceKeyReasons(exact.id)], question?.related ?? null, true)
           bank.splice(bank.indexOf(exact), 1, { ...exact, key: candidate.key })
           return "merged" as const
         }
@@ -321,7 +321,7 @@ export const linkCandidate = (
           section: origin.section,
           questionType: origin.questionType,
           stem: candidate.stem,
-          status: "held",
+          status: "draft",
           normalizedText: text,
           normalizedHash: hash,
           bookLabel: candidate.label,
@@ -330,6 +330,7 @@ export const linkCandidate = (
           promptVersion: origin.promptVersion,
           linkReasons: JSON.stringify(reasons),
           relatedQuestionId: related,
+          enrichment: "pending",
           createdAt: now,
           updatedAt: now
         })
@@ -351,7 +352,6 @@ export const linkCandidate = (
           })))
         }
         yield* addSource(questionId, false)
-        yield* holdForReview(questionId, reasons, related)
         bank.push({ id: questionId, hash, trigrams: pieces, key: candidate.key })
         return "created" as const
       })

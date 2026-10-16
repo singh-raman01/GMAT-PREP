@@ -66,14 +66,15 @@ const answers = (page: string) => ({
   answers: [...page.matchAll(/^(\d+)\. ([A-E])$/gm)].map((match) => ({ number: Number(match[1]), answer: match[2] }))
 })
 
-const explanations = (page: string) => {
+const explanations = (page: string, label: FakeEnrichment["label"]) => {
   const lines = page.split("\n")
   const items = []
   for (let i = 0; i < lines.length; i++) {
     const start = /^(\d+)\. (.*)$/.exec(lines[i] ?? "")
     if (start === null) continue
     const answer = /^The answer is ([A-E])\.$/.exec(lines[i + 1] ?? "")?.[1] ?? null
-    items.push({ number: Number(start[1]), explanation: start[2], answer, difficulty: null })
+    const number = Number(start[1])
+    items.push({ number, explanation: start[2], answer, difficulty: label?.(number) ?? null })
   }
   return { explanations: items }
 }
@@ -81,19 +82,90 @@ const explanations = (page: string) => {
 // Token counts per call, for the spend each test expects.
 export const FakeTokens = { tokensIn: 1000, tokensOut: 100 } as const
 
-export const fakeBookModel = (request: TransportRequest): FakeOutcome => {
+// Enrichment. Every fixture question's right answer is C, so by default the
+// solves say C, the Approaches reach the key, and every wrong choice gets a
+// note.
+export interface FakeEnrichment {
+  // The answer an independent solve gives, by the question's stem and run.
+  readonly solve?: (stem: string, run: number) => string
+  // The answer the Approaches reach, by the key and the attempt (2 when the
+  // first reply was sent back).
+  readonly approachAnswer?: (key: string, attempt: number) => string
+  // The Difficulty estimate, by stem.
+  readonly difficulty?: (stem: string) => number
+  // The primary Skill, by stem and the Skills offered.
+  readonly skill?: (stem: string, offered: ReadonlyArray<string>) => string
+  // The difficulty label an explanation prints, by question number.
+  readonly label?: (number: number) => "easy" | "medium" | "hard" | null
+}
+
+const firstListed = (system: string, heading: string) =>
+  [...(system.split(`${heading}:\n`)[1] ?? "").matchAll(/^- ([\w.-]+):/gm)].map((match) => match[1]!)
+
+const questionOf = (request: TransportRequest) => {
+  const body = quoted(request, "question")
+  return {
+    stem: body.split("\n\nAnswer choices:")[0] ?? "",
+    labels: [...body.matchAll(/^\(([A-E])\) /gm)].map((match) => match[1]!),
+    key: /^Right answer: ([A-E])$/m.exec(body)?.[1] ?? null,
+    explained: body.includes("The book's explanation:")
+  }
+}
+
+const enrichment = (request: TransportRequest, options: FakeEnrichment) => {
+  const system = request.messages[0]?.content ?? ""
+  const question = questionOf(request)
+  if (system.includes("You tag a GMAT question")) {
+    const offered = firstListed(system, "Skills")
+    return {
+      primarySkill: options.skill?.(question.stem, offered) ?? offered[0] ?? "none",
+      secondarySkills: [],
+      difficulty: options.difficulty?.(question.stem) ?? 0
+    }
+  }
+  if (system.includes("You solve a GMAT question")) {
+    const run = system.includes("different route") ? 2 : system.includes("check your answer") ? 3 : 1
+    return { work: "Worked it out.", answer: options.solve?.(question.stem, run) ?? "C" }
+  }
+  const strategy = firstListed(system, "Strategies")[0] ?? "none"
+  const attempt = request.messages.some((message) => message.content.includes("Your last reply had these problems")) ? 2 : 1
+  const key = question.key ?? "C"
+  return {
+    approaches: [{
+      strategy,
+      steps: "1. Work it out.",
+      expectedSeconds: 90,
+      validWhen: "Always.",
+      answer: options.approachAnswer?.(key, attempt) ?? key
+    }],
+    bookApproach: question.explained ? { strategy, expectedSeconds: 120, validWhen: "Always." } : null,
+    wrongOptions: question.labels.filter((label) => label !== key).map((label) => ({
+      label,
+      trapNote: `Choice ${label} comes from a slip.`,
+      mistakeType: "calculation-slip",
+      trapPattern: null
+    }))
+  }
+}
+
+export const makeFakeBookModel = (options: FakeEnrichment = {}) => (request: TransportRequest): FakeOutcome => {
   const system = request.messages[0]?.content ?? ""
   const page = quoted(request, "page")
   const reply = system.includes("say what each page holds")
     ? survey(request)
+    : system.includes("You tag a GMAT question") || system.includes("You solve a GMAT question") ||
+        system.includes("You write teaching material")
+    ? enrichment(request, options)
     : system.includes("Problem Solving questions")
     ? psQuestions(page)
     : system.includes("answer keys")
     ? answers(page)
     : system.includes("worked explanations")
-    ? explanations(page)
+    ? explanations(page, options.label)
     : system.includes("difficulty labels")
     ? { labels: [] }
     : { numbers: [...page.matchAll(/^(\d+)\. /gm)].map((match) => Number(match[1])) }
   return { content: JSON.stringify(reply), ...FakeTokens }
 }
+
+export const fakeBookModel = makeFakeBookModel()

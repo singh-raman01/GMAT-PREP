@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
+import { approachesOutput, SolveOutput, tagOutput } from "../src/server/books/enrichment.ts"
+import { readingOutputs } from "../src/server/books/readings.ts"
 import { surveyReply } from "../src/server/books/survey.ts"
 import { ConnectionTestReply } from "../src/server/jobs/kinds/connectionTest.ts"
 import { strictJsonSchema } from "../src/server/llm/jsonSchema.ts"
+import { parseTaxonomy } from "../src/server/taxonomy/Taxonomy.ts"
 
 // Strict structured outputs refuse a schema with an optional property, a
 // non-object root or keywords they do not know, so every output schema is
@@ -79,9 +82,20 @@ describe("Strict JSON Schema", () => {
     )
   })
 
-  test("every task's output schema has a strict form", () => {
-    for (const output of [ConnectionTestReply, surveyReply([3, 4, 5])]) {
-      expect(() => strictJsonSchema(output)).not.toThrow()
+  test("every task's output schema has a strict form", async () => {
+    const taxonomy = await Effect.runPromise(parseTaxonomy(await Bun.file("taxonomy/v1.yaml").text()))
+    const outputs = [
+      ConnectionTestReply,
+      surveyReply([3, 4, 5]),
+      ...readingOutputs,
+      ...["quant.ps", "di.ds", "verbal.cr-assumption"].flatMap((questionType) => [
+        tagOutput(taxonomy, questionType),
+        approachesOutput(taxonomy, questionType)
+      ]),
+      SolveOutput
+    ]
+    for (const output of outputs) {
+      expect(() => strictJsonSchema(output as Schema.Codec<unknown, unknown>)).not.toThrow()
     }
   })
 })

@@ -66,6 +66,9 @@ const Mappable: ReadonlySet<string> = new Set([
   "extracted"
 ])
 
+// The model tasks a Book's full run uses.
+const RunTasks = ["book-map", "extraction", "tagging", "solving", "approaches"] as const
+
 // The jobs of a Book's full run, which share its spend cap.
 const RunKinds = [BookMapping.kind, BookExtraction.kind]
 
@@ -308,12 +311,10 @@ export class Books extends Context.Service<Books, {
           if (row.status !== "previewed" && !restart) {
             return yield* new BookNotReady({ status: row.status as BookStatus })
           }
-          // The full run maps the Book, then extracts it.
+          // The full run maps the Book, extracts it and enriches its Questions.
           const llm = yield* settings.llm
           const hasKey = Option.isSome(yield* keys.read)
-          const missing = [
-            ...new Set([...missingSettings(llm, hasKey, "book-map"), ...missingSettings(llm, hasKey, "extraction")])
-          ]
+          const missing = [...new Set(RunTasks.flatMap((task) => missingSettings(llm, hasKey, task)))]
           if (missing.length > 0) return yield* new LlmNotConfigured({ missing })
           const spent = yield* runSpent(row.id)
           if (spendCap <= spent) return yield* new RunCapTooLow({ spent })

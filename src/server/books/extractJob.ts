@@ -1,11 +1,15 @@
-import { and, eq, max } from "drizzle-orm"
+import { and, asc, count, eq, inArray, max, sql } from "drizzle-orm"
 import { Clock, Effect, Schema } from "effect"
 import { MapRange, type MapRole, type TypeGroup } from "../../api/Books.ts"
 import { setKey } from "../../api/bookMapRules.ts"
 import { Db } from "../db/Database.ts"
-import { bookMaps, bookPages, books, pageReadings } from "../db/schema.ts"
+import { bookMaps, bookPages, books, pageReadings, questions, sources } from "../db/schema.ts"
 import type { JobKind } from "../jobs/JobKind.ts"
+import { runGate } from "../review/gate.ts"
+import { assignReserve } from "../review/reserve.ts"
+import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { heldPages, holdUnreadPage, type Linked, linkCandidate, loadBank, recordSkip, retireStale } from "./bankWrites.ts"
+import { enrichQuestion } from "./enrichment.ts"
 import { linkSet } from "./linking.ts"
 import { type PageReading, readPage, readsGroup, storedReading } from "./readings.ts"
 
@@ -14,12 +18,14 @@ import { type PageReading, readPage, readsGroup, storedReading } from "./reading
 // linked into the Question Bank, one set a step. Pages read for an earlier
 // version are not read again, and linking changes only the items whose key,
 // explanation or label changed. Once the latest version is linked, items it
-// no longer produces leave the Question Bank.
+// no longer produces leave the Question Bank, and each draft Question is
+// enriched and put through the Publish Gate, one a step. Last, the Book's
+// share of the Mock Reserve is decided.
 
 const Params = Schema.Struct({ bookId: Schema.String, title: Schema.String, mapVersion: Schema.Int })
 
 const Checkpoint = Schema.Struct({
-  stage: Schema.Literals(["read", "link"]),
+  stage: Schema.Literals(["read", "link", "enrich"]),
   // Sets linked so far, in the order of setsOf.
   setsLinked: Schema.Int
 })
@@ -154,14 +160,14 @@ const linkStep = (params: typeof Params.Type, setsLinked: number, stepsDone: num
       const linked = `Linked ${loaded.sets.length} question ${loaded.sets.length === 1 ? "set" : "sets"}`
       if (latest?.version !== params.mapVersion) return { _tag: "Finished", result: `${linked}.` } as const
       const retired = yield* retireStale(params.bookId, params.mapVersion, new Set(loaded.unread.keys()))
-      yield* db.update(books).set({ status: "extracted", updatedAt: now })
-        .where(and(eq(books.id, params.bookId), eq(books.status, "extracting")))
-        .pipe(Effect.orDie)
+      const drafts = yield* draftsOf(params.bookId)
       return {
-        _tag: "Finished",
-        result: retired === 0
-          ? `${linked}.`
-          : `${linked}; ${retired} ${retired === 1 ? "item has" : "items have"} left the Book Map.`
+        _tag: "Continue",
+        checkpoint: { stage: "enrich", setsLinked },
+        stepsTotal: stepsDone + drafts.length + 1,
+        note: retired === 0
+          ? `${linked}; checking each Question`
+          : `${linked}; ${retired} ${retired === 1 ? "item has" : "items have"} left the Book Map; checking each Question`
       } as const
     }
     const questionReadings = yield* readingsOf(params.bookId, set, "questions", loaded.pageCount)
@@ -215,6 +221,53 @@ const linkStep = (params: typeof Params.Type, setsLinked: number, stepsDone: num
     } as const
   })
 
+// Draft Questions with a Source in the Book, oldest first: the Book's new
+// Questions, and those its re-linking sent back to the Publish Gate.
+const draftsOf = (bookId: string) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const rows = yield* db.selectDistinct({ id: questions.id, createdAt: questions.createdAt, at: sql`${questions}.rowid` })
+      .from(questions)
+      .innerJoin(sources, and(eq(sources.questionId, questions.id), eq(sources.bookId, bookId)))
+      .where(eq(questions.status, "draft"))
+      .orderBy(asc(questions.createdAt), asc(sql`${questions}.rowid`))
+      .pipe(Effect.orDie)
+    return rows.map((row) => row.id)
+  })
+
+const enrichStep = (jobId: string, params: typeof Params.Type, setsLinked: number, stepsDone: number) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const drafts = yield* draftsOf(params.bookId)
+    const next = drafts[0]
+    if (next === undefined) {
+      const joined = yield* assignReserve(params.bookId).pipe(Effect.orDie)
+      const now = yield* Clock.currentTimeMillis
+      yield* db.update(books).set({ status: "extracted", updatedAt: now })
+        .where(and(eq(books.id, params.bookId), eq(books.status, "extracting")))
+        .pipe(Effect.orDie)
+      const own = yield* db.select({ status: questions.status, n: count() }).from(questions)
+        .innerJoin(sources, and(eq(sources.questionId, questions.id), eq(sources.bookId, params.bookId)))
+        .where(inArray(questions.status, ["published", "held"]))
+        .groupBy(questions.status)
+        .pipe(Effect.orDie)
+      const of = (status: string) => own.find((row) => row.status === status)?.n ?? 0
+      return {
+        _tag: "Finished",
+        result: `${of("published")} Questions published, ${of("held")} held in the Review Queue; ${joined} joined the Mock Reserve.`
+      } as const
+    }
+    const taxonomy = (yield* Taxonomy).view
+    yield* enrichQuestion(jobId, taxonomy, next)
+    const outcome = yield* runGate(next, taxonomy).pipe(Effect.orDie)
+    return {
+      _tag: "Continue",
+      checkpoint: { stage: "enrich", setsLinked },
+      stepsTotal: stepsDone + drafts.length + 1,
+      note: `Checked a Question: ${outcome === "published" ? "published" : "held for review"} (${drafts.length - 1} left)`
+    } as const
+  })
+
 export const BookExtraction: JobKind<typeof Params.Type, typeof Checkpoint.Type> = {
   kind: "book-extract",
   params: Params,
@@ -223,5 +276,9 @@ export const BookExtraction: JobKind<typeof Params.Type, typeof Checkpoint.Type>
   start: () => ({ stage: "read", setsLinked: 0 }),
   stepsTotal: () => null,
   step: ({ jobId, params, checkpoint, stepsDone }) =>
-    checkpoint.stage === "read" ? readStep(jobId, params, stepsDone) : linkStep(params, checkpoint.setsLinked, stepsDone)
+    checkpoint.stage === "read"
+      ? readStep(jobId, params, stepsDone)
+      : checkpoint.stage === "link"
+      ? linkStep(params, checkpoint.setsLinked, stepsDone)
+      : enrichStep(jobId, params, checkpoint.setsLinked, stepsDone)
 }

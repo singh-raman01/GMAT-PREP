@@ -32,14 +32,13 @@ const RemoveUploadLeftovers = Layer.effectDiscard(
 // kinds. Requires AppConfig.
 export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Layer.mergeAll(
   Profiles.layer,
-  Taxonomy.layer,
   Curator.layer,
   JobFeed.layer,
   Books.layer,
   ReviewQueue.layer,
   RemoveUploadLeftovers
 ).pipe(
-  Layer.provideMerge(Layer.mergeAll(Settings.layer, ApiKeyStore.layer, BookFiles.layer)),
+  Layer.provideMerge(Layer.mergeAll(Settings.layer, ApiKeyStore.layer, BookFiles.layer, Taxonomy.layer)),
   Layer.provideMerge(JobStore.layer),
   Layer.provideMerge(kinds),
   Layer.provideMerge(DatabaseLive)

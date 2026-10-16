@@ -69,7 +69,10 @@ const configure = (extractionReadsImages = false) =>
       jsonMode: "json-schema",
       models: [
         { task: "book-map", model: "map-model" },
-        { task: "extraction", model: extractionReadsImages ? "vision-model" : "text-model" }
+        { task: "extraction", model: extractionReadsImages ? "vision-model" : "text-model" },
+        { task: "tagging", model: "text-model" },
+        { task: "solving", model: "text-model" },
+        { task: "approaches", model: "text-model" }
       ],
       prices: [
         { model: "map-model", inputPerMillion: 1, outputPerMillion: 4 },
