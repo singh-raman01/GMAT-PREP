@@ -1,4 +1,7 @@
-import { Config, Effect, Option, Schedule } from "effect"
+import { Config, Effect, Layer, Option, Schedule } from "effect"
+import { AppConfig } from "../AppConfig.ts"
+import { JobRunner } from "../jobs/JobRunner.ts"
+import { WorkerServicesLive } from "./services.ts"
 
 const isAlive = (pid: number) => {
   try {
@@ -26,14 +29,19 @@ const serverPipeCloses = Effect.promise(async () => {
   }
 })
 
-// The job worker. Ticket 01 only starts it; jobs arrive with ticket 02. It
-// exits when its server is gone, so a crashed server never leaves it behind.
+// Runs jobs until stopped.
+const work = JobRunner.loop.pipe(
+  Effect.provide(WorkerServicesLive.pipe(Layer.provide(AppConfig.layerFromEnv)))
+)
+
+// The job worker. It exits when its server is gone, so a crashed server never
+// leaves it behind.
 export const WorkerMain = Effect.gen(function*() {
   const parentPid = yield* Config.Int("GMAT_PREP_PARENT_PID").pipe(Config.option)
   yield* Effect.logInfo(`Job worker ready (pid ${process.pid})`)
   if (Option.isNone(parentPid)) {
-    return yield* Effect.never
+    return yield* work
   }
-  yield* Effect.raceFirst(serverExits(parentPid.value), serverPipeCloses)
+  yield* Effect.raceFirst(work, Effect.raceFirst(serverExits(parentPid.value), serverPipeCloses))
   yield* Effect.logInfo("Server is gone; job worker stopping")
 })

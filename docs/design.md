@@ -133,7 +133,7 @@ Checked against mba.com on 15 October 2026.
 - `bun build --compile` makes one executable per OS. The app server starts the job worker from the same executable and restarts it if it dies (ADR 0001, ADR 0010). For development, `bun install && bun dev` runs from the repo.
 - Data lives in the OS's app-data folder by default, and the location can be changed.
 - The stack is Effect 4 (stable since 1 October 2026) with the Bun platform package, and Drizzle 1.0's Effect driver for Bun SQLite, pinned while it is a release candidate. Database access sits behind repository services, so the stable fallback, @effect/sql-sqlite-bun with hand-written SQL, can replace the driver without touching callers (ADR 0011).
-- The API is HTTP JSON defined with Effect HttpApi and Schema. The web app calls it through a client derived from the same definitions. One Server-Sent Events stream per device pushes six events: clock sync, Section expired, Session claimed elsewhere, job progress, plan rebuilt and Review Queue changed.
+- The API is HTTP JSON defined with Effect HttpApi and Schema. The web app calls it through a client derived from the same definitions. One Server-Sent Events stream per device, GET /api/events, pushes six events: clock sync, Section expired, Session claimed elsewhere, job progress, plan rebuilt and Review Queue changed. Job progress reaches the server through the database: each open stream reads changed jobs by revision twice a second.
 - Derived numbers update in small steps after each Rated Response in Practice Sets, and when each Section closes in Mocks and Sectionals. Full rebuilds, for example after a Key Override, run in the worker.
 - The web app renders math with KaTeX, and both Question charts and analytics charts with Vega-Lite.
 
@@ -441,19 +441,22 @@ The Curator view shows Question Bank coverage by Skill and Difficulty Band, the 
 - A Profile can have a PIN. PINs and the Curator passphrase are stored as argon2id hashes. An unlocked Profile and an unlocked Curator are held in HttpOnly, SameSite=Strict cookies. An unlock ends after 12 hours without use, and a browser holds one at a time: unlocking another Profile ends the one before.
 - Tabs share the browser's unlock, so each request names the Profile its tab shows, and the server refuses it when another tab has opened a different Profile. The tab then shows the Profile now unlocked.
 - Five wrong PINs lock the Profile for 5 minutes. PIN checks run one at a time, so wrong PINs sent together still count one by one.
-- The Curator resets PINs, and the passphrase is reset by a command run on the host computer.
+- The Curator passphrase is set the first time the Curator tools open. It has 8 to 200 characters, and five wrong entries lock the tools for 5 minutes, as with PINs.
+- The Curator resets PINs, and the passphrase is reset by a command run on the host computer: `gmat-prep reset-passphrase`, which also ends every Curator unlock.
 - Deleting a Profile needs its PIN or the Curator passphrase, and a snapshot is taken first.
 - The server accepts connections from the host only, and answers only requests whose Host header names this computer (127.0.0.1, localhost or [::1]), which stops a web page from reaching it through DNS rebinding. Every response forbids framing and type sniffing. Writes are accepted only from the app's own pages (by Origin) and only as JSON of at most 1 MB. In LAN mode it listens on the local network, and a new device must enter a 6-digit pairing code shown on the host; codes are single-use and expire after 5 minutes, and paired devices can be revoked. LAN traffic is plain HTTP, so LAN mode is for trusted networks.
 - Profiles cannot see each other's data.
 
 ### LLM adapter
 
-- Curator settings cover the base URL, a model per task and the price per model, all stored in the database, and the API key, stored only in a config file that the OS user alone can read, outside the data folder, so it never reaches snapshots or exports.
+- Curator settings cover the base URL, a model per task and the price per model, all stored in the database, and the API key, stored only in a config file that the OS user alone can read, outside the data folder, so it never reaches snapshots or exports. The file is credentials.json in the config folder: ~/.config/gmat-prep on Linux, ~/Library/Preferences/gmat-prep on macOS and %LOCALAPPDATA%\gmat-prep on Windows, unless GMAT_PREP_CONFIG_DIR names another. The app refuses to start when that folder is inside the data folder.
+- The adapter speaks the OpenAI-compatible chat completions API. It asks for JSON with structured outputs, JSON mode or instructions alone, as the Curator chooses, since providers differ in what they accept.
 - The tasks are Book Map, extraction, solving, tagging, Approaches, generation, statement translation (the second predicate), Lessons and Tutor Chat.
 - Every reply must match its JSON schema. An invalid reply is retried once with the error attached. If it fails again, a Question-level step sends the Question to the Review Queue; any other job step fails and shows the error, and Tutor Chat shows an error to the Learner.
-- 429 and 5xx responses are retried with backoff and jitter, honouring Retry-After. If failures continue, jobs pause and resume on their own. A job whose worker heartbeat stopped can be reclaimed.
+- 429, 5xx and lost connections are retried up to six times, with backoff that doubles from 1 second to at most 30, jitter of half either way, and at least the Retry-After the API gives. When the attempts run out, or Retry-After asks for more than a minute, the job pauses and resumes on its own after 5 minutes or that Retry-After, whichever is longer. Other refusals, such as a wrong key, fail the step at once.
+- A worker claims a job in one statement, so two workers never share one, and renews a heartbeat every 5 seconds; a job whose heartbeat is 30 seconds old is claimed again. Pausing a running job waits for its current step to be saved; cancelling stops the step at once.
 - Every stored output records its model, prompt version and date, so a better model can re-run only what it would change.
-- Spend is tokens times the per-model prices the Curator enters, since the API reports tokens but not cost. It counts against each job's cap and the monthly Tutor Chat cap.
+- Spend is tokens times the per-model prices the Curator enters, since the API reports tokens but not cost. A reply without usage figures is priced from an estimate of four characters per token and marked as estimated. Spend counts against each job's cap and the monthly Tutor Chat cap; no call starts once a job's cap is reached, so the job pauses at its last saved step.
 - Book text goes to the model as quoted data. Schema checks and key verification stop instruction-like text in a Book from changing a key.
 
 ### Data safety and operations

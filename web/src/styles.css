@@ -228,6 +228,7 @@ mark {
   font: inherit;
   font-size: var(--step-0);
   font-weight: 700;
+  text-decoration: none;
   cursor: pointer;
 }
 
@@ -596,6 +597,231 @@ input.pin-input {
   gap: 0.6rem;
   margin-bottom: 1.25rem;
   font-size: var(--step-2);
+}
+
+/* Links and small text */
+
+a {
+  color: inherit;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+}
+
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}
+
+.quiet-link {
+  color: var(--pencil);
+  font-weight: 700;
+}
+
+.curator-link {
+  margin-top: 3rem;
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+.curator-link a {
+  color: var(--graphite);
+  font-weight: 700;
+}
+
+.aside {
+  margin-top: 2.5rem;
+  max-width: 60ch;
+}
+
+.empty {
+  max-width: 60ch;
+}
+
+select {
+  min-height: 2.75rem;
+  max-width: 24rem;
+  padding: 0.45rem 0.75rem;
+  border: 2px solid var(--field);
+  border-radius: var(--radius);
+  background: var(--paper);
+  color: var(--graphite);
+  font: inherit;
+  font-size: var(--step-1);
+}
+
+select:focus-visible {
+  border-color: var(--graphite);
+}
+
+/* The Curator's pages */
+
+.subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 2rem;
+  margin-bottom: 2.5rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.subnav a {
+  padding: 0.7rem 0;
+  color: var(--pencil);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.subnav a[aria-current="page"] {
+  color: var(--graphite);
+}
+
+.subnav a:hover span {
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.3em;
+}
+
+.settings {
+  margin-bottom: 3.5rem;
+}
+
+.settings .group > .field + .field {
+  margin-top: 1.25rem;
+}
+
+.same-model {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.75rem 1rem;
+  margin-bottom: 1.75rem;
+}
+
+.task-models {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+  gap: 1.25rem 2.5rem;
+}
+
+.task-models .field + .field {
+  margin-top: 0;
+}
+
+.prices {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.price {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.price legend {
+  margin-bottom: 0.5rem;
+  padding: 0;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.price-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.price-fields input {
+  max-width: 10rem;
+}
+
+.saved {
+  align-self: center;
+  font-weight: 700;
+}
+
+.key-form {
+  display: grid;
+  gap: 1rem;
+  max-width: 30rem;
+}
+
+.jobs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--rule);
+  max-width: 52rem;
+}
+
+.job {
+  display: grid;
+  gap: 0.5rem;
+  padding: 1.25rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.job-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.25rem 1.5rem;
+}
+
+.job-label {
+  font-size: var(--step-1);
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.job-status {
+  font-weight: 700;
+}
+
+.job[data-status="failed"] .job-status {
+  color: var(--alert);
+}
+
+.job[data-status="queued"] .job-status,
+.job[data-status="cancelled"] .job-status,
+.job[data-status="paused"] .job-status {
+  color: var(--pencil);
+}
+
+.job-note,
+.job-result {
+  max-width: 68ch;
+}
+
+.job-meta {
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+.progress {
+  height: 0.4rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--rule);
+}
+
+.progress-done {
+  height: 100%;
+  background: var(--graphite);
+}
+
+.job .actions {
+  align-items: end;
+  margin-top: 0.25rem;
+}
+
+.cap-field input {
+  max-width: 9rem;
 }
 
 /* Motion answers actions only, and stops when asked to. */

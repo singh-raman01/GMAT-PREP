@@ -2,6 +2,8 @@ import { Schema } from "effect"
 import { type FormEvent, useCallback, useEffect, useId, useRef, useState } from "react"
 import { Pin, ProfileName, type ProfileSummary } from "../../src/api/Profiles.ts"
 import { call } from "./api.ts"
+import { clockTime, minutesAndSeconds } from "./format.ts"
+import { linkProps } from "./router.ts"
 
 type Stop = (error: { readonly _tag: string }) => void
 
@@ -20,12 +22,6 @@ const browserTimeZone = (): string | undefined => {
   }
 }
 
-const clockTime = (millis: number) => new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(millis)
-
-const minutesAndSeconds = (millis: number) => {
-  const seconds = Math.ceil(millis / 1000)
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`
-}
 
 interface PickerProps {
   readonly notice: string | undefined
@@ -108,6 +104,7 @@ export const ProfilePicker = ({ notice, onUnlocked, onStopped }: PickerProps) =>
           A profile keeps one person's practice, mistakes and study plan apart from anyone else's on this computer.
         </p>
         <AddProfile existing={profiles} onUnlocked={onUnlocked} onStopped={onStopped} />
+        <CuratorLink />
       </main>
     )
   }
@@ -163,9 +160,17 @@ export const ProfilePicker = ({ notice, onUnlocked, onStopped }: PickerProps) =>
             Add a profile
           </button>
         )}
+      <CuratorLink />
     </main>
   )
 }
+
+// The way into the Curator's tools: books, review and the LLM settings.
+const CuratorLink = () => (
+  <p className="curator-link">
+    <a {...linkProps("/curator")}>Curator tools</a> for adding books and setting up the LLM
+  </p>
+)
 
 interface PinEntryProps {
   readonly id: string

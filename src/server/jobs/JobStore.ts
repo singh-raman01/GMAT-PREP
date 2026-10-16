@@ -1,0 +1,338 @@
+import { and, desc, eq, gt, sql } from "drizzle-orm"
+import { Clock, Context, Effect, Layer, Option, Schema } from "effect"
+import {
+  JobId,
+  JobNotChangeable,
+  JobNotFound,
+  type JobStatus,
+  JobView,
+  SpendCapTooLow
+} from "../../api/Jobs.ts"
+import { Db } from "../db/Database.ts"
+import { jobs } from "../db/schema.ts"
+import { type AnyJobKind, type JobKind, JobKinds } from "./JobKind.ts"
+import { nextRevision } from "./revision.ts"
+
+export type JobRow = typeof jobs.$inferSelect
+
+// How a running job ends its turn with the worker.
+export type JobEnd =
+  | { readonly _tag: "Done"; readonly result: string }
+  | { readonly _tag: "Failed"; readonly note: string }
+  // resumeAt null waits for the Curator; a time resumes on its own.
+  | { readonly _tag: "Paused"; readonly note: string; readonly resumeAt: number | null }
+  | { readonly _tag: "Cancelled"; readonly note: string }
+
+export interface StepSave {
+  readonly checkpoint: string
+  readonly stepsDone: number
+  readonly stepsTotal: number | null
+  readonly note: string | null
+}
+
+// What the server asked of a running job, read back by the worker.
+export interface Control {
+  readonly requested: "pause" | "cancel" | null
+}
+
+// A worker whose heartbeat is older than this has stopped; its job can be
+// claimed again.
+export const StaleAfterMs = 30_000
+
+const PausedByCurator = "Paused by the Curator"
+
+const encodeJson = <A>(schema: Schema.Codec<A, unknown>, value: A) =>
+  JSON.stringify(Schema.encodeSync(Schema.toCodecJson(schema))(value))
+
+export const decodeJson = <A>(schema: Schema.Codec<A, unknown>, text: string): Option.Option<A> =>
+  Option.flatMap(
+    Option.liftThrowable(() => JSON.parse(text) as unknown)(),
+    Schema.decodeUnknownOption(Schema.toCodecJson(schema))
+  )
+
+const labelOf = (row: JobRow, kinds: ReadonlyMap<string, AnyJobKind>) => {
+  const kind = kinds.get(row.kind)
+  if (kind === undefined) return row.kind
+  return Option.match(decodeJson(kind.params, row.params), {
+    onNone: () => row.kind,
+    onSome: (params) => kind.label(params)
+  })
+}
+
+const asRequested = (value: string | null): "pause" | "cancel" | null =>
+  value === "pause" || value === "cancel" ? value : null
+
+export const toJobView = (row: JobRow, kinds: ReadonlyMap<string, AnyJobKind>) =>
+  new JobView({
+    id: JobId.make(row.id),
+    kind: row.kind,
+    label: labelOf(row, kinds),
+    status: row.status as JobStatus,
+    stepsDone: row.stepsDone,
+    stepsTotal: row.stepsTotal,
+    note: row.note,
+    result: row.result,
+    spend: row.spend,
+    spendCap: row.spendCap,
+    requested: asRequested(row.requested),
+    resumeAt: row.resumeAt,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    finishedAt: row.finishedAt,
+    revision: row.revision
+  })
+
+export class JobStore extends Context.Service<JobStore, {
+  // The server's side.
+  create<P, C>(kind: JobKind<P, C>, params: P, spendCap: number): Effect.Effect<JobView>
+  readonly list: Effect.Effect<ReadonlyArray<JobView>>
+  pause(id: JobId): Effect.Effect<JobView, JobNotFound | JobNotChangeable>
+  resume(id: JobId, spendCap: number | undefined): Effect.Effect<JobView, JobNotFound | JobNotChangeable | SpendCapTooLow>
+  cancel(id: JobId): Effect.Effect<JobView, JobNotFound | JobNotChangeable>
+  readonly latestRevision: Effect.Effect<number>
+  changesSince(revision: number): Effect.Effect<ReadonlyArray<JobView>>
+  // The worker's side.
+  claim(workerId: string): Effect.Effect<Option.Option<JobRow>>
+  heartbeat(id: string, workerId: string): Effect.Effect<Option.Option<Control>>
+  saveStep(id: string, workerId: string, save: StepSave): Effect.Effect<Option.Option<Control>>
+  finish(id: string, workerId: string, end: JobEnd): Effect.Effect<boolean>
+  spendOf(id: string): Effect.Effect<Option.Option<{ readonly spend: number; readonly cap: number }>>
+}>()("gmat-prep/server/JobStore") {
+  static readonly layer = Layer.effect(
+    JobStore,
+    Effect.gen(function*() {
+      const db = yield* Db
+      const kinds = yield* JobKinds
+      const view = (row: JobRow) => toJobView(row, kinds)
+
+      const row = (id: string) =>
+        db.select().from(jobs).where(eq(jobs.id, id)).pipe(Effect.map((rows) => rows[0]), Effect.orDie)
+
+      const create = <P, C>(kind: JobKind<P, C>, params: P, spendCap: number) =>
+        Effect.gen(function*() {
+          const now = yield* Clock.currentTimeMillis
+          const [created] = yield* db.insert(jobs).values({
+            id: crypto.randomUUID(),
+            kind: kind.kind,
+            params: encodeJson(kind.params, params),
+            status: "queued",
+            stepsTotal: kind.stepsTotal(params),
+            spendCap,
+            revision: nextRevision,
+            createdAt: now,
+            updatedAt: now
+          }).returning().pipe(Effect.orDie)
+          return view(created!)
+        })
+
+      const list = db.select().from(jobs).orderBy(desc(jobs.createdAt)).limit(100).pipe(
+        Effect.map((rows) => rows.map(view)),
+        Effect.orDie
+      )
+
+      // Applies a change decided from the row as read. The update holds only
+      // if nothing changed since the read, such as the worker claiming the
+      // job; otherwise the decision is made again from the new row.
+      const change = <E>(
+        id: JobId,
+        decide: (current: JobRow, now: number) => Effect.Effect<Partial<JobRow> | null, E>
+      ): Effect.Effect<JobView, JobNotFound | E> =>
+        Effect.gen(function*() {
+          for (;;) {
+            const current = yield* row(id)
+            if (current === undefined) return yield* new JobNotFound()
+            const now = yield* Clock.currentTimeMillis
+            const changes = yield* decide(current, now)
+            if (changes === null) return view(current)
+            const [updated] = yield* db.update(jobs)
+              .set({ ...changes, revision: nextRevision, updatedAt: now })
+              .where(and(eq(jobs.id, id), eq(jobs.revision, current.revision)))
+              .returning()
+              .pipe(Effect.orDie)
+            if (updated !== undefined) return view(updated)
+          }
+        })
+
+      const notChangeable = (current: JobRow) => Effect.fail(new JobNotChangeable({ status: current.status as JobStatus }))
+
+      type Decision<E> = Effect.Effect<Partial<JobRow> | null, E>
+
+      const pause = (id: JobId) =>
+        change(id, (current): Decision<JobNotChangeable> => {
+          switch (current.status) {
+            case "queued":
+              return Effect.succeed({ status: "paused", note: PausedByCurator, resumeAt: null })
+            case "paused":
+              return Effect.succeed(
+                current.resumeAt === null ? null : { note: PausedByCurator, resumeAt: null }
+              )
+            case "running":
+              return Effect.succeed(current.requested === null ? { requested: "pause" } : null)
+            default:
+              return notChangeable(current)
+          }
+        })
+
+      const resume = (id: JobId, spendCap: number | undefined) =>
+        change(id, (current): Decision<JobNotChangeable | SpendCapTooLow> => {
+          const cap = spendCap ?? current.spendCap
+          switch (current.status) {
+            case "paused":
+            case "failed":
+              return current.spend >= cap
+                ? Effect.fail(new SpendCapTooLow({ spend: current.spend }))
+                : Effect.succeed({
+                  status: "queued",
+                  note: null,
+                  resumeAt: null,
+                  requested: null,
+                  spendCap: cap,
+                  finishedAt: null
+                })
+            case "running":
+            case "queued": {
+              if (current.spend >= cap) return Effect.fail(new SpendCapTooLow({ spend: current.spend }))
+              const undoPause = current.status === "running" && current.requested === "pause"
+              if (!undoPause && cap === current.spendCap) return Effect.succeed(null)
+              return Effect.succeed({ spendCap: cap, ...(undoPause ? { requested: null } : {}) })
+            }
+            default:
+              return notChangeable(current)
+          }
+        })
+
+      const cancel = (id: JobId) =>
+        change(id, (current, now): Decision<JobNotChangeable> => {
+          switch (current.status) {
+            case "queued":
+            case "paused":
+            case "failed":
+              return Effect.succeed({
+                status: "cancelled",
+                note: "Cancelled by the Curator",
+                resumeAt: null,
+                requested: null,
+                finishedAt: now
+              })
+            case "running":
+              return Effect.succeed(current.requested === "cancel" ? null : { requested: "cancel" })
+            default:
+              return notChangeable(current)
+          }
+        })
+
+      const latestRevision = db.select({ revision: sql<number>`coalesce(max(${jobs.revision}), 0)` }).from(jobs).pipe(
+        Effect.map((rows) => rows[0]?.revision ?? 0),
+        Effect.orDie
+      )
+
+      const changesSince = (revision: number) =>
+        db.select().from(jobs).where(gt(jobs.revision, revision)).orderBy(jobs.revision).limit(500).pipe(
+          Effect.map((rows) => rows.map(view)),
+          Effect.orDie
+        )
+
+      // Takes the oldest job that is waiting, due to resume, or left by a
+      // worker that stopped. One statement, so two workers never share a job.
+      const claim = (workerId: string) =>
+        Effect.gen(function*() {
+          const now = yield* Clock.currentTimeMillis
+          const staleBefore = now - StaleAfterMs
+          const claimable = sql`(
+            select ${jobs.id} from ${jobs}
+            where ${jobs.status} = 'queued'
+              or (${jobs.status} = 'paused' and ${jobs.resumeAt} is not null and ${jobs.resumeAt} <= ${now})
+              or (${jobs.status} = 'running' and (${jobs.heartbeatAt} is null or ${jobs.heartbeatAt} < ${staleBefore}))
+            order by ${jobs.createdAt}
+            limit 1
+          )`
+          const [claimed] = yield* db.update(jobs)
+            .set({
+              status: "running",
+              claimant: workerId,
+              heartbeatAt: now,
+              resumeAt: null,
+              revision: nextRevision,
+              updatedAt: now
+            })
+            .where(eq(jobs.id, claimable))
+            .returning()
+            .pipe(Effect.orDie)
+          return Option.fromUndefinedOr(claimed)
+        })
+
+      const ours = (id: string, workerId: string) =>
+        and(eq(jobs.id, id), eq(jobs.claimant, workerId), eq(jobs.status, "running"))
+
+      const heartbeat = (id: string, workerId: string) =>
+        Effect.gen(function*() {
+          const now = yield* Clock.currentTimeMillis
+          const [beat] = yield* db.update(jobs)
+            .set({ heartbeatAt: now })
+            .where(ours(id, workerId))
+            .returning({ requested: jobs.requested })
+            .pipe(Effect.orDie)
+          return Option.map(Option.fromUndefinedOr(beat), (b) => ({ requested: asRequested(b.requested) }))
+        })
+
+      const saveStep = (id: string, workerId: string, save: StepSave) =>
+        Effect.gen(function*() {
+          const now = yield* Clock.currentTimeMillis
+          const [saved] = yield* db.update(jobs)
+            .set({
+              checkpoint: save.checkpoint,
+              stepsDone: save.stepsDone,
+              stepsTotal: save.stepsTotal,
+              note: save.note,
+              heartbeatAt: now,
+              revision: nextRevision,
+              updatedAt: now
+            })
+            .where(ours(id, workerId))
+            .returning({ requested: jobs.requested })
+            .pipe(Effect.orDie)
+          return Option.map(Option.fromUndefinedOr(saved), (s) => ({ requested: asRequested(s.requested) }))
+        })
+
+      const finish = (id: string, workerId: string, end: JobEnd) =>
+        Effect.gen(function*() {
+          const now = yield* Clock.currentTimeMillis
+          const common = { claimant: null, requested: null, revision: nextRevision, updatedAt: now }
+          const changes = end._tag === "Done"
+            ? { status: "done", note: null, result: end.result, resumeAt: null, finishedAt: now }
+            : end._tag === "Failed"
+            ? { status: "failed", note: end.note, resumeAt: null, finishedAt: now }
+            : end._tag === "Paused"
+            ? { status: "paused", note: end.note, resumeAt: end.resumeAt, finishedAt: null }
+            : { status: "cancelled", note: end.note, resumeAt: null, finishedAt: now }
+          const updated = yield* db.update(jobs)
+            .set({ ...changes, ...common })
+            .where(ours(id, workerId))
+            .returning({ id: jobs.id })
+            .pipe(Effect.orDie)
+          return updated.length > 0
+        })
+
+      const spendOf = (id: string) =>
+        db.select({ spend: jobs.spend, cap: jobs.spendCap }).from(jobs).where(eq(jobs.id, id)).pipe(
+          Effect.map((rows) => Option.fromUndefinedOr(rows[0])),
+          Effect.orDie
+        )
+
+      return JobStore.of({
+        create,
+        list,
+        pause,
+        resume,
+        cancel,
+        latestRevision,
+        changesSince,
+        claim,
+        heartbeat,
+        saveStep,
+        finish,
+        spendOf
+      })
+    })
+  )
+}

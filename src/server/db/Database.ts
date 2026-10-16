@@ -1,6 +1,6 @@
 import { SqliteClient } from "@effect/sql-sqlite-bun"
 import * as SQLiteBunDrizzle from "drizzle-orm/effect-sqlite-bun"
-import { Clock, Context, Effect, Layer, Schema } from "effect"
+import { Clock, Context, Effect, Layer, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 import { mkdirSync } from "node:fs"
 import { join } from "node:path"
@@ -144,3 +144,38 @@ export const makeDatabaseLive = (migrations: ReadonlyArray<Migration>) =>
   )
 
 export const DatabaseLive = makeDatabaseLive(bundledMigrations)
+
+export class DatabaseNotReady extends Schema.TaggedError<DatabaseNotReady>()("DatabaseNotReady", {
+  missing: Schema.Array(Schema.String)
+}) {}
+
+// For the job worker and host commands: the server owns migrations, so these
+// wait, up to a minute, until the schema they were built with is in place.
+export const makeReadyDatabaseLive = (migrations: ReadonlyArray<Migration>) =>
+  Layer.effectDiscard(
+    Effect.gen(function*() {
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`PRAGMA foreign_keys = ON`
+      const missingMigrations = Effect.gen(function*() {
+        const tracking = yield* sql<{ readonly name: string }>`
+          SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__drizzle_migrations'
+        `
+        const applied = tracking.length === 0
+          ? new Set<string>()
+          : new Set((yield* sql<{ readonly name: string }>`SELECT name FROM __drizzle_migrations`).map((row) => row.name))
+        return migrations.map((migration) => migration.name).filter((name) => !applied.has(name))
+      })
+      const missing = yield* missingMigrations.pipe(
+        Effect.repeat({ schedule: Schedule.spaced("250 millis"), until: (names) => names.length === 0 }),
+        Effect.timeoutOrElse({ duration: "60 seconds", orElse: () => missingMigrations })
+      )
+      if (missing.length > 0) {
+        return yield* new DatabaseNotReady({ missing })
+      }
+    })
+  ).pipe(
+    Layer.provideMerge(DbLive),
+    Layer.provideMerge(SqliteLive)
+  )
+
+export const ReadyDatabaseLive = makeReadyDatabaseLive(bundledMigrations)

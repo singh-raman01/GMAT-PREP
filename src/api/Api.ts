@@ -1,6 +1,9 @@
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
+import { CuratorAccessApi, CuratorSessionApi } from "./Curator.ts"
+import { JobsApi } from "./Jobs.ts"
 import { ProfilesApi, SessionApi } from "./Profiles.ts"
+import { SettingsApi } from "./Settings.ts"
 import { TaxonomyApi } from "./Taxonomy.ts"
 
 export class WorkerStatus extends Schema.Class<WorkerStatus>("gmat-prep/api/WorkerStatus")({
@@ -26,4 +29,8 @@ export class Api extends HttpApi.make("gmat-prep")
   .add(ProfilesApi)
   .add(SessionApi)
   .add(TaxonomyApi)
+  .add(CuratorAccessApi)
+  .add(CuratorSessionApi)
+  .add(SettingsApi)
+  .add(JobsApi)
 {}

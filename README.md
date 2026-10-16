@@ -25,7 +25,19 @@ Each executable holds the web app, the migrations and the Taxonomy. Run it and o
 | Setting | Default |
 |---|---|
 | `GMAT_PREP_DATA_DIR` | Linux `~/.local/share/gmat-prep` (or under `$XDG_DATA_HOME`), macOS `~/Library/Application Support/gmat-prep`, Windows `%APPDATA%\gmat-prep` |
+| `GMAT_PREP_CONFIG_DIR` | where the LLM API key is kept, outside the data folder: Linux `~/.config/gmat-prep`, macOS `~/Library/Preferences/gmat-prep`, Windows `%LOCALAPPDATA%\gmat-prep` |
 | `GMAT_PREP_PORT` | 4747, or the next free port within 20 |
+
+## Set up the LLM
+
+Open Curator tools from the profile page and set the Curator passphrase. Under Settings, enter the base URL of an OpenAI-compatible chat completions API, the API key, a model for each task and each model's prices, then test the connection. The Jobs page shows the test's result and what it cost.
+
+A forgotten passphrase is cleared on the computer the app runs on, with the app running or not:
+
+```sh
+gmat-prep reset-passphrase     # the executable you run
+bun src/server/main.ts reset-passphrase   # from the repo
+```
 
 ## Check it
 
