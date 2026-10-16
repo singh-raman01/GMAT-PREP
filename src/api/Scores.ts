@@ -1,5 +1,6 @@
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
+import { ScoreEstimateView } from "./Practice.ts"
 import { ProfileSession } from "./Profiles.ts"
 
 // Official Scores: scores from official GMAT practice exams or real sittings,
@@ -62,8 +63,24 @@ export class OfficialScoreInFuture extends Schema.TaggedError<OfficialScoreInFut
   { httpApiStatus: 422 }
 ) {}
 
+// The Total with its range, once all three Sections have a Score Estimate.
+export class TotalScoreView extends Schema.Class<TotalScoreView>("gmat-prep/api/TotalScoreView")({
+  score: Schema.Int,
+  low: Schema.Int,
+  high: Schema.Int,
+  // Every Section's line is calibrated by an Official Score.
+  calibrated: Schema.Boolean
+}) {}
+
+export class ScoreEstimates extends Schema.Class<ScoreEstimates>("gmat-prep/api/ScoreEstimates")({
+  sections: Schema.Array(ScoreEstimateView),
+  total: Schema.NullOr(TotalScoreView)
+}) {}
+
 export class ScoresApi extends HttpApiGroup.make("scores")
   .add(
+    // Each Section's Score Estimate now, and the Total once all three have one.
+    HttpApiEndpoint.get("estimates", "/estimates", { success: ScoreEstimates }),
     // The Profile's Official Scores, the latest first.
     HttpApiEndpoint.get("official", "/official", { success: Schema.Array(OfficialScoreView) }),
     HttpApiEndpoint.post("addOfficial", "/official", {

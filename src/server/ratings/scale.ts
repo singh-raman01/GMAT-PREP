@@ -1,4 +1,4 @@
-import { type AbilityFit, RangeWidth } from "./model.ts"
+import { type AbilityFit, RangeWidth, ScoreLine as Uncalibrated } from "./model.ts"
 
 // The score scale (docs/design.md, "Ratings and scores"): a Section score is
 // a line in Section Ability, uncalibrated until the Learner enters an
@@ -13,9 +13,9 @@ export interface ScoreLine {
 
 // Before any Official Score: 75 + 5θ, so Easy (-1) is 70, Medium (0) 75 and
 // Hard (+1) 80.
-export const UncalibratedLine: ScoreLine = { offset: 75, slope: 5, calibrated: false }
+export const UncalibratedLine: ScoreLine = { offset: Uncalibrated.base, slope: Uncalibrated.slope, calibrated: false }
 
-export const SectionScoreRange = { lowest: 60, highest: 90 } as const
+export const SectionScoreRange = { lowest: Uncalibrated.lowest, highest: Uncalibrated.highest } as const
 export const TotalScoreRange = { lowest: 205, highest: 805 } as const
 
 const within = (value: number, range: { readonly lowest: number; readonly highest: number }) =>

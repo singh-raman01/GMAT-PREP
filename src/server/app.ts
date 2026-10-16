@@ -19,7 +19,7 @@ import { PaperMarks } from "./practice/PaperMarks.ts"
 import { Practice } from "./practice/Practice.ts"
 import { Sectionals } from "./sections/Sectionals.ts"
 import { Profiles } from "./profiles/Profiles.ts"
-import { OfficialScores } from "./ratings/OfficialScores.ts"
+import { Scores } from "./ratings/Scores.ts"
 import { Bank } from "./review/Bank.ts"
 import { Golden } from "./review/Golden.ts"
 import { ReviewQueue } from "./review/ReviewQueue.ts"
@@ -50,7 +50,7 @@ export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Layer.mergeAll(
   Generation.layer,
   Practice.layer,
   Sectionals.layer,
-  OfficialScores.layer,
+  Scores.layer,
   PaperMarks.layer,
   RemoveUploadLeftovers
 ).pipe(

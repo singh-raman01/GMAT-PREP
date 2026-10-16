@@ -6,6 +6,7 @@ import { Db } from "../src/server/db/Database.ts"
 import { scoreEstimates } from "../src/server/db/schema.ts"
 import { scoreLinesOf } from "../src/server/ratings/OfficialScores.ts"
 import { lineScore, UncalibratedLine } from "../src/server/ratings/scale.ts"
+import { numbered, seedBook } from "./fixtures/bank.ts"
 import { openBrowser, runWithWorkers, tempDataDir, type WorkerTestServices } from "./harness.ts"
 
 // Noon UTC on 16 October 2026: already 17 October in Auckland (UTC+13).
@@ -140,5 +141,49 @@ describe("Score lines", () => {
       const db = yield* Db
       yield* db.insert(scoreEstimates).values(estimate(profile.id, "verbal", Date.UTC(2026, 9, 1), 0.3)).pipe(Effect.orDie)
       expect(yield* scoreLinesOf(profile.id)).toEqual({ quant: UncalibratedLine, verbal: UncalibratedLine, di: UncalibratedLine })
+    })))
+})
+
+describe("Score Estimates on calibrated lines", () => {
+  test("say uncalibrated until an Official Score, which then lines them up with it, Total included", () =>
+    run(Effect.gen(function*() {
+      yield* seedBook("Quant Review", numbered(3))
+      yield* seedBook("Verbal Review", numbered(3, { questionType: "verbal.cr-weaken", primarySkill: "verbal.arguments.causal" }))
+      yield* seedBook("DI Review", numbered(3, { questionType: "di.ds", primarySkill: "di.sufficiency.value" }))
+      const asha = yield* openBrowser
+      yield* asha.profiles.create({ payload: { name: "Asha", timeZone: "UTC" } })
+      let view = yield* asha.practice.start({ payload: { choice: { kind: "filters", status: "any", size: 9, timed: true } } })
+      let n = 0
+      while (view.current !== null) {
+        view = yield* asha.practice.answer({
+          params: { id: view.id },
+          payload: {
+            seq: view.nextSeq,
+            questionId: view.current.question.id,
+            selection: [{ part: 0, choice: n++ % 2 === 0 ? "C" : "A" }],
+            guessed: false
+          }
+        })
+      }
+      const before = yield* asha.scores.estimates()
+      expect(before.sections.map((each) => [each.section.id, each.calibrated])).toEqual([
+        ["quant", false],
+        ["verbal", false],
+        ["di", false]
+      ])
+      expect(before.total).toMatchObject({ calibrated: false })
+
+      yield* asha.scores.addOfficial({ payload: score("2026-10-16", { total: 655, quant: 81, verbal: 84, di: 82 }) })
+      const after = yield* asha.scores.estimates()
+      expect(after.sections.map((each) => [each.section.id, each.score, each.calibrated])).toEqual([
+        ["quant", 81, true],
+        ["verbal", 84, true],
+        ["di", 82, true]
+      ])
+      expect(after.total).toMatchObject({ score: 655, calibrated: true })
+      expect(after.total!.low).toBeLessThan(655)
+      expect(after.total!.high).toBeGreaterThan(655)
+      // Practice shows the same Section estimates.
+      expect((yield* asha.practice.scores()).map((each) => each.score)).toEqual([81, 84, 82])
     })))
 })

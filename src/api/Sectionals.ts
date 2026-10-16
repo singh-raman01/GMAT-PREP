@@ -33,7 +33,9 @@ export class SectionReadiness extends Schema.Class<SectionReadiness>("gmat-prep/
 export class SectionalOptions extends Schema.Class<SectionalOptions>("gmat-prep/api/SectionalOptions")({
   sections: Schema.Array(SectionReadiness),
   // The Sectional this Profile has running, if any.
-  running: Schema.NullOr(SessionId)
+  running: Schema.NullOr(SessionId),
+  // The Mock this Profile has running, if any: no Sectional starts until it ends.
+  mock: Schema.NullOr(SessionId)
 }) {}
 
 // Where a Sectional stands: a Question on screen, Review & Edit, or over.
@@ -80,9 +82,13 @@ export class SectionalReport extends Schema.Class<SectionalReport>("gmat-prep/ap
   // Slots the Question Bank had nothing left to fill, not scored.
   unfilled: Schema.Int,
   repeats: Schema.Int,
+  // Of those, the ones a Paper Mark had made Seen.
+  paperRepeats: Schema.Int,
   changes: Schema.Int,
   // The points Review & Edit gained (above 0) or lost (below 0).
   editPoints: Schema.Int,
+  // Scored on a line an Official Score calibrated.
+  calibrated: Schema.Boolean,
   // A key changed since the Section closed, and the report follows it.
   rescored: Schema.Boolean
 }) {}
@@ -90,6 +96,8 @@ export class SectionalReport extends Schema.Class<SectionalReport>("gmat-prep/ap
 export class SectionalView extends Schema.Class<SectionalView>("gmat-prep/api/SectionalView")({
   id: SessionId,
   section: Named,
+  // For a Mock's Section: the Mock, and the Section's place in it from 1.
+  mock: Schema.NullOr(Schema.Struct({ id: SessionId, place: Schema.Int })),
   stage: SectionalStage,
   // The Questions it serves, as far as known now: those served, and those
   // still to come for the slots open and the passage or set on screen. Fewer
@@ -158,6 +166,13 @@ export class SectionalRunning extends Schema.TaggedError<SectionalRunning>()(
   { httpApiStatus: 409 }
 ) {}
 
+// A Mock is running; it is the one to go back to.
+export class MockRunning extends Schema.TaggedError<MockRunning>()(
+  "MockRunning",
+  { id: SessionId },
+  { httpApiStatus: 409 }
+) {}
+
 // A request that does not fit where the Sectional stands, with the
 // Sectional as it stands: the Question was answered or is not the one on
 // screen, Review & Edit has not begun or has no changes left, a change
@@ -188,9 +203,9 @@ export class SectionalsApi extends HttpApiGroup.make("sectionals")
     HttpApiEndpoint.post("start", "/", {
       payload: Schema.Struct({ section: Schema.String }),
       success: SectionalView,
-      error: [UnknownSection, ReserveTooSmall, SectionalRunning]
+      error: [UnknownSection, ReserveTooSmall, SectionalRunning, MockRunning]
     }),
-    // The Profile's Sectionals, the latest first.
+    // The Profile's Sectionals, the latest first; a Mock's Sections are the Mock's.
     HttpApiEndpoint.get("list", "/", { success: Schema.Array(SectionalSummary) }),
     HttpApiEndpoint.get("get", "/:id", { ...params, success: SectionalView, error: SectionalNotFound }),
     // Answers the Question on screen and serves the next, or opens Review &

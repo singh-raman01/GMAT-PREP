@@ -9,7 +9,6 @@ import {
   type FilterChoice,
   HeldElsewhere,
   ItemRef,
-  Named,
   NoQuestionsMatch,
   PracticeChoice,
   PracticeClock,
@@ -42,9 +41,8 @@ import {
   sessions,
   sources
 } from "../db/schema.ts"
-import { ratedCounts, ratedHistory, sectionFit } from "../ratings/history.ts"
-import { scoreEstimate } from "../ratings/model.ts"
-import { rateSession, studyClockOf } from "../ratings/rateSession.ts"
+import { scoreEstimatesOf, scoreEstimateView } from "../ratings/estimates.ts"
+import { rateSession } from "../ratings/rateSession.ts"
 import { ratedAmong } from "../ratings/rated.ts"
 import { Settings } from "../settings/Settings.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
@@ -973,28 +971,11 @@ export class Practice extends Context.Service<Practice, {
         })
 
       // The Profile's Section Score Estimates as they stand now, from the
-      // Rated Responses of the sets that have ended.
+      // Rated Responses of the sets that have ended, on each Section's line.
       const scores = (profileId: string) =>
-        Effect.gen(function*() {
-          const clock = yield* run(studyClockOf(profileId))
-          if (clock === undefined) return []
-          const history = (yield* run(ratedHistory(profileId))).filter((each) => each.ended)
-          const counts = ratedCounts(history)
-          return taxonomy.sections.filter((section) => counts.has(section.id)).map((section) => {
-            const fit = sectionFit(history, section.id, clock)
-            const estimate = scoreEstimate(fit)
-            return new ScoreEstimateView({
-              section: new Named({ id: section.id, name: section.name }),
-              ratedResponses: counts.get(section.id)!,
-              ability: fit.ability,
-              standardError: fit.standardError,
-              score: estimate.score,
-              low: estimate.low,
-              high: estimate.high,
-              calibrated: estimate.calibrated
-            })
-          })
-        })
+        run(scoreEstimatesOf(profileId)).pipe(
+          Effect.map((estimates) => estimates.sections.map(scoreEstimateView((id) => names.named(id))))
+        )
 
       const similar = (caller: Caller, questionId: QuestionId) =>
         Effect.gen(function*() {
