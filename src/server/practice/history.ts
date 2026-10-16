@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm"
+import { and, asc, eq, inArray, isNotNull, max, sql } from "drizzle-orm"
 import { Effect, Schema } from "effect"
 import { PartChoice, type Selection } from "../../api/Practice.ts"
 import { Db } from "../db/Database.ts"
@@ -66,6 +66,25 @@ export const seenBy = (profileId: string) =>
       .innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
       .where(eq(sessions.profileId, profileId))
     return new Set(rows.map((row) => resolve(row.questionId)))
+  })
+
+// When a Profile last saw each Question it has Seen, a merged Question's
+// servings counting for the one it became.
+export const lastSeenBy = (profileId: string) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const resolve = yield* mergeTargets
+    const rows = yield* db.select({ questionId: servedQuestions.questionId, at: max(servedQuestions.servedAt) })
+      .from(servedQuestions)
+      .innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
+      .where(eq(sessions.profileId, profileId))
+      .groupBy(servedQuestions.questionId)
+    const last = new Map<string, number>()
+    for (const row of rows) {
+      const id = resolve(row.questionId)
+      last.set(id, Math.max(last.get(id) ?? 0, Number(row.at ?? 0)))
+    }
+    return last
   })
 
 // The Questions a Profile has Bookmarked.

@@ -9,6 +9,7 @@ import { WorkerSupervisor } from "../worker/WorkerSupervisor.ts"
 import { BankHandlers, BooksHandlers, GenerationHandlers, GoldenHandlers, ReviewHandlers } from "./books.ts"
 import { CuratorHandlers, CuratorSessionLive } from "./curatorHandlers.ts"
 import { PracticeHandlers } from "./practice.ts"
+import { SectionalsHandlers } from "./sectionals.ts"
 
 // Plain HTTP on localhost or a trusted LAN, so the cookie is not marked Secure.
 const cookieOptions = { httpOnly: true, secure: false, sameSite: "strict", path: "/" } as const
@@ -115,6 +116,7 @@ export const ApiRoutes = HttpApiBuilder.layer(Api).pipe(
     SessionHandlers,
     TaxonomyHandlers,
     PracticeHandlers,
+    SectionalsHandlers,
     CuratorHandlers,
     BooksHandlers,
     ReviewHandlers,

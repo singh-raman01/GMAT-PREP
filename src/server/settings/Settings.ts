@@ -1,8 +1,11 @@
 import { eq } from "drizzle-orm"
 import { Clock, Context, Effect, Layer, Option, Schema } from "effect"
+import type { Blueprint } from "../../api/blueprint.ts"
 import { JsonMode, type LlmSettingsInput, LlmTask, LlmTaskLabels } from "../../api/Settings.ts"
 import { Db } from "../db/Database.ts"
 import { settings } from "../db/schema.ts"
+import { changeBlueprint } from "../review/reserve.ts"
+import { loadBlueprint } from "./blueprint.ts"
 
 // The Curator's LLM settings. Prices are US dollars per million tokens.
 export interface LlmSettings {
@@ -66,6 +69,10 @@ export class Settings extends Context.Service<Settings, {
   // Target Times the Curator set, in seconds by Question Type.
   readonly targetTimes: Effect.Effect<Readonly<Record<string, number>>>
   saveTargetTimes(times: Readonly<Record<string, number>>): Effect.Effect<Readonly<Record<string, number>>>
+  // The Section Blueprint, as set or by default.
+  readonly blueprint: Effect.Effect<Blueprint>
+  // Saves it; returns how many Reserve passages and sets it released.
+  saveBlueprint(blueprint: Blueprint): Effect.Effect<number>
 }>()("gmat-prep/server/Settings") {
   static readonly layer = Layer.effect(
     Settings,
@@ -125,7 +132,10 @@ export class Settings extends Context.Service<Settings, {
           return times
         })
 
-      return Settings.of({ llm, saveLlm, targetTimes, saveTargetTimes })
+      const blueprint = loadBlueprint.pipe(Effect.provideService(Db, db), Effect.orDie)
+      const saveBlueprint = (value: Blueprint) => changeBlueprint(value).pipe(Effect.provideService(Db, db), Effect.orDie)
+
+      return Settings.of({ llm, saveLlm, targetTimes, saveTargetTimes, blueprint, saveBlueprint })
     })
   )
 }
