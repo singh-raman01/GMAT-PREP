@@ -1,8 +1,8 @@
-import { eq, sql } from "drizzle-orm"
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm"
 import { Effect } from "effect"
 import { Db } from "../db/Database.ts"
+import { questions, responses, servedQuestions, sessions } from "../db/schema.ts"
 import { mergeTargets } from "../practice/history.ts"
-import { responses, servedQuestions, sessions } from "../db/schema.ts"
 
 // Rated Responses: a Profile's final Response to a Question in the Session
 // where the Question was first Seen, when that Session was timed and the
@@ -30,13 +30,10 @@ export interface ResponseFact {
   readonly seq: number
 }
 
-// One Profile's Rated Responses, by id.
-export const ratedResponses = (
-  seen: ReadonlyArray<SeenEvent>,
-  facts: ReadonlyArray<ResponseFact>
-): ReadonlySet<string> => {
-  // Servings in the same millisecond are told apart by the order they were
-  // recorded in, so the answer never depends on the order rows are read in.
+// Where each Question was first Seen. Servings in the same millisecond are
+// told apart by the order they were recorded in, so the answer never depends
+// on the order rows are read in.
+export const firstSeenOf = (seen: ReadonlyArray<SeenEvent>): ReadonlyMap<string, SeenEvent> => {
   const before = (a: SeenEvent, b: SeenEvent) =>
     a.at < b.at || (a.at === b.at && (a.order ?? 0) < (b.order ?? 0))
   const firstSeen = new Map<string, SeenEvent>()
@@ -44,6 +41,15 @@ export const ratedResponses = (
     const earlier = firstSeen.get(event.questionId)
     if (earlier === undefined || before(event, earlier)) firstSeen.set(event.questionId, event)
   }
+  return firstSeen
+}
+
+// One Profile's Rated Responses, by id.
+export const ratedResponses = (
+  seen: ReadonlyArray<SeenEvent>,
+  facts: ReadonlyArray<ResponseFact>
+): ReadonlySet<string> => {
+  const firstSeen = firstSeenOf(seen)
   const final = new Map<string, ResponseFact>()
   for (const fact of facts) {
     const key = `${fact.sessionId}|${fact.questionId}`
@@ -60,13 +66,15 @@ export const ratedResponses = (
 
 // The Rated Responses among a Profile's Responses to the given Questions. A
 // Question the Curator merged into another counts as that one, so it was
-// Seen when either was.
+// Seen when either was. Only those Questions' history is read.
 export const ratedAmong = (profileId: string, questionIds: ReadonlyArray<string>) =>
   Effect.gen(function*() {
     if (questionIds.length === 0) return new Set<string>()
     const db = yield* Db
     const resolve = yield* mergeTargets
     const wanted = new Set(questionIds.map(resolve))
+    const merged = yield* db.select({ id: questions.id }).from(questions).where(isNotNull(questions.mergedInto))
+    const ids = [...wanted, ...merged.map((row) => row.id).filter((id) => wanted.has(resolve(id)))]
     const served = (yield* db.select({
       questionId: servedQuestions.questionId,
       sessionId: servedQuestions.sessionId,
@@ -75,9 +83,8 @@ export const ratedAmong = (profileId: string, questionIds: ReadonlyArray<string>
       order: sql<number>`${servedQuestions}.rowid`
     }).from(servedQuestions)
       .innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
-      .where(eq(sessions.profileId, profileId)))
+      .where(and(eq(sessions.profileId, profileId), inArray(servedQuestions.questionId, ids))))
       .map((event) => ({ ...event, questionId: resolve(event.questionId) }))
-      .filter((event) => wanted.has(event.questionId))
     const facts = (yield* db.select({
       id: responses.id,
       sessionId: responses.sessionId,
@@ -85,8 +92,7 @@ export const ratedAmong = (profileId: string, questionIds: ReadonlyArray<string>
       kind: responses.kind,
       seq: responses.seq
     }).from(responses)
-      .where(eq(responses.profileId, profileId)))
+      .where(and(eq(responses.profileId, profileId), inArray(responses.questionId, ids))))
       .map((fact) => ({ ...fact, questionId: resolve(fact.questionId) }))
-      .filter((fact) => wanted.has(fact.questionId))
     return ratedResponses(served, facts)
   })

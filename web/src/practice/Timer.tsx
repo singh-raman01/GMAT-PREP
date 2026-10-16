@@ -42,7 +42,7 @@ export const Timer = (
         <span className="visually-hidden">Time left:</span> {minutesAndSeconds(remainingMs)}
       </span>
     )}
-    <button type="button" className="link-button" aria-pressed={hidden} onClick={onToggle}>
+    <button type="button" className="link-button" onClick={onToggle}>
       {hidden ? "Show the timer" : "Hide the timer"}
     </button>
   </div>

@@ -5,7 +5,7 @@ import { Db } from "../db/Database.ts"
 import { difficulty, questions, responses, servedQuestions, sessions } from "../db/schema.ts"
 import { currentDifficulty, isCorrect, keysOf, mergeTargets, readSelection } from "../practice/history.ts"
 import { type AbilityFit, fitAbility, recencyWeight } from "./model.ts"
-import { ratedResponses } from "./rated.ts"
+import { firstSeenOf, ratedResponses } from "./rated.ts"
 
 // A Profile's Rated Responses with what the fits need: each Question's
 // Section and current Difficulty, and whether the Response is right against
@@ -13,6 +13,12 @@ import { ratedResponses } from "./rated.ts"
 
 export interface RatedAnswer {
   readonly responseId: string
+  // The timed set it was given in, its place there, and whether that set has
+  // ended: a set's answers count toward Ability only once it ends, so a
+  // Score Estimate never gives away a result before the set shows it.
+  readonly sessionId: string
+  readonly seq: number
+  readonly ended: boolean
   readonly questionId: string
   readonly section: string
   readonly difficulty: number
@@ -20,37 +26,76 @@ export interface RatedAnswer {
   readonly at: number
 }
 
-// A Question the Curator merged into another counts as that one.
+// A Question the Curator merged into another counts as that one. A Withdrawn
+// Question's Responses stay in history but leave Ability.
 export const ratedHistory = (profileId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
     const resolve = yield* mergeTargets
-    const served = (yield* db.select({
+    // Each Question's first serving to the Profile is all that decides where
+    // it was first Seen; a merged Question's group takes the earliest of its
+    // members' first servings.
+    const ranked = db.select({
       questionId: servedQuestions.questionId,
       sessionId: servedQuestions.sessionId,
       timed: sessions.timed,
       at: servedQuestions.servedAt,
-      order: sql<number>`${servedQuestions}.rowid`
+      order: sql<number>`${servedQuestions}.rowid`.as("served_order"),
+      rank: sql<number>`row_number() over (partition by ${servedQuestions.questionId} order by ${servedQuestions.servedAt}, ${servedQuestions}.rowid)`
+        .as("served_rank")
     }).from(servedQuestions)
       .innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
-      .where(eq(sessions.profileId, profileId)))
+      .where(eq(sessions.profileId, profileId))
+      .as("ranked")
+    const served = (yield* db.select({
+      questionId: ranked.questionId,
+      sessionId: ranked.sessionId,
+      timed: ranked.timed,
+      at: ranked.at,
+      order: ranked.order
+    }).from(ranked).where(eq(ranked.rank, 1)))
       .map((event) => ({ ...event, questionId: resolve(event.questionId) }))
-    const facts = (yield* db.select().from(responses).where(eq(responses.profileId, profileId)))
+    // Only Responses in a timed set where their Question was first Seen can
+    // be Rated, so only those sets' Responses are read.
+    const firstSets = [...new Set([...firstSeenOf(served).values()].filter((event) => event.timed).map((event) => event.sessionId))]
+      .filter((id): id is string => id !== null)
+    if (firstSets.length === 0) return [] as ReadonlyArray<RatedAnswer>
+    const facts = (yield* db.select({
+      id: responses.id,
+      sessionId: responses.sessionId,
+      questionId: responses.questionId,
+      kind: responses.kind,
+      seq: responses.seq,
+      selection: responses.selection,
+      createdAt: responses.createdAt,
+      ended: sql<number>`${sessions.status} = 'finished'`
+    }).from(responses)
+      .innerJoin(sessions, eq(sessions.id, responses.sessionId))
+      // The sets are the Profile's own, and found by their index.
+      .where(inArray(responses.sessionId, firstSets)))
       .map((fact) => ({ ...fact, questionId: resolve(fact.questionId) }))
     const rated = ratedResponses(served, facts)
     const kept = facts.filter((fact) => rated.has(fact.id))
     if (kept.length === 0) return [] as ReadonlyArray<RatedAnswer>
     const ids = [...new Set(kept.map((fact) => fact.questionId))]
-    const rows = yield* db.select({ id: questions.id, section: questions.section, difficulty: currentDifficulty })
-      .from(questions)
+    const rows = yield* db.select({
+      id: questions.id,
+      section: questions.section,
+      status: questions.status,
+      difficulty: currentDifficulty
+    }).from(questions)
       .leftJoin(difficulty, eq(difficulty.questionId, questions.id))
       .where(inArray(questions.id, ids))
+    const byId = new Map(rows.map((row) => [row.id, row] as const))
     const keys = yield* keysOf(ids)
     return kept.flatMap((fact): Array<RatedAnswer> => {
-      const question = rows.find((row) => row.id === fact.questionId)
-      if (question === undefined) return []
+      const question = byId.get(fact.questionId)
+      if (question === undefined || question.status === "withdrawn") return []
       return [{
         responseId: fact.id,
+        sessionId: fact.sessionId,
+        seq: fact.seq,
+        ended: Boolean(fact.ended),
         questionId: fact.questionId,
         section: question.section,
         difficulty: Number(question.difficulty),

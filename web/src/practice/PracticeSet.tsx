@@ -1,5 +1,5 @@
 import type { Effect } from "effect"
-import { useCallback, useEffect, useId, useRef, useState } from "react"
+import { type RefObject, useCallback, useEffect, useId, useRef, useState } from "react"
 import {
   type HeldElsewhere,
   type ItemRef,
@@ -72,6 +72,16 @@ export const PracticeSet = ({ id, onSessionLost, onStopped }: Props) => {
     const timer = setInterval(() => void refresh(), ResyncMs)
     return () => clearInterval(timer)
   }, [ticking, refresh])
+
+  // Coming back to the tab, any set is read again, as another tab may have
+  // taken it over or moved it on.
+  useEffect(() => {
+    const onShown = () => {
+      if (document.visibilityState === "visible") void refresh()
+    }
+    document.addEventListener("visibilitychange", onShown)
+    return () => document.removeEventListener("visibilitychange", onShown)
+  }, [refresh])
 
   if (missing) {
     return (
@@ -185,6 +195,18 @@ const SetScreen = (
   const claim = () => void actions.act((client) => client.practice.claim({ params: { id: view.id } }))
   const endSet = () => void actions.act((client) => client.practice.finish({ params: { id: view.id } }))
 
+  // Losing the set to another tab moves focus to taking it back; taking it
+  // over moves focus to the Question, or to the pause, the banner and its
+  // button having gone.
+  const takeOver = useRef<HTMLButtonElement>(null)
+  const mainHeading = useRef<HTMLHeadingElement>(null)
+  const wasHeld = useRef(view.heldHere)
+  useEffect(() => {
+    if (wasHeld.current && !view.heldHere) takeOver.current?.focus()
+    if (!wasHeld.current && view.heldHere) mainHeading.current?.focus()
+    wasHeld.current = view.heldHere
+  }, [view.heldHere])
+
   return (
     <div className="practice-set" data-section={view.current?.question.section.id}>
       <p className="back">
@@ -220,29 +242,32 @@ const SetScreen = (
       {!view.heldHere && (
         <div className="held-elsewhere" role="status">
           <p>This set is open in another tab or on another device, so you can only look at it here.</p>
-          <button type="button" className="button" onClick={claim} disabled={actions.busy}>Take it over here</button>
+          <button type="button" className="button" ref={takeOver} onClick={claim} disabled={actions.busy}>
+            Take it over here
+          </button>
         </div>
       )}
       {view.status === "paused"
-        ? <Paused view={view} busy={actions.busy} problem={actions.problem} onResume={resume} />
-        : <QuestionScreen view={view} actions={actions} onFailure={onFailure} />}
+        ? <Paused view={view} headingRef={mainHeading} busy={actions.busy} problem={actions.problem} onResume={resume} />
+        : <QuestionScreen view={view} headingRef={mainHeading} actions={actions} onFailure={onFailure} />}
     </div>
   )
 }
 
 // A paused timed set hides its Question until it resumes.
 const Paused = (
-  { view, busy, problem, onResume }: {
+  { view, headingRef, busy, problem, onResume }: {
     readonly view: PracticeView
+    readonly headingRef: RefObject<HTMLHeadingElement | null>
     readonly busy: boolean
     readonly problem: string | undefined
     readonly onResume: () => void
   }
 ) => {
-  const heading = useFocusOnMount<HTMLHeadingElement>()
+  useEffect(() => headingRef.current?.focus(), [headingRef])
   return (
     <section className="paused" aria-labelledby="paused-title">
-      <h1 id="paused-title" ref={heading} tabIndex={-1}>Paused</h1>
+      <h1 id="paused-title" ref={headingRef} tabIndex={-1}>Paused</h1>
       <p className="lede">
         The clock stopped with {minutesAndSeconds(view.clock?.remainingMs ?? 0)} left. The Question stays hidden
         until you resume.
@@ -258,8 +283,9 @@ const Paused = (
 }
 
 const QuestionScreen = (
-  { view, actions, onFailure }: {
+  { view, headingRef, actions, onFailure }: {
     readonly view: PracticeView
+    readonly headingRef: RefObject<HTMLHeadingElement | null>
     readonly actions: ReturnType<typeof useActions>
     readonly onFailure: (failure: { readonly _tag: string }) => void
   }
@@ -274,7 +300,7 @@ const QuestionScreen = (
   const [picked, setPicked] = useState<string>()
   const [guessed, setGuessed] = useState(false)
   const [similarNote, setSimilarNote] = useState<string>()
-  const questionHeading = useRef<HTMLHeadingElement>(null)
+  const questionHeading = headingRef
   const debriefHeading = useRef<HTMLHeadingElement>(null)
   const names = { options: useId(), guess: useId() }
   const last = current.position + 1 >= view.total
@@ -285,7 +311,7 @@ const QuestionScreen = (
     setGuessed(false)
     setSimilarNote(undefined)
     questionHeading.current?.focus()
-  }, [current.position])
+  }, [current.position, questionHeading])
 
   // Once the Question is answered, focus moves to the Debrief, whose heading
   // says how it went. A set opened already answered leaves focus alone.
@@ -533,12 +559,12 @@ const Skipped = ({ view }: { readonly view: PracticeView }) => {
 const resultText = (result: PracticeResult) =>
   result.timedOut ? "Time ran out" : result.correct === null ? "Not answered" : result.correct ? "Right" : "Wrong"
 
-// How a set went, in one or two sentences.
+// How a set went, in one or two sentences. The Question on screen when time
+// ran out counts as answered, and wrong, as it does on Practice.
 const outcomeText = (view: PracticeView) => {
-  const timedOut = view.results.filter((result) => result.timedOut).length
-  const answered = view.results.filter((result) => result.correct !== null && !result.timedOut)
+  const answered = view.results.filter((result) => result.correct !== null)
   const right = answered.filter((result) => result.correct === true).length
-  const unanswered = view.results.length - answered.length - timedOut
+  const unanswered = view.results.length - answered.length
   const parts = [
     answered.length === 0 ? "Nothing was answered in this set." : `${right} of ${answered.length} right.`,
     unanswered > 0 ? `${unanswered} left unanswered.` : undefined,

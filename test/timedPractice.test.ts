@@ -7,7 +7,7 @@ import { TestClock } from "effect/testing"
 import { Api } from "../src/api/Api.ts"
 import type { PracticeChoice, PracticeView } from "../src/api/Practice.ts"
 import { Db } from "../src/server/db/Database.ts"
-import { difficulty, responses, scoreEstimates, sessions } from "../src/server/db/schema.ts"
+import { difficulty, questions, responses, scoreEstimates, sessions } from "../src/server/db/schema.ts"
 import { fitAbility, nextDifficulty, scoreEstimate, type WeightedAnswer } from "../src/server/ratings/model.ts"
 import { numbered, seedBook } from "./fixtures/bank.ts"
 import { openInspectableBrowser, runWithWorkers, tempDataDir } from "./harness.ts"
@@ -202,9 +202,16 @@ describe("Rated Responses", () => {
       const asha = yield* learner("Asha")
       let view = yield* asha.first.practice.start({ payload: { choice: timed(3) } })
       const order: Array<string> = []
+      const db = yield* Db
       for (const choice of ["C", "A", "C"]) {
         order.push(view.current!.question.id)
         view = yield* answer(asha.first, view, choice)
+        // Nothing moves while the set runs, so no Score Estimate gives away
+        // how an answer went.
+        if (view.status !== "finished") {
+          expect(yield* asha.first.practice.scores()).toEqual([])
+          expect(yield* db.select().from(difficulty).pipe(Effect.orDie)).toEqual([])
+        }
       }
       // Each moves its Question's Difficulty, seeded at 0, by the Ability the
       // Section had before it.
@@ -216,7 +223,6 @@ describe("Rated Responses", () => {
         return moved
       })
       expect(expected[0]).toBeCloseTo(-0.15, 12)
-      const db = yield* Db
       for (const [index, questionId] of order.entries()) {
         const [row] = yield* db.select().from(difficulty).where(eq(difficulty.questionId, questionId)).pipe(Effect.orDie)
         expect(row?.ratedResponses).toBe(1)
@@ -240,6 +246,46 @@ describe("Rated Responses", () => {
       expect(yield* db.select().from(scoreEstimates).pipe(Effect.orDie)).toHaveLength(3)
     })))
 
+  test("a set's answers count once it ends, after the sets that ended before it", () =>
+    runWithWorkers(Effect.gen(function*() {
+      yield* seedBook("Quant Review", numbered(4))
+      const asha = yield* learner("Asha")
+      // One set waits half done while another runs to its end.
+      const waiting = yield* asha.first.practice.start({ payload: { choice: timed(2) } })
+      const left = yield* answer(asha.first, waiting, "A")
+      let other = yield* asha.first.practice.start({ payload: { choice: timed(2) } })
+      while (other.current !== null) other = yield* answer(asha.first, other, "C")
+      expect((yield* asha.first.practice.scores())[0]).toMatchObject({ ratedResponses: 2 })
+      const db = yield* Db
+      const firstAnswer = left.results[0]!.questionId
+      expect(yield* db.select().from(difficulty).where(eq(difficulty.questionId, firstAnswer)).pipe(Effect.orDie))
+        .toEqual([])
+      // Ending the first set moves its Question by the Ability the other set
+      // left: two right answers on Questions seeded at 0.
+      yield* asha.first.practice.finish({ params: { id: waiting.id } })
+      const before: Array<WeightedAnswer> = []
+      for (const correct of [true, true]) {
+        before.push({ difficulty: nextDifficulty(0, 0, fitAbility(before).ability, correct), correct, weight: 1 })
+      }
+      const [moved] = yield* db.select().from(difficulty).where(eq(difficulty.questionId, firstAnswer)).pipe(Effect.orDie)
+      expect(moved?.value).toBeCloseTo(nextDifficulty(0, 0, fitAbility(before).ability, false), 9)
+      expect((yield* asha.first.practice.scores())[0]).toMatchObject({ ratedResponses: 3 })
+    })))
+
+  test("a Withdrawn Question's Responses stay in history but leave Ability", () =>
+    runWithWorkers(Effect.gen(function*() {
+      yield* seedBook("Quant Review", numbered(2))
+      const asha = yield* learner("Asha")
+      let view = yield* asha.first.practice.start({ payload: { choice: timed(2) } })
+      while (view.current !== null) view = yield* answer(asha.first, view, "C")
+      expect((yield* asha.first.practice.scores())[0]?.ratedResponses).toBe(2)
+      const db = yield* Db
+      yield* db.update(questions).set({ status: "withdrawn" }).where(eq(questions.id, view.results[0]!.questionId))
+        .pipe(Effect.orDie)
+      expect((yield* asha.first.practice.scores())[0]?.ratedResponses).toBe(1)
+      expect(yield* db.select().from(responses).pipe(Effect.orDie)).toHaveLength(2)
+    })))
+
   test("a Question first Seen untimed is never Rated, so it keeps its Difficulty", () =>
     runWithWorkers(Effect.gen(function*() {
       yield* seedBook("Quant Review", numbered(2))
@@ -256,5 +302,152 @@ describe("Rated Responses", () => {
       expect(moved.map((row) => row.questionId).includes(seenFirst)).toBe(false)
       expect(moved).toHaveLength(1)
       expect((yield* asha.first.practice.scores())[0]?.ratedResponses).toBe(1)
+    })))
+})
+
+// A timed set runs 12 seconds, saved at 10, and the app stops; it starts
+// again almost a minute later, and the request comes before its first tick.
+const afterRestart = async <A>(request: (tab: Tab, setId: PracticeView["id"]) => Effect.Effect<A, unknown>) => {
+  const dataDir = tempDataDir()
+  const { setId, profileId } = await runWithWorkers(
+    Effect.gen(function*() {
+      yield* seedBook("Quant Review", numbered(1))
+      const asha = yield* learner("Asha")
+      const started = yield* asha.first.practice.start({ payload: { choice: timed(1) } })
+      yield* TestClock.adjust("12 seconds")
+      return { setId: started.id, profileId: asha.profileId }
+    }),
+    undefined,
+    dataDir
+  )
+  return runWithWorkers(
+    Effect.gen(function*() {
+      const tabs = yield* browserWithTabs
+      yield* tabs.first.profiles.unlock({ params: { id: profileId }, payload: {} })
+      return yield* request(tabs.first, setId)
+    }),
+    undefined,
+    dataDir,
+    70_000
+  )
+}
+
+describe("The clock between ticks", () => {
+  test("a request before the first tick after a stop still marks the Session interrupted", async () => {
+    const paused = await afterRestart((tab, id) => tab.practice.pause({ params: { id } }))
+    expect(paused.clock).toMatchObject({ elapsedMs: 10_000, interrupted: true })
+    const ended = await afterRestart((tab, id) => tab.practice.finish({ params: { id } }))
+    expect(ended).toMatchObject({ endedBy: "finished", clock: { elapsedMs: 10_000, interrupted: true } })
+    const answered = await afterRestart((tab, id) =>
+      Effect.gen(function*() {
+        const view = yield* tab.practice.get({ params: { id } })
+        expect(view.clock?.interrupted).toBe(true)
+        return yield* answer(tab, view, "C")
+      })
+    )
+    expect(answered).toMatchObject({ endedBy: "finished", clock: { elapsedMs: 10_000, interrupted: true } })
+  })
+
+  test("the clock is saved when a Question is served, so its time spent counts from there after a restart", async () => {
+    const dataDir = tempDataDir()
+    const { setId, profileId } = await runWithWorkers(
+      Effect.gen(function*() {
+        yield* seedBook("Quant Review", numbered(3))
+        const asha = yield* learner("Asha")
+        const started = yield* asha.first.practice.start({ payload: { choice: timed(3) } })
+        // The clock was saved at 10 seconds; the second Question is served at 14.
+        yield* TestClock.adjust("14 seconds")
+        expect((yield* answer(asha.first, started, "C")).current?.position).toBe(1)
+        return { setId: started.id, profileId: asha.profileId }
+      }),
+      undefined,
+      dataDir
+    )
+    await runWithWorkers(
+      Effect.gen(function*() {
+        const tabs = yield* browserWithTabs
+        yield* tabs.first.profiles.unlock({ params: { id: profileId }, payload: {} })
+        // The first tick after the stop finds the gap, and the next counts a
+        // second.
+        yield* TestClock.adjust("2 seconds")
+        const view = yield* tabs.first.practice.get({ params: { id: setId } })
+        const third = yield* answer(tabs.first, view, "C")
+        expect(third.results.map((result) => result.timeSpentMs)).toEqual([14_000, 1_000, null])
+        expect(third.clock?.elapsedMs).toBe(15_000)
+      }),
+      undefined,
+      dataDir,
+      70_000
+    )
+  })
+
+  // Ticks keep the schedule they had when the latch last opened, so a
+  // resume half a second after a pause leaves the set's limit between two
+  // ticks.
+  const offTheTicks = Effect.gen(function*() {
+    yield* seedBook("Quant Review", numbered(1))
+    const asha = yield* learner("Asha")
+    const started = yield* asha.first.practice.start({ payload: { choice: timed(1) } })
+    yield* TestClock.adjust("10 seconds")
+    yield* asha.first.practice.pause({ params: { id: started.id } })
+    yield* TestClock.adjust("500 millis")
+    yield* asha.first.practice.resume({ params: { id: started.id } })
+    yield* TestClock.adjust("119 seconds")
+    expect(yield* get(asha.first, started)).toMatchObject({ status: "active", clock: { remainingMs: 0 } })
+    return { asha, started }
+  })
+
+  test("a pause or End set that comes after the limit, before the next tick, ends the set by time", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const { asha, started } = yield* offTheTicks
+      const refused = yield* asha.first.practice.pause({ params: { id: started.id } }).pipe(Effect.flip)
+      expect(refused).toMatchObject({ _tag: "PracticeOutOfStep", reason: "finished", view: { endedBy: "time" } })
+      const db = yield* Db
+      expect((yield* db.select().from(responses).pipe(Effect.orDie)).map((row) => row.kind)).toEqual(["time-out"])
+    })))
+
+  test("End set after the limit, before the next tick, gives the Question on screen its time-out Response", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const { asha, started } = yield* offTheTicks
+      const ended = yield* asha.first.practice.finish({ params: { id: started.id } })
+      expect(ended).toMatchObject({ status: "finished", endedBy: "time" })
+      expect(ended.results.map((result) => [result.correct, result.timedOut])).toEqual([[false, true]])
+    })))
+})
+
+describe("Previewing a timed set", () => {
+  test("gives the time limit the set then gets", () =>
+    runWithWorkers(Effect.gen(function*() {
+      // Questions of two Question Types with different Target Times, so the
+      // limit depends on which ten are taken.
+      yield* seedBook("Mixed Review", [
+        ...numbered(10),
+        ...Array.from({ length: 10 }, (_, i) => ({ number: 11 + i, questionType: "verbal.cr-weaken" }))
+      ])
+      const asha = yield* learner("Asha")
+      const choice = timed(10)
+      const limits = new Set<number>()
+      for (let set = 0; set < 6; set++) {
+        const preview = yield* asha.first.practice.preview({ payload: { choice } })
+        const started = yield* asha.first.practice.start({ payload: { choice } })
+        expect(started.clock?.limitMs).toBe(preview.limitMs!)
+        limits.add(preview.limitMs!)
+      }
+      // Each set takes its own Questions.
+      expect(limits.size).toBeGreaterThan(1)
+    })))
+})
+
+describe("A paused set", () => {
+  test("keeps its Questions hidden from review until it resumes", () =>
+    runWithWorkers(Effect.gen(function*() {
+      yield* seedBook("Quant Review", numbered(2))
+      const asha = yield* learner("Asha")
+      const started = yield* asha.first.practice.start({ payload: { choice: timed(2) } })
+      yield* asha.first.practice.pause({ params: { id: started.id } })
+      const refused = yield* asha.first.practice.review({ params: { id: started.id, position: 0 } }).pipe(Effect.flip)
+      expect(refused).toMatchObject({ _tag: "PracticeOutOfStep", reason: "paused" })
+      yield* asha.first.practice.resume({ params: { id: started.id } })
+      expect((yield* asha.first.practice.review({ params: { id: started.id, position: 0 } })).position).toBe(0)
     })))
 })
