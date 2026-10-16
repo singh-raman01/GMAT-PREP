@@ -121,7 +121,18 @@ export class ReviewItemView extends Schema.Class<ReviewItemView>("gmat-prep/api/
   related: Schema.NullOr(QuestionView),
   status: Schema.Literals(["open", "decided"]),
   decision: Schema.NullOr(Schema.Literals(["published", "withdrawn", "variant", "merged", "dismissed"])),
+  // Whether enrichment can be tried again for it: tagging, solving, or its
+  // Approaches and notes, after an unusable reply.
+  checkable: Schema.Boolean,
   createdAt: Schema.Number
+}) {}
+
+// Questions waiting for enrichment and the Publish Gate: those a job will
+// check, and those no job will reach until the Curator asks or the app
+// starts again.
+export class DraftsView extends Schema.Class<DraftsView>("gmat-prep/api/DraftsView")({
+  checking: Schema.Int,
+  stranded: Schema.Int
 }) {}
 
 export class ReviewItemNotFound extends Schema.TaggedError<ReviewItemNotFound>()(
@@ -150,6 +161,14 @@ export const KeyOverrideReason = Schema.String.check(
     description: "a reason of 3 to 500 characters"
   })
 )
+
+// A merge would lose a key the Curator chose: the Question's key is a Key
+// Override that the related Question's key does not match.
+export class KeysDiffer extends Schema.TaggedError<KeysDiffer>()(
+  "KeysDiffer",
+  { key: Schema.String, relatedKey: Schema.NullOr(Schema.String) },
+  { httpApiStatus: 409 }
+) {}
 
 // Publishing waits until every reason that blocks it is resolved.
 export class CannotPublish extends Schema.TaggedError<CannotPublish>()(
@@ -183,8 +202,18 @@ export class ReviewApi extends HttpApiGroup.make("review")
     // join the related Question and this one goes.
     HttpApiEndpoint.post("merge", "/review/:id/merge", {
       ...decided,
+      error: [ReviewItemNotFound, ReviewItemNotOpen, KeysDiffer]
+    }),
+    // Tries again the enrichment an unusable reply left missing or wrong:
+    // tagging, solving, or the Approaches and notes. The Question leaves the
+    // queue while a job checks it, and comes back if it is held again.
+    HttpApiEndpoint.post("checkAgain", "/review/:id/check", {
+      ...decided,
       error: [ReviewItemNotFound, ReviewItemNotOpen]
     }),
+    HttpApiEndpoint.get("drafts", "/drafts", { success: DraftsView }),
+    // Queues a job for the drafts no job would check.
+    HttpApiEndpoint.post("checkDrafts", "/drafts/check", { success: DraftsView }),
     // A page extraction could not read, once the Curator has dealt with it.
     HttpApiEndpoint.post("dismiss", "/review/:id/dismiss", {
       ...decided,

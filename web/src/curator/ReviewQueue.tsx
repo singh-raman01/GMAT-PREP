@@ -1,7 +1,11 @@
-import { type FormEvent, useCallback, useEffect, useId, useRef, useState } from "react"
+import type { Effect } from "effect"
+import { type FormEvent, type RefObject, useCallback, useEffect, useId, useRef, useState } from "react"
 import { bookFilePath } from "../../../src/api/Books.ts"
 import {
   type ApproachView,
+  type CannotPublish,
+  type DraftsView,
+  type KeysDiffer,
   type OptionNoteView,
   PublishableReasons,
   type QuestionView,
@@ -11,7 +15,7 @@ import {
 } from "../../../src/api/Review.ts"
 import type { TaxonomyView } from "../../../src/api/Taxonomy.ts"
 import { bandOf } from "../../../src/api/taxonomyRules.ts"
-import { call } from "../api.ts"
+import { call, type Client } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
 import { RichInline, RichText } from "../RichText.tsx"
 import { afterStreamClosed, useJobEvents } from "./jobEvents.ts"
@@ -42,7 +46,31 @@ const ReasonLabels: Record<ReasonCode, string> = {
 
 const RepeatCodes: ReadonlySet<ReasonCode> = new Set(["near-match", "same-text-other-key"])
 
-type Action = "publish" | "withdraw" | "keepAsVariant" | "merge" | "dismiss"
+type Action = "publish" | "withdraw" | "keepAsVariant" | "merge" | "dismiss" | "checkAgain"
+
+const send = (client: Client, action: Action, id: ReviewItemView["id"]): Effect.Effect<
+  ReviewItemView,
+  { readonly _tag: string }
+> => {
+  const params = { params: { id } }
+  switch (action) {
+    case "publish":
+      return client.review.publish(params)
+    case "withdraw":
+      return client.review.withdraw(params)
+    case "keepAsVariant":
+      return client.review.keepAsVariant(params)
+    case "merge":
+      return client.review.merge(params)
+    case "dismiss":
+      return client.review.dismiss(params)
+    case "checkAgain":
+      return client.review.checkAgain(params)
+  }
+}
+
+const isCannotPublish = (failure: { readonly _tag: string }): failure is CannotPublish => failure._tag === "CannotPublish"
+const isKeysDiffer = (failure: { readonly _tag: string }): failure is KeysDiffer => failure._tag === "KeysDiffer"
 
 // Taxonomy names by id, for Skills, Strategies, Mistake Types and Trap
 // Patterns; an id the Taxonomy does not hold shows as itself.
@@ -85,6 +113,9 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
   const [since, setSince] = useState<"now">()
   // The item whose heading takes focus next, after the one acted on goes.
   const [focusItem, setFocusItem] = useState<string>()
+  const [waiting, setWaiting] = useState<DraftsView>()
+  // Items sent off to be checked again, by name, to say so when they return.
+  const away = useRef(new Map<string, string>())
   const mounted = useRef(true)
 
   const handle = useCallback(
@@ -98,6 +129,13 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
     if (result._tag === "Failure") return handle(result.failure)
     setItems(result.success)
     setSince("now")
+    const back = result.success.filter((item) => away.current.has(item.id))
+    for (const item of back) away.current.delete(item.id)
+    if (back.length > 0) {
+      setAnnouncement(`Back in the queue, held again: ${back.map((item) => itemName(item)).join("; ")}.`)
+    }
+    const drafts = await call((client) => client.review.drafts())
+    if (mounted.current && drafts._tag === "Success") setWaiting(drafts.success)
   }, [handle])
 
   useEffect(() => {
@@ -136,13 +174,19 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
   }
 
   const act = async (item: ReviewItemView, action: Action): Promise<ReadonlyArray<ReviewReason> | string | undefined> => {
-    const params = { params: { id: item.id } }
-    const result = await call((client) => client.review[action](params))
+    const result = await call((client) => send(client, action, item.id))
     if (result._tag === "Success") {
       const next = result.success
+      // Each announcement names its item, so two in a row are both read out.
+      if (action === "checkAgain") {
+        leave(next.id)
+        away.current.set(next.id, itemName(item))
+        setAnnouncement(`${itemName(item)} is being checked again. It comes back here if it is held.`)
+        void load()
+        return undefined
+      }
       if (next.status === "open") setItems((current) => current?.map((each) => (each.id === next.id ? next : each)))
       else leave(next.id)
-      // Each announcement names its item, so two in a row are both read out.
       setAnnouncement(
         next.status === "open"
           ? `${itemName(item)} is kept as a Variant; it still waits for you.`
@@ -150,17 +194,27 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
       )
       return undefined
     }
-    switch (result.failure._tag) {
-      case "CannotPublish":
-        return result.failure.reasons
-      case "ReviewItemNotOpen":
-      case "ReviewItemNotFound":
-        void load()
-        return "This item changed in the meantime; the queue was read again."
-      default:
-        handle(result.failure)
-        return undefined
+    const failure = result.failure
+    if (isCannotPublish(failure)) return failure.reasons
+    if (isKeysDiffer(failure)) {
+      return `Its key is ${failure.key}, by your Key Override, and the other Question's is ${
+        failure.relatedKey ?? "not known"
+      }. Change one of the keys first, so they agree.`
     }
+    if (failure._tag === "ReviewItemNotOpen" || failure._tag === "ReviewItemNotFound") {
+      void load()
+      return "This item changed in the meantime; the queue was read again."
+    }
+    handle(failure)
+    return undefined
+  }
+
+  const checkDrafts = async () => {
+    const result = await call((client) => client.review.checkDrafts())
+    if (!mounted.current) return
+    if (result._tag === "Failure") return handle(result.failure)
+    setWaiting(result.success)
+    setAnnouncement("The waiting Questions are being checked. Any that are held come here.")
   }
 
   const changeKey = async (item: ReviewItemView, key: string, reason: string): Promise<string | undefined> => {
@@ -169,7 +223,9 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
     )
     if (result._tag === "Success") {
       leave(item.id)
+      away.current.set(item.id, itemName(item))
       setAnnouncement(`${itemName(item)}: the key is now ${key}. It is being checked again and comes back if it is held.`)
+      void load()
       return undefined
     }
     switch (result.failure._tag) {
@@ -197,6 +253,29 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
         you publish, change the key of, or withdraw them.
       </p>
       <p className="visually-hidden" role="status">{announcement}</p>
+      {waiting !== undefined && (waiting.checking > 0 || waiting.stranded > 0) && (
+        <div className="drafts-note">
+          {waiting.checking > 0 && (
+            <p>
+              {waiting.checking} {waiting.checking === 1 ? "Question is" : "Questions are"}{" "}
+              being checked. Any that are held come here.
+            </p>
+          )}
+          {waiting.stranded > 0 && (
+            <>
+              <p>
+                {waiting.stranded} {waiting.stranded === 1 ? "Question waits" : "Questions wait"}{" "}
+                for a check no job will run, as after a job was cancelled.
+              </p>
+              <div className="actions">
+                <button type="button" className="button button-quiet" onClick={() => void checkDrafts()}>
+                  Check {waiting.stranded === 1 ? "it" : "them"} now
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
       {items === undefined
         ? <p className="quiet" aria-busy="true">Loading the Review Queue</p>
         : items.length === 0
@@ -315,7 +394,8 @@ const Enrichment = ({ question, names }: { readonly question: QuestionView; read
 
 // Replacing the key, with the reason kept beside it.
 const KeyChange = (
-  { question, about, onChange, onCancel }: {
+  { id, question, about, onChange, onCancel }: {
+    readonly id: string
     readonly question: QuestionView
     readonly about: { readonly "aria-describedby": string }
     readonly onChange: (key: string, reason: string) => Promise<string | undefined>
@@ -327,6 +407,7 @@ const KeyChange = (
   const [reason, setReason] = useState("")
   const [problem, setProblem] = useState<string>()
   const busy = useRef(false)
+  const legend = useFocusOnMount<HTMLLegendElement>()
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (key === undefined) return setProblem("Choose the right answer.")
@@ -338,9 +419,9 @@ const KeyChange = (
     setProblem(outcome)
   }
   return (
-    <form className="key-change" noValidate onSubmit={(event) => void submit(event)}>
+    <form id={id} className="key-change" noValidate onSubmit={(event) => void submit(event)}>
       <fieldset>
-        <legend>The right answer</legend>
+        <legend ref={legend} tabIndex={-1}>The right answer</legend>
         <div className="key-choices">
           {question.options.map((option) => (
             <label key={option.label} className="key-choice">
@@ -362,7 +443,9 @@ const KeyChange = (
         <textarea id={ids.reason} rows={2} maxLength={500} value={reason} onChange={(event) => setReason(event.target.value)} />
       </div>
       <p className="hint">
-        Its Approaches and wrong-choice notes are written again for the new key, and it goes through every check again.
+        {key === undefined || key === question.key
+          ? "The key stays, now as your decision, and the Question goes through every check again."
+          : "Its Approaches and wrong-choice notes are written again for the new key, and it goes through every check again."}
       </p>
       <div className="actions">
         <button type="submit" className="button" {...about}>Change the key</button>
@@ -382,10 +465,22 @@ const ReviewItem = (
   }
 ) => {
   const headingId = useId()
+  const ids = { merge: useId(), key: useId() }
   const [problem, setProblem] = useState<string>()
   const [checkingMerge, setCheckingMerge] = useState(false)
   const [changingKey, setChangingKey] = useState(false)
+  const mergeButton = useRef<HTMLButtonElement>(null)
+  const keyButton = useRef<HTMLButtonElement>(null)
+  const mergeCheck = useRef<HTMLParagraphElement>(null)
   const busy = useRef(false)
+  // Closing a form puts focus back on the button that opened it.
+  const close = (hide: () => void, opener: RefObject<HTMLButtonElement | null>) => {
+    hide()
+    requestAnimationFrame(() => opener.current?.focus())
+  }
+  useEffect(() => {
+    if (checkingMerge) mergeCheck.current?.focus()
+  }, [checkingMerge])
   const run = async (action: Action) => {
     if (busy.current) return
     busy.current = true
@@ -478,22 +573,31 @@ const ReviewItem = (
               Keep as a Variant
             </button>
             <button
+              ref={mergeButton}
               type="button"
               className="button button-quiet"
               {...about}
               aria-expanded={checkingMerge}
+              aria-controls={ids.merge}
               onClick={() => setCheckingMerge(true)}
             >
               Merge into the other
             </button>
           </>
         )}
+        {item.checkable && (
+          <button type="button" className="button button-quiet" {...about} onClick={() => void run("checkAgain")}>
+            Check again
+          </button>
+        )}
         {question.options.length > 0 && (
           <button
+            ref={keyButton}
             type="button"
             className="button button-quiet"
             {...about}
             aria-expanded={changingKey}
+            aria-controls={ids.key}
             onClick={() => setChangingKey(true)}
           >
             Change the key
@@ -503,14 +607,21 @@ const ReviewItem = (
           Withdraw
         </button>
       </div>
+      {item.checkable && (
+        <p className="hint">Check again asks once more for the tags, solves, Approaches or notes a reply left unusable.</p>
+      )}
       {checkingMerge && (
-        <div className="merge-check" role="group" aria-label="Merge into the other Question">
-          <p>
+        <div id={ids.merge} className="merge-check" role="group" aria-label="Merge into the other Question">
+          <p ref={mergeCheck} tabIndex={-1}>
             This Question's Sources join the other Question, and this one is removed. Merging cannot be undone.
           </p>
           <div className="actions">
             <button type="button" className="button" {...about} onClick={() => void run("merge")}>Merge</button>
-            <button type="button" className="button button-quiet" onClick={() => setCheckingMerge(false)}>
+            <button
+              type="button"
+              className="button button-quiet"
+              onClick={() => close(() => setCheckingMerge(false), mergeButton)}
+            >
               Cancel
             </button>
           </div>
@@ -518,10 +629,11 @@ const ReviewItem = (
       )}
       {changingKey && (
         <KeyChange
+          id={ids.key}
           question={question}
           about={about}
           onChange={(key, reason) => onChangeKey(item, key, reason)}
-          onCancel={() => setChangingKey(false)}
+          onCancel={() => close(() => setChangingKey(false), keyButton)}
         />
       )}
       {problem !== undefined && <p className="problem" role="alert">{problem}</p>}

@@ -3,6 +3,7 @@ import { Clock, Context, Effect, Layer, Option, Semaphore } from "effect"
 import { BookId } from "../../api/Books.ts"
 import {
   GoldenCandidate,
+  GoldenCheckRunning,
   GoldenLimit,
   GoldenSetEmpty,
   GoldenSetFull,
@@ -34,7 +35,7 @@ export class Golden extends Context.Service<Golden, {
     tags: { readonly primarySkill: string; readonly secondarySkills: ReadonlyArray<string> }
   ): Effect.Effect<GoldenView, NotGoldenCandidate | GoldenSetFull | GoldenTagsInvalid>
   remove(questionId: QuestionId): Effect.Effect<GoldenView, NotGoldenCandidate>
-  check(spendCap: number): Effect.Effect<GoldenView, GoldenSetEmpty | LlmNotConfigured>
+  check(spendCap: number): Effect.Effect<GoldenView, GoldenSetEmpty | LlmNotConfigured | GoldenCheckRunning>
 }>()("gmat-prep/server/Golden") {
   static readonly layer = Layer.effect(
     Golden,
@@ -55,7 +56,13 @@ export class Golden extends Context.Service<Golden, {
       // The first Book's own Questions that are published or held.
       const candidatesOf = (bookId: string) =>
         Effect.gen(function*() {
-          const rows = yield* db.select({ question: questions, set: sources.set, page: sources.page, number: sources.number })
+          const rows = yield* db.select({
+            question: questions,
+            set: sources.set,
+            page: sources.page,
+            number: sources.number,
+            bookKey: sources.bookKey
+          })
             .from(sources)
             .innerJoin(questions, eq(questions.id, sources.questionId))
             .where(and(eq(sources.bookId, bookId), eq(sources.merged, false), inArray(questions.status, ["published", "held"])))
@@ -87,6 +94,7 @@ export class Golden extends Context.Service<Golden, {
                 text: option.text
               })),
               key: part?.key ?? null,
+              bookKey: row.bookKey,
               status: row.question.status as QuestionStatus,
               primarySkill: expected?.primarySkill ?? row.question.primarySkill,
               secondarySkills: expected?.secondarySkills ??
@@ -149,7 +157,7 @@ export class Golden extends Context.Service<Golden, {
             questionType: found.questionType,
             stem: found.stem,
             options: found.options,
-            key: found.key,
+            key: found.bookKey,
             primarySkill: tags.primarySkill,
             secondarySkills: [...tags.secondarySkills]
           })
@@ -175,8 +183,13 @@ export class Golden extends Context.Service<Golden, {
 
       const check = (spendCap: number) =>
         Effect.gen(function*() {
-          const [approved] = yield* db.select({ n: count() }).from(goldenQuestions).pipe(Effect.orDie)
-          if ((approved?.n ?? 0) === 0) return yield* new GoldenSetEmpty()
+          const approved = yield* db.select({ questionId: goldenQuestions.questionId }).from(goldenQuestions)
+            .pipe(Effect.orDie)
+          if (approved.length === 0) return yield* new GoldenSetEmpty()
+          const [live] = yield* db.select({ id: jobs.id }).from(jobs)
+            .where(and(eq(jobs.kind, "golden-check"), inArray(jobs.status, ["queued", "running", "paused"])))
+            .limit(1).pipe(Effect.orDie)
+          if (live !== undefined) return yield* new GoldenCheckRunning()
           const llm = yield* settings.llm
           const hasKey = Option.isSome(yield* keys.read)
           const missing = [
@@ -188,7 +201,13 @@ export class Golden extends Context.Service<Golden, {
           yield* db.transaction(() =>
             Effect.gen(function*() {
               yield* db.insert(goldenRuns).values({ id: runId, createdAt: now })
-              const job = yield* store.create(GoldenCheck, { runId }, spendCap)
+              // The check covers the set as it is now, whatever is approved
+              // while it runs.
+              const job = yield* store.create(
+                GoldenCheck,
+                { runId, questionIds: approved.map((row) => row.questionId) },
+                spendCap
+              )
               yield* db.update(goldenRuns).set({ jobId: job.id }).where(eq(goldenRuns.id, runId))
             })
           ).pipe(Effect.orDie)

@@ -1301,6 +1301,15 @@ input[type="file"]::file-selector-button {
   font: inherit;
 }
 
+.drafts-note {
+  display: grid;
+  gap: 0.6rem;
+  max-width: 62ch;
+  margin: 0 0 1.5rem;
+  padding: 0.75rem 1rem;
+  border-left: 4px solid var(--rule);
+}
+
 .merge-check {
   display: grid;
   gap: 0.6rem;

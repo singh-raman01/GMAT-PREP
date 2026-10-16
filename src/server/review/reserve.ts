@@ -1,9 +1,9 @@
-import { and, eq } from "drizzle-orm"
+import { and, eq, isNull } from "drizzle-orm"
 import { Clock, Effect } from "effect"
 import { fitsSlot } from "../../api/blueprint.ts"
 import { type Band, bandOf } from "../../api/taxonomyRules.ts"
 import { Db } from "../db/Database.ts"
-import { questions, sources } from "../db/schema.ts"
+import { books, questions, sources } from "../db/schema.ts"
 
 // The Mock Reserve (ADR 0008): a quarter of each Section's Questions from
 // each Book, held back for Mocks. Membership is decided per unit, so an RC
@@ -45,7 +45,11 @@ const apportion = (total: number, parts: ReadonlyArray<readonly [string, number]
   return quotas
 }
 
-// The undecided units of one Book's Section, each with its decision.
+const sum = (values: Iterable<number>) => [...values].reduce((total, value) => total + value, 0)
+
+// The undecided units of one Book's Section, each with its decision. Only
+// what is left of the quarter is shared out, among the strata still short of
+// their share, so units decided before never push the Reserve past it.
 export const reserveDecisions = (units: ReadonlyArray<ReserveUnit>): ReadonlyMap<string, boolean> => {
   const decisions = new Map<string, boolean>()
   const fitting = units.filter((unit) => fitsSlot(unit.questionType, unit.size))
@@ -54,16 +58,26 @@ export const reserveDecisions = (units: ReadonlyArray<ReserveUnit>): ReadonlyMap
   }
   const stratumOf = (unit: ReserveUnit) => `${unit.questionType}|${unit.band}`
   const sizes = new Map<string, number>()
-  for (const unit of fitting) sizes.set(stratumOf(unit), (sizes.get(stratumOf(unit)) ?? 0) + unit.size)
-  const total = Math.round([...sizes.values()].reduce((sum, size) => sum + size, 0) * ReserveShare)
-  const quotas = apportion(total, [...sizes.entries()])
-  for (const [stratum, quota] of quotas) {
-    const members = fitting.filter((unit) => stratumOf(unit) === stratum)
-    let held = members.filter((unit) => unit.reserve === true).reduce((sum, unit) => sum + unit.size, 0)
-    const open = members.filter((unit) => unit.reserve === null).toSorted((a, b) => a.hash.localeCompare(b.hash))
+  const held = new Map<string, number>()
+  for (const unit of fitting) {
+    const stratum = stratumOf(unit)
+    sizes.set(stratum, (sizes.get(stratum) ?? 0) + unit.size)
+    if (unit.reserve === true) held.set(stratum, (held.get(stratum) ?? 0) + unit.size)
+  }
+  const total = Math.round(sum(sizes.values()) * ReserveShare)
+  const shares = apportion(total, [...sizes.entries()])
+  const short = [...shares].map(([stratum, share]) => [stratum, Math.max(0, share - (held.get(stratum) ?? 0))] as const)
+    .filter(([, missing]) => missing > 0)
+  const left = Math.max(0, total - sum(held.values()))
+  const quotas = apportion(Math.min(left, sum(short.map(([, missing]) => missing))), short)
+  for (const stratum of sizes.keys()) {
+    const quota = quotas.get(stratum) ?? 0
+    const open = fitting.filter((unit) => stratumOf(unit) === stratum && unit.reserve === null)
+      .toSorted((a, b) => a.hash.localeCompare(b.hash))
+    let added = 0
     for (const unit of open) {
-      const joins = held + unit.size <= quota
-      if (joins) held += unit.size
+      const joins = added + unit.size <= quota
+      if (joins) added += unit.size
       decisions.set(unit.id, joins)
     }
   }
@@ -74,6 +88,12 @@ export const reserveDecisions = (units: ReadonlyArray<ReserveUnit>): ReadonlyMap
 // Questions the Book itself brought, not those it only added a Source to.
 // Questions have no Stimulus yet, so each is a unit of its own.
 export const assignReserve = (bookId: string) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    return yield* db.transaction(() => decideReserve(bookId))
+  })
+
+const decideReserve = (bookId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
     const now = yield* Clock.currentTimeMillis
@@ -103,9 +123,29 @@ export const assignReserve = (bookId: string) =>
     let joined = 0
     for (const units of sections.values()) {
       for (const [id, reserve] of reserveDecisions(units)) {
-        yield* db.update(questions).set({ reserve, reserveDecidedAt: now }).where(eq(questions.id, id))
-        if (reserve) joined += 1
+        // A Question decided meanwhile keeps that decision.
+        const decided = yield* db.update(questions).set({ reserve, reserveDecidedAt: now })
+          .where(and(eq(questions.id, id), isNull(questions.reserve))).returning({ id: questions.id })
+        if (reserve && decided.length > 0) joined += 1
       }
     }
     return joined
   })
+
+// Decides the Reserve for every extracted Book with published Questions not
+// decided yet, such as one another Book's run published.
+export const assignUndecided = Effect.gen(function*() {
+  const db = yield* Db
+  const rows = yield* db.selectDistinct({ bookId: sources.bookId }).from(sources)
+    .innerJoin(questions, eq(questions.id, sources.questionId))
+    .innerJoin(books, eq(books.id, sources.bookId))
+    .where(and(
+      eq(sources.merged, false),
+      eq(questions.status, "published"),
+      isNull(questions.reserve),
+      eq(books.status, "extracted")
+    ))
+  let joined = 0
+  for (const row of rows) joined += yield* assignReserve(row.bookId)
+  return joined
+})

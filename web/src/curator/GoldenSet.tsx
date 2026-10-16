@@ -133,7 +133,7 @@ const Check = (
   const [problem, setProblem] = useState<{ readonly text: string; readonly aboutCap: boolean }>()
   const busy = useRef(false)
   const job = view.job
-  const running = job !== null && (job.status === "queued" || job.status === "running")
+  const running = job !== null && (job.status === "queued" || job.status === "running" || job.status === "paused")
 
   const start = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -141,6 +141,7 @@ const Check = (
     if (!Number.isFinite(spendCap) || spendCap <= 0 || spendCap > 10_000) {
       return setProblem({ text: "Enter a cap in dollars, above 0.", aboutCap: true })
     }
+    if (running) return setProblem({ text: "A check is running already. Its report shows here when it is done.", aboutCap: false })
     if (busy.current) return
     busy.current = true
     const result = await call((client) => client.golden.check({ payload: { spendCap } }))
@@ -154,6 +155,8 @@ const Check = (
         return setProblem({ text: "Approve at least one Question first.", aboutCap: false })
       case "LlmNotConfigured":
         return setProblem({ text: `Set ${result.failure.missing.join(", ")} in Settings first.`, aboutCap: false })
+      case "GoldenCheckRunning":
+        return setProblem({ text: "A check is running already. Its report shows here when it is done.", aboutCap: false })
       default:
         return onFailure(result.failure)
     }
@@ -249,6 +252,7 @@ const Candidate = (
   const [third, setThird] = useState(candidate.secondarySkills[1] ?? "")
   const [problem, setProblem] = useState<string>()
   const busy = useRef(false)
+  const approveButton = useRef<HTMLButtonElement>(null)
   const offered = taxonomy === undefined ? [] : skillsFor(taxonomy, candidate.questionType)
   const name = `${candidate.set}, question ${candidate.number}`
 
@@ -279,7 +283,11 @@ const Candidate = (
 
   const remove = async () => {
     const result = await call((client) => client.golden.remove({ params: { questionId: candidate.questionId } }))
-    if (result._tag === "Success") return onChanged(result.success, `${name} is out of the golden set.`)
+    if (result._tag === "Success") {
+      onChanged(result.success, `${name} is out of the golden set.`)
+      // The button that was pressed is gone; focus stays with the Question.
+      return requestAnimationFrame(() => approveButton.current?.focus())
+    }
     if (result.failure._tag === "NotGoldenCandidate") return setProblem("It was not in the golden set.")
     onFailure(result.failure)
   }
@@ -287,7 +295,10 @@ const Candidate = (
   const about = { "aria-describedby": ids.heading }
   const skillSelect = (id: string, label: string, value: string, set: (value: string) => void, optional: boolean) => (
     <div className="field">
-      <label htmlFor={id}>{label}</label>
+      <label htmlFor={id}>
+        {label}
+        <span className="visually-hidden">, {name}</span>
+      </label>
       <select id={id} value={value} onChange={(event) => set(event.target.value)}>
         <option value="">{optional ? "None" : "Choose a Skill"}</option>
         {offered.map((skill) => <option key={skill.id} value={skill.id}>{skill.name}</option>)}
@@ -321,14 +332,17 @@ const Candidate = (
         {candidate.approved ? "Your Skills" : "The model's Skills"}: {skillName(candidate.primarySkill)}
         {candidate.secondarySkills.length > 0 && `, also ${candidate.secondarySkills.map(skillName).join(", ")}`}.
         {candidate.status === "held" && " It waits in the Review Queue."}
+        {candidate.bookKey !== candidate.key &&
+          ` The Book prints ${candidate.bookKey ?? "no key"}, which a check expects; the key is now ${candidate.key ?? "none"}.`}
       </p>
       <div className="golden-tags">
         {skillSelect(ids.primary, "Main Skill", primary, setPrimary, false)}
-        {skillSelect(ids.second, "Also", second, setSecond, true)}
-        {skillSelect(ids.third, "Also", third, setThird, true)}
+        {skillSelect(ids.second, "Second Skill", second, setSecond, true)}
+        {skillSelect(ids.third, "Third Skill", third, setThird, true)}
       </div>
       <div className="actions">
         <button
+          ref={approveButton}
           type="button"
           className="button"
           {...about}

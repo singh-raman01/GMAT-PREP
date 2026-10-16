@@ -103,8 +103,8 @@ export const CuratorBooks = ({ onLocked, onStopped, onNotice }: Props) => {
         <section className="group" aria-labelledby="thin-skills-title">
           <h2 id="thin-skills-title">Skills with few Questions</h2>
           <p className="group-about">
-            These Skills have fewer than {ThinSkillThreshold} published Questions. Merge each into a related Skill, or
-            add books that cover it.
+            These Skills have fewer than {ThinSkillThreshold} published Questions. Books that cover them would add
+            Questions; a Skill that stays thin can be merged into a related one in the next Taxonomy version.
           </p>
           <ul className="thin-skills">
             {thinSkills.map((skill) => (

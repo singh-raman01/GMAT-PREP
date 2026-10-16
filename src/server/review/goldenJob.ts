@@ -1,4 +1,4 @@
-import { and, asc, desc, eq } from "drizzle-orm"
+import { and, asc, desc, eq, inArray } from "drizzle-orm"
 import { Clock, Effect, Option, Schema } from "effect"
 import { MapRange, type MapRole, type TypeGroup } from "../../api/Books.ts"
 import { setKey } from "../../api/bookMapRules.ts"
@@ -17,7 +17,12 @@ import { type GoldenEntry, type GoldenItem, goldenReport, type GoldenTags } from
 // key and explanations, and each Question is tagged again, one a step.
 // Nothing is stored in the Book's own readings. Last, the report.
 
-const Params = Schema.Struct({ runId: Schema.String })
+const Params = Schema.Struct({
+  runId: Schema.String,
+  // The golden Questions when the check started; absent from checks queued
+  // before the field was added, which take the set as it is.
+  questionIds: Schema.optional(Schema.Array(Schema.String))
+})
 
 const Checkpoint = Schema.Struct({
   stage: Schema.Literals(["read", "tag", "report"]),
@@ -38,22 +43,26 @@ const decodeRanges = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array
 export const encodeReport = Schema.encodeSync(Schema.fromJsonString(GoldenReport))
 export const decodeReport = Schema.decodeUnknownOption(Schema.fromJsonString(GoldenReport))
 
-// The golden Questions, where their Book now has them, in book order.
-const goldenRows = Effect.gen(function*() {
-  const db = yield* Db
-  const rows = yield* db.select({
-    questionId: goldenQuestions.questionId,
-    expected: goldenQuestions.expected,
-    bookId: sources.bookId,
-    set: sources.set,
-    page: sources.page,
-    number: sources.number
-  }).from(goldenQuestions)
-    .innerJoin(sources, and(eq(sources.questionId, goldenQuestions.questionId), eq(sources.bookId, goldenQuestions.bookId)))
-    .orderBy(asc(sources.page), asc(sources.number))
-    .pipe(Effect.orDie)
-  return rows.map((row) => ({ ...row, expected: decodeExpected(row.expected) }))
-})
+// The golden Questions the check covers, where their Book now has them, in
+// book order.
+const goldenRows = (questionIds: ReadonlyArray<string> | undefined) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const rows = yield* db.select({
+      questionId: goldenQuestions.questionId,
+      expected: goldenQuestions.expected,
+      bookId: sources.bookId,
+      set: sources.set,
+      page: sources.page,
+      number: sources.number,
+      explanation: sources.explanation
+    }).from(goldenQuestions)
+      .innerJoin(sources, and(eq(sources.questionId, goldenQuestions.questionId), eq(sources.bookId, goldenQuestions.bookId)))
+      .where(questionIds === undefined ? undefined : inArray(goldenQuestions.questionId, [...questionIds]))
+      .orderBy(asc(sources.page), asc(sources.number))
+      .pipe(Effect.orDie)
+    return rows.map((row) => ({ ...row, expected: decodeExpected(row.expected) }))
+  })
 
 interface PlannedRead {
   readonly page: number
@@ -76,8 +85,8 @@ const latestRanges = (bookId: string) =>
 
 // The pages to read again: each golden Question's own page, and every page
 // of its set's answer key and explanations.
-const plan = Effect.gen(function*() {
-  const rows = yield* goldenRows
+const plan = (questionIds: ReadonlyArray<string> | undefined) => Effect.gen(function*() {
+  const rows = yield* goldenRows(questionIds)
   const bookId = rows[0]?.bookId
   if (bookId === undefined) return { bookId: undefined, reads: [] as ReadonlyArray<PlannedRead>, rows }
   const { ranges, pageCount } = yield* latestRanges(bookId)
@@ -102,10 +111,11 @@ const plan = Effect.gen(function*() {
   }
 })
 
-const readStep = (jobId: string, runId: string, index: number) =>
+const readStep = (jobId: string, params: typeof Params.Type, index: number) =>
   Effect.gen(function*() {
     const db = yield* Db
-    const planned = yield* plan
+    const runId = params.runId
+    const planned = yield* plan(params.questionIds)
     const read = planned.reads[index]
     if (read === undefined || planned.bookId === undefined) {
       return {
@@ -126,16 +136,19 @@ const readStep = (jobId: string, runId: string, index: number) =>
     } as const
   })
 
-const tagStep = (jobId: string, runId: string, index: number) =>
+const tagStep = (jobId: string, params: typeof Params.Type, index: number) =>
   Effect.gen(function*() {
     const db = yield* Db
-    const rows = yield* goldenRows
+    const runId = params.runId
+    const rows = yield* goldenRows(params.questionIds)
     const row = rows[index]
     if (row === undefined) {
       return { _tag: "Continue", checkpoint: { stage: "report", index: 0 }, stepsTotal: null, note: "Comparing" } as const
     }
     const taxonomy = (yield* Taxonomy).view
-    const tagged = yield* tagQuestion(jobId, taxonomy, { ...row.expected, explanation: null }).pipe(
+    // Tagged with the input production tagging has, the Book's explanation
+    // included.
+    const tagged = yield* tagQuestion(jobId, taxonomy, { ...row.expected, explanation: row.explanation }).pipe(
       Effect.catchTag("LlmInvalidReply", () => Effect.succeed(undefined))
     )
     yield* db.insert(goldenRunTags).values({
@@ -152,10 +165,11 @@ const tagStep = (jobId: string, runId: string, index: number) =>
     } as const
   })
 
-const reportStep = (runId: string) =>
+const reportStep = (params: typeof Params.Type) =>
   Effect.gen(function*() {
     const db = yield* Db
-    const planned = yield* plan
+    const runId = params.runId
+    const planned = yield* plan(params.questionIds)
     const stored = yield* db.select().from(goldenRunReadings).where(eq(goldenRunReadings.runId, runId)).pipe(Effect.orDie)
     const fresh = (page: number, role: MapRole): ReadonlyArray<PageReading> =>
       stored.filter((row) => row.page === page && row.role === role).flatMap((row) =>
@@ -213,8 +227,8 @@ export const GoldenCheck: JobKind<typeof Params.Type, typeof Checkpoint.Type> = 
   stepsTotal: () => null,
   step: ({ jobId, params, checkpoint }) =>
     checkpoint.stage === "read"
-      ? readStep(jobId, params.runId, checkpoint.index)
+      ? readStep(jobId, params, checkpoint.index)
       : checkpoint.stage === "tag"
-      ? tagStep(jobId, params.runId, checkpoint.index)
-      : reportStep(params.runId)
+      ? tagStep(jobId, params, checkpoint.index)
+      : reportStep(params)
 }

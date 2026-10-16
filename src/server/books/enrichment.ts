@@ -63,10 +63,14 @@ export const tagOutput = (taxonomy: TaxonomyView, questionType: string) => {
   })
 }
 
+// A reply's secondary Skills, once each, leaving out the primary one.
+export const secondaryOnly = (primarySkill: string, secondarySkills: ReadonlyArray<string>) =>
+  [...new Set(secondarySkills)].filter((skill) => skill !== primarySkill)
+
 export const tagQuestion = (jobId: string, taxonomy: TaxonomyView, question: QuestionText) =>
   Effect.gen(function*() {
     const llm = yield* LlmAdapter
-    return yield* llm.call({
+    const tagged = yield* llm.call({
       task: "tagging",
       promptVersion: TagPromptVersion,
       system: `You tag a GMAT question with the Skills it exercises, from a fixed list, and estimate how hard it is.
@@ -84,6 +88,10 @@ ${listing(skillsFor(taxonomy, question.questionType))}`,
       output: tagOutput(taxonomy, question.questionType),
       jobId
     })
+    return {
+      ...tagged,
+      value: { ...tagged.value, secondarySkills: secondaryOnly(tagged.value.primarySkill, tagged.value.secondarySkills) }
+    }
   })
 
 // Solving ------------------------------------------------------------------
@@ -350,9 +358,9 @@ const writeContent = (
   })
 
 // Does what enrichment still owes a Question: its tags and Difficulty
-// estimate and three solves when it is new, and its key-dependent content
-// once it has a key. Each part is stored as it is done, so a step that stops
-// part way picks up where it left off.
+// estimate and three solves, tried again whenever a reply was unusable, and
+// its key-dependent content once it has a key. Each part is stored as it is
+// done, so a step that stops part way picks up where it left off.
 export const enrichQuestion = (jobId: string, taxonomy: TaxonomyView, questionId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
@@ -361,39 +369,39 @@ export const enrichQuestion = (jobId: string, taxonomy: TaxonomyView, questionId
     const { question, text } = loaded
     if (readLinkReasons(question.linkReasons).some((reason) => UnsureCodes.has(reason.code))) return
     let stage = question.enrichment
+    if (question.taggedAt === null) {
+      const tagged = yield* unlessInvalid(tagQuestion(jobId, taxonomy, text))
+      const now = yield* Clock.currentTimeMillis
+      if (tagged !== undefined) {
+        yield* db.update(questions).set({
+          primarySkill: tagged.value.primarySkill,
+          secondarySkills: JSON.stringify(tagged.value.secondarySkills),
+          difficultyEstimate: tagged.value.difficulty,
+          tagsModel: tagged.model,
+          tagsPromptVersion: tagged.promptVersion,
+          taggedAt: now
+        }).where(eq(questions.id, questionId)).pipe(Effect.orDie)
+      }
+    }
+    const solved = new Set(
+      (yield* db.select({ run: solverRuns.run }).from(solverRuns).where(eq(solverRuns.questionId, questionId)).pipe(
+        Effect.orDie
+      )).map((row) => row.run)
+    )
+    for (let run = 1; run <= SolverRuns; run++) {
+      if (solved.has(run)) continue
+      const solve = yield* unlessInvalid(solveQuestion(jobId, text, run))
+      if (solve === undefined) continue
+      yield* db.insert(solverRuns).values({
+        questionId,
+        run,
+        answer: solve.value.answer,
+        model: solve.model,
+        promptVersion: solve.promptVersion,
+        createdAt: yield* Clock.currentTimeMillis
+      }).onConflictDoNothing().pipe(Effect.orDie)
+    }
     if (stage === "pending") {
-      if (question.taggedAt === null) {
-        const tagged = yield* unlessInvalid(tagQuestion(jobId, taxonomy, text))
-        const now = yield* Clock.currentTimeMillis
-        if (tagged !== undefined) {
-          yield* db.update(questions).set({
-            primarySkill: tagged.value.primarySkill,
-            secondarySkills: JSON.stringify(tagged.value.secondarySkills),
-            difficultyEstimate: tagged.value.difficulty,
-            tagsModel: tagged.model,
-            tagsPromptVersion: tagged.promptVersion,
-            taggedAt: now
-          }).where(eq(questions.id, questionId)).pipe(Effect.orDie)
-        }
-      }
-      const solved = new Set(
-        (yield* db.select({ run: solverRuns.run }).from(solverRuns).where(eq(solverRuns.questionId, questionId)).pipe(
-          Effect.orDie
-        )).map((row) => row.run)
-      )
-      for (let run = 1; run <= SolverRuns; run++) {
-        if (solved.has(run)) continue
-        const solve = yield* unlessInvalid(solveQuestion(jobId, text, run))
-        if (solve === undefined) continue
-        yield* db.insert(solverRuns).values({
-          questionId,
-          run,
-          answer: solve.value.answer,
-          model: solve.model,
-          promptVersion: solve.promptVersion,
-          createdAt: yield* Clock.currentTimeMillis
-        }).onConflictDoNothing().pipe(Effect.orDie)
-      }
       stage = "key-content"
       yield* db.update(questions).set({ enrichment: stage }).where(eq(questions.id, questionId)).pipe(Effect.orDie)
     }

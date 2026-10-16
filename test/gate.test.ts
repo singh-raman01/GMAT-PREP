@@ -135,6 +135,22 @@ describe("The Mock Reserve", () => {
     expect(decisions.has("a0")).toBe(false)
   })
 
+  test("units published later never push the Reserve past a quarter", () => {
+    let units = [unit("e0", "quant.ps", "easy"), unit("e1", "quant.ps", "easy"), unit("m0", "quant.ps", "medium"), unit("m1", "quant.ps", "medium")]
+    const apply = (decisions: ReadonlyMap<string, boolean>) =>
+      (units = units.map((each) => (decisions.has(each.id) ? { ...each, reserve: decisions.get(each.id)! } : each)))
+    apply(reserveDecisions(units))
+    expect(units.filter((each) => each.reserve).map((each) => each.id)).toEqual(["e0"])
+    units = [...units, unit("m2", "quant.ps", "medium")]
+    apply(reserveDecisions(units))
+    expect(units.filter((each) => each.reserve).map((each) => each.id)).toEqual(["e0"])
+    // Three more bring the quarter to two; the medium band is short, and m2
+    // stays out, decided once.
+    units = [...units, ...["m3", "h0", "h1"].map((id) => unit(id, "quant.ps", id.startsWith("h") ? "hard" : "medium"))]
+    apply(reserveDecisions(units))
+    expect(units.filter((each) => each.reserve).map((each) => each.id)).toEqual(["e0", "m3"])
+  })
+
   test("only units that fit a Section Blueprint slot can join", () => {
     expect(fitsSlot("verbal.rc-detail", 3)).toBe(true)
     expect(fitsSlot("verbal.rc-detail", 5)).toBe(false)

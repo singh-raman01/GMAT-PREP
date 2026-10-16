@@ -75,7 +75,10 @@ export const ReviewHandlers = HttpApiBuilder.group(
       keepAsVariant: ({ params }) => queue.keepAsVariant(params.id),
       merge: ({ params }) => queue.merge(params.id),
       dismiss: ({ params }) => queue.dismiss(params.id),
-      overrideKey: ({ params, payload }) => queue.overrideKey(params.id, payload.key, payload.reason)
+      overrideKey: ({ params, payload }) => queue.overrideKey(params.id, payload.key, payload.reason),
+      checkAgain: ({ params }) => queue.checkAgain(params.id),
+      drafts: () => queue.drafts,
+      checkDrafts: () => queue.checkDrafts
     })
   })
 )
