@@ -10,6 +10,9 @@ import { JobView, LlmNotConfigured, SpendCap } from "./Jobs.ts"
 export const GeneratedQuestionType = Schema.Literals(["di.ta", "di.gi", "di.tpa", "di.msr"])
 export type GeneratedQuestionType = typeof GeneratedQuestionType.Type
 
+// Dollars a batch may spend unless the Curator gives another cap.
+export const DefaultSpendCap = 2
+
 // How many items a batch asks for: Questions, or MSR sets of three.
 export const BatchCount = Schema.Int.check(
   Schema.makeFilter((count: number) => count >= 1 && count <= 20, { description: "a count of 1 to 20" })
@@ -28,8 +31,11 @@ export class BatchView extends Schema.Class<BatchView>("gmat-prep/api/BatchView"
   questions: Schema.Int,
   published: Schema.Int,
   held: Schema.Int,
+  // Drafts not through the Publish Gate yet: being checked while the job
+  // runs, left unchecked once it stopped.
   checking: Schema.Int,
   withdrawn: Schema.Int,
+  // Held for Mocks, not released.
   reserved: Schema.Int,
   job: Schema.NullOr(JobView),
   createdAt: Schema.Number

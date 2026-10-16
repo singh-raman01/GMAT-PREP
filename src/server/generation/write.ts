@@ -1,9 +1,9 @@
-import { max } from "drizzle-orm"
+import { and, eq, max, ne } from "drizzle-orm"
 import { Clock, Effect } from "effect"
 import type { Dataset } from "../../api/dataset.ts"
 import { normalizeText } from "../../api/richText.ts"
 import { sha256 } from "../access/tokens.ts"
-import { comparableText, type ContentDraft, type Reason, type StimulusDraft } from "../books/linking.ts"
+import { comparableText, type ContentDraft, NearMatch, type Reason, similarity, type StimulusDraft, trigrams } from "../books/linking.ts"
 import { Db } from "../db/Database.ts"
 import { datasets, options, parts, questions, statementPredicates, stimuli, taxonomyVersions } from "../db/schema.ts"
 import { encodeColumns, encodeRows } from "../stimuli/stimuli.ts"
@@ -88,18 +88,57 @@ const insertStimulus = (stimulus: StimulusDraft, data: ReadonlyArray<Dataset | n
 
 const encodePredicate = (predicate: Predicate | null) => (predicate === null ? null : JSON.stringify(predicate))
 
+// Another Question of the type with the same words and data, or words nearly
+// the same: the Curator says whether it is a Variant or the same Question.
+const repeatIn = (
+  bank: ReadonlyArray<{ readonly id: string; readonly hash: string; readonly trigrams: ReadonlySet<string> }>,
+  hash: string,
+  pieces: ReadonlySet<string>
+): { readonly related: string; readonly reason: Reason } | undefined => {
+  const twin = bank.find((entry) => entry.hash === hash)
+  if (twin !== undefined) {
+    return {
+      related: twin.id,
+      reason: { code: "near-match", detail: "It has the same words and data as another Question: the same Question, or a Variant?" }
+    }
+  }
+  const best = bank.map((entry) => ({ id: entry.id, score: similarity(pieces, entry.trigrams) }))
+    .filter((entry) => entry.score >= NearMatch)
+    .toSorted((a, b) => b.score - a.score)[0]
+  return best === undefined ? undefined : {
+    related: best.id,
+    reason: {
+      code: "near-match",
+      detail: `It is ${Math.round(best.score * 100)}% like another Question of its type: a Variant, or the same Question?`
+    }
+  }
+}
+
 export const writeItem = (input: ItemToWrite) =>
   Effect.gen(function*() {
     const db = yield* Db
     const now = yield* Clock.currentTimeMillis
     const { item } = input
     const [taxonomy] = yield* db.select({ version: max(taxonomyVersions.version) }).from(taxonomyVersions)
+    // The Questions of the type already in the bank, from Books or earlier
+    // items, to hold a repeat as a near match.
+    const bank = (yield* db.select({ id: questions.id, hash: questions.normalizedHash, text: questions.normalizedText })
+      .from(questions)
+      .where(and(eq(questions.questionType, item.questionType), ne(questions.status, "withdrawn"))))
+      .map((row) => ({ ...row, trigrams: trigrams(row.text) }))
     const stimulus = yield* insertStimulus(item.stimulus, item.datasets, now)
     const ids: Array<string> = []
     for (const [index, question] of item.questions.entries()) {
       const seconds = input.seconds.predicates[index] ?? []
-      const reasons = [...input.checks, ...disagreements(question, item.datasets, seconds)]
+      const titles = item.stimulus.kind === "tabs" ? item.stimulus.tabs.map((tab) => tab.title) : []
       const text = comparableText(question.stem, question.parts)
+      const hash = sha256(`${stimulus.hash}|${text}`)
+      const repeat = repeatIn(bank, hash, trigrams(text))
+      const reasons = [
+        ...input.checks,
+        ...disagreements(question, item.datasets, seconds, titles),
+        ...(repeat === undefined ? [] : [repeat.reason])
+      ]
       const questionId = crypto.randomUUID()
       ids.push(questionId)
       yield* db.insert(questions).values({
@@ -110,7 +149,8 @@ export const writeItem = (input: ItemToWrite) =>
         stem: question.stem,
         status: "draft",
         normalizedText: text,
-        normalizedHash: sha256(`${stimulus.hash}|${text}`),
+        normalizedHash: hash,
+        relatedQuestionId: repeat?.related ?? null,
         bookLabel: null,
         taxonomyVersion: taxonomy?.version ?? 1,
         model: input.generator.model,
@@ -156,19 +196,23 @@ export const writeItem = (input: ItemToWrite) =>
         }
         const dataset = item.datasets[part.statement.dataset] ?? null
         const second = seconds[position] ?? null
-        const again = second === null || dataset === null || part.kind === "column-choice" ? undefined : evaluate(second, dataset)
+        // The second predicate runs on the tab its reading chose.
+        const secondData = second === null ? null : item.datasets[second.dataset ?? part.statement.dataset] ?? null
+        const again = second === null || secondData === null || part.kind === "column-choice"
+          ? undefined
+          : evaluate(second.predicate, secondData)
         yield* db.insert(statementPredicates).values({
           partId,
           kind: "computed",
           datasetId: stimulus.datasetIds[part.statement.dataset] ?? null,
           predicate: encodePredicate(part.statement.predicate),
-          second: encodePredicate(second),
-          result: dataset === null ? null : describeValue(part.statement.result, dataset),
-          secondResult: again === undefined || dataset === null
+          second: encodePredicate(second?.predicate ?? null),
+          result: dataset === null ? null : part.kind === "column-choice" ? null : describeValue(part.statement.result, dataset),
+          secondResult: again === undefined || secondData === null
             ? null
             : "problem" in again
             ? again.problem
-            : describeValue(again.value, dataset),
+            : describeValue(again.value, secondData),
           approximate: part.statement.approximate,
           model: input.seconds.model,
           promptVersion: input.seconds.promptVersion,

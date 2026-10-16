@@ -102,7 +102,11 @@ const namesOf = (taxonomy: TaxonomyView | undefined): Names => {
 const itemName = (item: ReviewItemView) => {
   if (item.page !== null) return `${item.page.bookTitle}, page ${item.page.number}`
   const generated = item.question?.generated
-  if (generated !== null && generated !== undefined) return `Generated batch ${generated.batch}, item ${generated.item}`
+  if (generated !== null && generated !== undefined) {
+    return generated.question === null
+      ? `Generated batch ${generated.batch}, item ${generated.item}`
+      : `Generated batch ${generated.batch}, set ${generated.item}, question ${generated.question}`
+  }
   const first = item.question?.sources[0]
   return first === undefined ? "A Question" : `${first.bookTitle}: ${first.set}, question ${first.number}`
 }
@@ -335,7 +339,9 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
 
 const sourceText = (question: QuestionView) =>
   question.generated !== null
-    ? `Generated in batch ${question.generated.batch}, item ${question.generated.item}`
+    ? question.generated.question === null
+      ? `Generated in batch ${question.generated.batch}, item ${question.generated.item}`
+      : `Generated in batch ${question.generated.batch}, set ${question.generated.item}, question ${question.generated.question}`
     : question.sources.map((source) => `${source.bookTitle}, ${source.set}, question ${source.number}, page ${source.page}`)
       .join("; ")
 

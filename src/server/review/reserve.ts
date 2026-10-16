@@ -95,7 +95,9 @@ export const reserveDecisions = (
       .toSorted((a, b) => a.hash.localeCompare(b.hash))
     let added = 0
     for (const unit of open) {
-      const joins = added + unit.size <= quota
+      // A unit joins when that brings its stratum nearer its share, so a set
+      // of three can fill a share of two rather than leave it empty.
+      const joins = Math.abs(added + unit.size - quota) < Math.abs(added - quota)
       if (joins) added += unit.size
       decisions.set(unit.id, joins)
     }
@@ -109,7 +111,9 @@ export type ReserveOrigin = { readonly bookId: string } | { readonly batchId: st
 // Decides the Reserve for a Book's published Questions not decided yet: the
 // Questions the Book itself brought, not those it only added a Source to.
 // A passage's published Questions are one unit, and one published after the
-// passage was decided, in this Book or another, takes its decision.
+// passage was decided, in this Book or another, takes its decision. A
+// generation batch's Questions are shared out with every batch's decided
+// before, so small batches add up to a quarter.
 export const assignReserve = (bookId: string) => assignReserveFor({ bookId })
 
 // The same for a Book's or a generation batch's Questions.
@@ -143,7 +147,11 @@ const decideReserve = (origin: ReserveOrigin) =>
         .where(eq(questions.status, "published"))
       : yield* db.select(fields).from(questions)
         .leftJoin(stimuli, eq(stimuli.id, questions.stimulusId))
-        .where(and(eq(questions.batchId, origin.batchId), eq(questions.status, "published")))
+        .where(and(
+          isNotNull(questions.batchId),
+          eq(questions.status, "published"),
+          or(eq(questions.batchId, origin.batchId), isNotNull(questions.reserve))
+        ))
     // Every Question about these passages, from any Book: a passage decided
     // anywhere keeps that decision, released or not, and a slot would take
     // the Questions that count in it.
@@ -152,7 +160,8 @@ const decideReserve = (origin: ReserveOrigin) =>
       stimulusId: questions.stimulusId,
       status: questions.status,
       reserve: questions.reserve,
-      releasedAt: questions.releasedAt
+      releasedAt: questions.releasedAt,
+      batchId: questions.batchId
     }).from(questions).where(inArray(questions.stimulusId, passageIds))
     const passageDecision = new Map<string, { readonly reserve: boolean; readonly released: boolean }>()
     const passageSize = new Map<string, number>()
@@ -210,9 +219,11 @@ const decideReserve = (origin: ReserveOrigin) =>
 // The Questions a passage's size counts: those published, and those decided
 // before that are being checked again, as after a Key Override. A Question
 // waiting for its first decision, such as a near match the Curator has not
-// settled, counts once it is published.
-const countsInPassage = (row: { readonly status: string; readonly reserve: boolean | null }) =>
-  row.status === "published" || (row.status !== "withdrawn" && row.reserve !== null)
+// settled, counts once it is published. A generated set is written whole, so
+// its Questions count until withdrawn, as an inference held for the Curator.
+const countsInPassage = (
+  row: { readonly status: string; readonly reserve: boolean | null; readonly batchId: string | null }
+) => row.status === "published" || (row.status !== "withdrawn" && (row.reserve !== null || row.batchId !== null))
 
 // Releases each passage in the Reserve whose Questions, from every Book, no
 // longer fit a Blueprint slot, as one that gained Questions from a later
@@ -231,7 +242,10 @@ export const releaseUnfitting = Effect.gen(function*() {
   }).from(questions)
     .where(and(
       inArray(questions.stimulusId, held),
-      or(eq(questions.status, "published"), and(ne(questions.status, "withdrawn"), isNotNull(questions.reserve)))
+      or(
+        eq(questions.status, "published"),
+        and(ne(questions.status, "withdrawn"), or(isNotNull(questions.reserve), isNotNull(questions.batchId)))
+      )
     ))
     .groupBy(questions.stimulusId)
   const unfitting = passages.filter((passage) => !fitsSlot(passage.questionType, passage.size, blueprint))

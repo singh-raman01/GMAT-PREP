@@ -6,8 +6,7 @@ import type { StimulusDraft } from "../books/linking.ts"
 import { LlmAdapter, type LlmError, type LlmReply } from "../llm/LlmAdapter.ts"
 import { quoteData } from "../llm/quoting.ts"
 import { draftText } from "../stimuli/stimulusText.ts"
-import { buildItem, type DraftItem, type DraftQuestion } from "./items.ts"
-import type { Predicate } from "./predicates.ts"
+import { buildItem, type DraftItem, type DraftQuestion, type SecondReading } from "./items.ts"
 import {
   ColumnsTranslation,
   GeneratePromptVersions,
@@ -82,7 +81,7 @@ export const generateItem = (
         jobId
       }).pipe(
         Effect.map((reply) => ({ reply, built: buildItem(spec.questionType, reply.value) })),
-        Effect.catchTag("LlmInvalidReply", (error) => Effect.succeed({ invalid: error.message }))
+        Effect.catchTag("LlmInvalidReply", (error) => Effect.succeed({ invalid: error.problem }))
       )
     const first = yield* ask(null)
     if ("invalid" in first) return { failed: [first.invalid] }
@@ -105,27 +104,25 @@ const optionsText = (options: ReadonlyArray<{ readonly label: string; readonly t
   options.map((option) => `(${option.label}) ${option.text}`).join("\n")
 
 export interface SecondReadings {
-  // For each Question, each Part's second predicate, null when the reply was
+  // For each Question, each Part's second reading, null when the reply was
   // unusable; for a Two-Part Analysis, both columns'.
-  readonly predicates: ReadonlyArray<ReadonlyArray<Predicate | null>>
+  readonly predicates: ReadonlyArray<ReadonlyArray<SecondReading | null>>
   readonly model: string
   readonly promptVersion: string
 }
 
 // The second, independent reading of every computed Part's words. It sees the
-// material and the words, never the generator's predicates.
+// material and the words, never the generator's predicates, its approximate
+// flag or the tab it chose.
 export const readAgain = (jobId: string, item: DraftItem): Effect.Effect<SecondReadings, Exclude<LlmError, { readonly _tag: "LlmInvalidReply" }>, LlmAdapter> =>
   Effect.gen(function*() {
     const llm = yield* LlmAdapter
     let model = ""
     let promptVersion = TranslatePromptVersion
-    const tabTitle = (dataset: number) =>
-      item.stimulus.kind === "tabs" ? item.stimulus.tabs[dataset]?.title : undefined
     const readPart = (question: DraftQuestion, index: number) =>
       Effect.gen(function*() {
         const part = question.parts[index]!
         if (part.statement.kind !== "computed") return null
-        const title = tabTitle(part.statement.dataset)
         const body = [
           material(item.stimulus),
           "",
@@ -133,8 +130,7 @@ export const readAgain = (jobId: string, item: DraftItem): Effect.Effect<SecondR
           "",
           ...(part.kind === "dropdown"
             ? [`The sentence to complete: ${part.prompt}`, "Its options:", optionsText(part.options)]
-            : [`The statement to judge: ${part.prompt}`]),
-          ...(title === undefined ? [] : ["", `The predicate runs over the table in the source titled ${title}.`])
+            : [`The statement to judge: ${part.prompt}`])
         ].join("\n")
         return yield* llm.call({
           task: "statement-translation",
@@ -148,7 +144,7 @@ export const readAgain = (jobId: string, item: DraftItem): Effect.Effect<SecondR
           Effect.catchTag("LlmInvalidReply", () => Effect.succeed(null))
         )
       })
-    const predicates: Array<ReadonlyArray<Predicate | null>> = []
+    const predicates: Array<ReadonlyArray<SecondReading | null>> = []
     for (const question of item.questions) {
       if (question.parts.every((part) => part.kind === "column-choice")) {
         const body = [
@@ -170,14 +166,16 @@ export const readAgain = (jobId: string, item: DraftItem): Effect.Effect<SecondR
           Effect.map((reply) => {
             model = reply.model
             promptVersion = reply.promptVersion
-            return reply.value.columns.length === 2 ? reply.value.columns : [null, null]
+            return reply.value.columns.length === 2
+              ? reply.value.columns.map((predicate): SecondReading => ({ predicate, approximate: false, dataset: null }))
+              : [null, null]
           }),
           Effect.catchTag("LlmInvalidReply", () => Effect.succeed([null, null]))
         )
         predicates.push(reply)
         continue
       }
-      const seconds: Array<Predicate | null> = []
+      const seconds: Array<SecondReading | null> = []
       for (const index of question.parts.keys()) {
         const reply = yield* readPart(question, index)
         if (reply === null) {
@@ -186,7 +184,11 @@ export const readAgain = (jobId: string, item: DraftItem): Effect.Effect<SecondR
         }
         model = reply.model
         promptVersion = reply.promptVersion
-        seconds.push(reply.value.predicate)
+        seconds.push({
+          predicate: reply.value.predicate,
+          approximate: reply.value.approximate,
+          dataset: item.stimulus.kind === "tabs" && reply.value.tab !== null ? reply.value.tab - 1 : null
+        })
       }
       predicates.push(seconds)
     }

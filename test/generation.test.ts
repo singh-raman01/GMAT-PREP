@@ -1,12 +1,16 @@
 import { describe, expect, test } from "bun:test"
 import { and, asc, eq, inArray, sql } from "drizzle-orm"
-import { Effect } from "effect"
+import { Effect, Layer } from "effect"
 import type { BatchView, GeneratedQuestionType } from "../src/api/Generation.ts"
 import { skillsFor } from "../src/api/taxonomyRules.ts"
 import { Db } from "../src/server/db/Database.ts"
 import { datasets, parts, questions, statementPredicates, stimuli } from "../src/server/db/schema.ts"
+import { AppConfig } from "../src/server/AppConfig.ts"
+import { GenerationBatch } from "../src/server/generation/batchJob.ts"
+import { JobKinds } from "../src/server/jobs/JobKind.ts"
 import { AllJobKinds } from "../src/server/jobs/kinds/index.ts"
-import { FakeLlm } from "../src/server/llm/LlmTransport.ts"
+import { FakeLlm, LlmTransport } from "../src/server/llm/LlmTransport.ts"
+import { workerServices } from "../src/server/worker/services.ts"
 import { ApiKeyStore } from "../src/server/settings/ApiKeyStore.ts"
 import { Settings } from "../src/server/settings/Settings.ts"
 import { type Curator, curatorBrowser } from "./bookFlow.ts"
@@ -161,10 +165,10 @@ describe("A generation batch", () => {
         ])
         // The inference waits for the Curator, whose solves agree with it.
         const [item] = yield* curator.api.review.list()
-        expect(item!.question?.generated).toEqual({ batch: 1, item: 1 })
+        expect(item!.question?.generated).toEqual({ batch: 1, item: 1, question: 1 })
         expect(item!.reasons).toEqual([{
           code: "inference",
-          detail: "Part 3 is an inference from the text that code cannot check; its three solves agree with its key, A. Publish it once you have checked it."
+          detail: "Statement 3 is an inference from the text that code cannot check; its three solves agree with its key, A. Publish it once you have checked it."
         }])
         yield* curator.api.review.publish({ params: { id: item!.id } })
         const [first] = yield* batchQuestions(batch)
@@ -265,6 +269,168 @@ describe("A generation batch", () => {
         expect(yield* curator.api.generation.batches()).toEqual([])
         const db = yield* Db
         expect(yield* db.select().from(questions).where(and(eq(questions.section, "di"))).pipe(Effect.orDie)).toEqual([])
+      }),
+      AllJobKinds
+    ), 120_000)
+})
+
+// The worker's services, for running a job's step by hand as a worker does
+// after a restart from the same checkpoint.
+const stepServices = Effect.gen(function*() {
+  const transport = yield* LlmTransport
+  const config = yield* AppConfig
+  return workerServices(Layer.succeed(LlmTransport, transport), JobKinds.layer(AllJobKinds)).pipe(
+    Layer.provide(Layer.succeed(AppConfig, config))
+  )
+})
+
+describe("Repeats, the Mock Reserve and steps run again", () => {
+  test("an MSR set whose inference waits for the Curator still joins the Mock Reserve whole", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure()
+        const curator = yield* curatorBrowser
+        // Four sets, each with an inference held: two published Questions a set.
+        const batch = yield* generate(curator, "di.msr", 4)
+        expect(batch).toMatchObject({ questions: 12, published: 8, held: 4, reserved: 2 })
+        for (const item of yield* curator.api.review.list()) {
+          yield* curator.api.review.publish({ params: { id: item.id } })
+        }
+        const after = (yield* curator.api.generation.batches()).find((each) => each.id === batch.id)!
+        // The set in the Reserve takes in its third Question; the others stay out.
+        expect(after).toMatchObject({ published: 12, held: 0, reserved: 3 })
+      }),
+      AllJobKinds
+    ), 300_000)
+
+  test("an item the generator writes again waits as a near match of the first", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure({ reply: (type) => (type === "di.ta" ? taItem : undefined) })
+        const curator = yield* curatorBrowser
+        const batch = yield* generate(curator, "di.ta", 2)
+        expect(batch).toMatchObject({ questions: 2, published: 1, held: 1 })
+        const [first, second] = yield* batchQuestions(batch)
+        expect(second!.relatedQuestionId).toBe(first!.id)
+        const [held] = yield* curator.api.review.list()
+        expect(held!.reasons).toEqual([{
+          code: "near-match",
+          detail: "It has the same words and data as another Question: the same Question, or a Variant?"
+        }])
+      }),
+      AllJobKinds
+    ), 120_000)
+
+  test("small batches add up to a quarter of their type's Questions in the Mock Reserve", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure()
+        const curator = yield* curatorBrowser
+        const ones = [
+          yield* generate(curator, "di.gi"),
+          yield* generate(curator, "di.gi"),
+          yield* generate(curator, "di.gi"),
+          yield* generate(curator, "di.gi")
+        ]
+        expect(ones.map((batch) => batch.published)).toEqual([1, 1, 1, 1])
+        expect(ones.reduce((sum, batch) => sum + batch.reserved, 0)).toBe(1)
+      }),
+      AllJobKinds
+    ), 300_000)
+
+  test("a step run again after a stop counts its failed item once, and says what joined the Mock Reserve", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure()
+        const curator = yield* curatorBrowser
+        const done = yield* generate(curator, "di.ta", 4)
+        expect(done.reserved).toBe(1)
+        const services = yield* stepServices
+        const again = yield* GenerationBatch.step({
+          jobId: done.job!.id,
+          params: { batchId: done.id },
+          checkpoint: { stage: "enrich", item: 5, failed: 0 },
+          stepsDone: 10
+        }).pipe(Effect.provide(services))
+        expect(again).toMatchObject({ _tag: "Finished", result: expect.stringContaining("1 joined the Mock Reserve") })
+        // An item that cannot be made valid, its step run twice.
+        yield* (yield* FakeLlm).respondWith(makeFakeGenerationModel({
+          reply: (type) => (type === "di.ta" ? { ...taItem, statements: taItem.statements.slice(0, 2) } : undefined)
+        }))
+        const started = yield* curator.api.generation.start({
+          payload: { questionType: "di.ta", skill: yield* skillFor(curator, "di.ta"), band: "medium", count: 1, spendCap: 1 }
+        })
+        yield* advanceUntil(
+          curator.api.generation.batches().pipe(Effect.map((batches) => {
+            const batch = batches.find((each) => each.id === started.id)
+            return batch?.job?.status === "done" ? batch : undefined
+          })),
+          { step: "200 millis", maxSteps: 3000 }
+        )
+        const step = GenerationBatch.step({
+          jobId: started.job!.id,
+          params: { batchId: started.id },
+          checkpoint: { stage: "generate", item: 1, failed: 0 },
+          stepsDone: 0
+        }).pipe(Effect.provide(services))
+        yield* step
+        yield* step
+        const view = (yield* curator.api.generation.batches()).find((each) => each.id === started.id)!
+        expect(view).toMatchObject({ count: 1, failed: 1, questions: 0 })
+      }),
+      AllJobKinds
+    ), 180_000)
+
+  test("a reply the generator cannot get into shape says why in the note", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure({ reply: (type) => (type === "di.ta" ? { intro: 5 } : undefined) })
+        const curator = yield* curatorBrowser
+        const started = yield* curator.api.generation.start({
+          payload: { questionType: "di.ta", skill: yield* skillFor(curator, "di.ta"), band: "medium", count: 1, spendCap: 1 }
+        })
+        const services = yield* stepServices
+        const step = yield* GenerationBatch.step({
+          jobId: started.job!.id,
+          params: { batchId: started.id },
+          checkpoint: { stage: "generate", item: 1, failed: 0 },
+          stepsDone: 0
+        }).pipe(Effect.provide(services))
+        expect(step).toMatchObject({ _tag: "Continue", note: expect.stringMatching(/^Item 1 of 1 could not be made valid: \S/) })
+      }),
+      AllJobKinds
+    ), 120_000)
+
+  test("a Two-Part Analysis disagreement stays until both columns are overridden", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure({ disagree: new Set([tpaItem.intro]) })
+        const curator = yield* curatorBrowser
+        yield* generate(curator, "di.tpa")
+        // Each override sends the Question back through the Publish Gate;
+        // the next waits for it to be held again.
+        const override = (part: number, key: string) =>
+          Effect.gen(function*() {
+            const [item] = yield* advanceUntil(
+              curator.api.review.list().pipe(Effect.map((items) => (items.length > 0 ? items : undefined))),
+              { step: "200 millis", maxSteps: 3000 }
+            )
+            return yield* curator.api.review.overrideKey({
+              params: { id: item!.id },
+              payload: { part, key, reason: "Checked against the table." }
+            })
+          })
+        const first = yield* override(1, "B")
+        expect(first.question?.parts[1]).toMatchObject({ key: "B", keyBasis: "override" })
+        const db = yield* Db
+        const reasonsOf = (id: string) =>
+          db.select({ linkReasons: questions.linkReasons }).from(questions).where(eq(questions.id, id)).pipe(
+            Effect.orDie,
+            Effect.map(([row]) => (JSON.parse(row!.linkReasons) as Array<{ code: string }>).map((reason) => reason.code))
+          )
+        expect(yield* reasonsOf(first.question!.id)).toEqual(["predicate-disagreement"])
+        const both = yield* override(0, "C")
+        expect(yield* reasonsOf(both.question!.id)).toEqual([])
       }),
       AllJobKinds
     ), 120_000)

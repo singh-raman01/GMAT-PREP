@@ -85,7 +85,7 @@ const monthOf = (word: string): string | undefined => {
 
 // A date as far as the cell gives one: a year, a month of a year, a day, or a
 // month alone, which sorts within a year.
-const parseDate = (text: string): string | undefined => {
+export const parseDate = (text: string): string | undefined => {
   let match = /^(?:FY\s?)?(\d{4})$/i.exec(text)
   if (match !== null) return match[1]
   match = /^(\d{4})-(\d{2})(?:-(\d{2}))?$/.exec(text)

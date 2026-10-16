@@ -137,7 +137,8 @@ export class QuestionView extends Schema.Class<QuestionView>("gmat-prep/api/Ques
   explanation: Schema.NullOr(Schema.String),
   sources: Schema.Array(SourceView),
   // A Generated Question's batch and its item's place in it.
-  generated: Schema.NullOr(Schema.Struct({ batch: Schema.Int, item: Schema.Int })),
+  // A Generated Question's batch and item; for an MSR set, its place in the set.
+  generated: Schema.NullOr(Schema.Struct({ batch: Schema.Int, item: Schema.Int, question: Schema.NullOr(Schema.Int) })),
   // What enrichment gave it: Skill ids, the Difficulty estimate, the
   // independent solves' answers, its Approaches and its wrong-option notes.
   primarySkill: Schema.NullOr(Schema.String),
