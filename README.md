@@ -34,7 +34,11 @@ Open Curator tools from the profile page and set the Curator passphrase. Under S
 
 ## Add a book
 
-Under Books, choose the book's PDF (up to 500 MB), give its title and edition, and say whether it is official GMAC material. The app reads every page, then has the Book Map model read 10 pages spread through the book, and shows what the full run would cost. Nothing more is spent until you start the full run with a spend cap. The Book Map model then reads the other pages and proposes the Book Map: where the book's questions, answer keys, explanations and difficulty labels are. Correct it on the book's page, opening any page in the browser's PDF viewer to check, and confirm it. Each confirmation is a new version.
+Under Books, choose the book's PDF (up to 500 MB), give its title and edition, and say whether it is official GMAC material. The app reads every page, then has the Book Map model read 10 pages spread through the book, and shows what the full run would cost. Nothing more is spent until you start the full run with a spend cap. The Book Map model then reads the other pages and proposes the Book Map: where the book's questions, answer keys, explanations and difficulty labels are. Correct it on the book's page, opening any page in the browser's PDF viewer to check, and confirm it. Each confirmation is a new version, and starts extracting the book's Problem Solving questions.
+
+## Review the questions
+
+Extracted questions wait in the Review Queue, each with every problem found: no key, a key that disagrees with the explanation, math that does not render, a figure the text does not hold, or a near match to a question already in the bank. Publish a question to put it in the Question Bank, keep a near match as a Variant or merge it into the other question, or withdraw it. The book's page shows what became of every question it held.
 
 A forgotten passphrase is cleared on the computer the app runs on, with the app running or not:
 

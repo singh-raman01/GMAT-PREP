@@ -5,7 +5,7 @@ import { HttpClient, HttpClientRequest } from "effect/http"
 import { AddedBook, type BookDetail, type BookId, BookUploadPath, type MapRangeInput } from "../src/api/Books.ts"
 import type { ReviewItemView } from "../src/api/Review.ts"
 import { Db } from "../src/server/db/Database.ts"
-import { llmCalls } from "../src/server/db/schema.ts"
+import { llmCalls, pageReadings } from "../src/server/db/schema.ts"
 import { AllJobKinds } from "../src/server/jobs/kinds/index.ts"
 import { FakeLlm } from "../src/server/llm/LlmTransport.ts"
 import { ApiKeyStore } from "../src/server/settings/ApiKeyStore.ts"
@@ -72,9 +72,16 @@ const rangesOf = (detail: BookDetail): Array<MapRangeInput> =>
   }))
 
 // A Book through its cost preview and Book Map run, up to the proposal.
-const proposedBook = (curator: Curator, edition = "First edition") =>
+const proposedBook = (
+  curator: Curator,
+  edition = "First edition",
+  psPages?: number,
+  keys?: Readonly<Record<number, string>>
+) =>
   Effect.gen(function*() {
-    const fixture = yield* Effect.promise(() => makeBook({ edition }))
+    const fixture = yield* Effect.promise(() =>
+      makeBook({ edition, ...(psPages === undefined ? {} : { psPages }), ...(keys === undefined ? {} : { keys }) })
+    )
     const book = yield* upload(curator, fixture.bytes, `Practice Questions, ${edition}`)
     yield* waitFor(curator, book.id, statusIs("previewed"))
     yield* curator.api.books.start({ params: { id: book.id }, payload: { spendCap: 1 } })
@@ -158,6 +165,48 @@ describe("Extracting Problem Solving Questions", () => {
           "Practice Questions, First edition",
           "Practice Questions, Second edition"
         ])
+      }),
+      AllJobKinds
+    ))
+
+  test("a Question repeated with another key is held beside the first, not merged", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const first = yield* proposedBook(curator)
+        yield* confirmAndExtract(curator, first.book.id, rangesOf(first))
+        // The second edition's key gives B for the third question, though its
+        // explanation still says C.
+        const second = yield* proposedBook(curator, "Second edition", undefined, { 3: "B" })
+        const extracted = yield* confirmAndExtract(curator, second.book.id, rangesOf(second))
+        expect(extracted.book.report).toMatchObject({ extracted: 8, merged: 7, held: 1 })
+        const items = yield* curator.api.review.list()
+        const repeat = items.find((item) => item.question?.sources[0]?.bookTitle === "Practice Questions, Second edition")!
+        expect(repeat.question).toMatchObject({ key: "B", sources: [{ number: 3 }] })
+        expect(codes(repeat)).toEqual(["key-conflict", "same-text-other-key"])
+        expect(repeat.related?.key).toBe("C")
+      }),
+      AllJobKinds
+    ))
+
+  test("Sentence Correction ranges are counted and skipped, not read as Questions", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const curator = yield* curatorBrowser
+        const fake = yield* FakeLlm
+        const proposed = yield* proposedBook(curator)
+        // The Curator marks the page of two Data Sufficiency questions as
+        // Sentence Correction, to see it skipped.
+        const ranges = [
+          ...rangesOf(proposed).filter((range) => range.group !== "ds"),
+          { role: "questions", firstPage: 9, lastPage: 9, set: "Sentence Correction", group: "sc" } as const
+        ]
+        const extracted = yield* confirmAndExtract(curator, proposed.book.id, ranges)
+        expect(extracted.book.report).toMatchObject({ extracted: 8, skippedSentenceCorrection: 2, skippedGeometry: 1 })
+        const listed = (yield* fake.requests).filter((request) => request.messages[0]?.content.includes("list the question numbers"))
+        expect(listed).toHaveLength(1)
       }),
       AllJobKinds
     ))
@@ -256,10 +305,10 @@ describe("Extracting Problem Solving Questions", () => {
         const before = (yield* fake.requests).length
 
         yield* confirmAndExtract(curator, proposed.book.id, full)
-        // Only the answer key page was read.
-        const reads = (yield* fake.requests).slice(before)
-        expect(reads).toHaveLength(1)
-        expect(reads[0]?.messages[0]?.content).toContain("answer keys")
+        // Nothing was read again: the cost preview's sample had already read
+        // the answer key page, and every other page was read for the first
+        // version.
+        expect((yield* fake.requests).slice(before)).toHaveLength(0)
         items = yield* curator.api.review.list()
         const sixth = byNumber(items, 6)
         expect(sixth.question).toMatchObject({ key: "C", status: "held" })
@@ -280,7 +329,8 @@ describe("Extracting Problem Solving Questions", () => {
         const curator = yield* curatorBrowser
         const workers = yield* TestWorkers
         const first = yield* workers.start
-        const proposed = yield* proposedBook(curator)
+        // 25 pages, so pages are left to read after the cost preview's sample.
+        const proposed = yield* proposedBook(curator, "First edition", 10)
 
         // The API goes down after three extraction pages, and the worker is
         // killed while it waits to try again.
@@ -311,10 +361,11 @@ describe("Extracting Problem Solving Questions", () => {
         const ok = yield* db.select().from(llmCalls)
           .where(and(eq(llmCalls.task, "extraction"), eq(llmCalls.outcome, "ok")))
           .pipe(Effect.orDie)
-        // Pages 2 to 8: three of questions, one key, three of explanations.
-        expect(ok).toHaveLength(7)
-        expect((yield* curator.api.review.list())).toHaveLength(8)
+        // Pages 2 to 22, each once: ten of questions, one key and ten of
+        // explanations, nine of them read with the sample.
+        expect(ok).toHaveLength(21)
+        expect(yield* db.select().from(pageReadings).pipe(Effect.orDie)).toHaveLength(21)
       }),
       AllJobKinds
-    ))
+    ), 20_000)
 })

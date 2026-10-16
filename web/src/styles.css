@@ -1162,6 +1162,152 @@ input[type="file"]::file-selector-button {
   }
 }
 
+/* Question text */
+
+.rich-text p + p,
+.rich-text p + .math-display,
+.rich-text .math-display + p {
+  margin-top: 0.75rem;
+}
+
+.math-display {
+  overflow-x: auto;
+  margin: 0.75rem 0;
+}
+
+.math-error {
+  color: var(--alert);
+}
+
+/* The Review Queue */
+
+.queue-count {
+  margin-bottom: 1.25rem;
+  font-weight: 700;
+}
+
+.review-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--rule);
+  max-width: 52rem;
+}
+
+.review-item {
+  display: grid;
+  gap: 0.9rem;
+  padding: 1.5rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.review-source {
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+.review-source a {
+  color: var(--graphite);
+  font-weight: 700;
+}
+
+.review-clear {
+  font-weight: 700;
+}
+
+.reasons {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reason-label {
+  margin-right: 0.35rem;
+  color: var(--alert);
+  font-weight: 700;
+}
+
+.question-body {
+  display: grid;
+  gap: 0.9rem;
+  max-width: 68ch;
+}
+
+.choices {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.choice {
+  display: grid;
+  grid-template-columns: 2rem 1fr;
+  align-items: baseline;
+}
+
+.choice-letter {
+  font-weight: 700;
+}
+
+.choice.is-key .choice-text {
+  font-weight: 700;
+}
+
+.explanation summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.explanation .rich-text {
+  max-width: 68ch;
+  margin-top: 0.6rem;
+}
+
+.related {
+  display: grid;
+  gap: 0.6rem;
+  padding-left: 1rem;
+  border-left: 3px solid var(--rule);
+}
+
+.related-label {
+  color: var(--pencil);
+  font-size: var(--step-0);
+  font-weight: 700;
+}
+
+/* The extraction report: counts in a column, read across. */
+
+.report {
+  margin-bottom: 1rem;
+  border-collapse: collapse;
+  font-size: var(--step-0);
+}
+
+.report th {
+  padding: 0.35rem 1.5rem 0.35rem 0;
+  font-weight: 700;
+  text-align: left;
+}
+
+.report-count {
+  padding: 0.35rem 1.5rem 0.35rem 0;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.report-about {
+  color: var(--pencil);
+}
+
+.confirm-cap {
+  margin-top: 1.25rem;
+}
+
 /* Motion answers actions only, and stops when asked to. */
 
 @keyframes open {

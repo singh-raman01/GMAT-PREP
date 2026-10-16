@@ -73,6 +73,12 @@ export const BookMapEditor = (
   const [tried, setTried] = useState(false)
   const [serverProblems, setServerProblems] = useState<ReadonlyArray<string>>([])
   const [saved, setSaved] = useState("")
+  // Extraction spends from the full run's cap; a Book mapped by hand before
+  // any run needs one here.
+  const needsCap = book.runCap === null
+  const [cap, setCap] = useState(() =>
+    String(book.preview === null ? 1 : Math.max(0.1, Math.ceil(book.preview.projectedCost * 1.5 * 100) / 100))
+  )
   const busy = useRef(false)
 
   const { ranges, unreadable } = parse(rows)
@@ -123,16 +129,26 @@ export const BookMapEditor = (
     event.preventDefault()
     setTried(true)
     setServerProblems([])
+    const spendCap = Number(cap)
+    const capProblem = needsCap && (!Number.isFinite(spendCap) || spendCap <= 0 || spendCap > 10_000)
+      ? ["Enter a spend cap in dollars, above 0."]
+      : []
+    if (capProblem.length > 0) return setServerProblems(capProblem)
     if (problems.length > 0 || busy.current) return
     busy.current = true
-    const result = await call((client) => client.books.confirmMap({ params: { id: book.id }, payload: { ranges } }))
+    const result = await call((client) =>
+      client.books.confirmMap({
+        params: { id: book.id },
+        payload: needsCap ? { ranges, spendCap } : { ranges }
+      })
+    )
     busy.current = false
     if (result._tag === "Success") {
       const confirmed = result.success.confirmed
       setTried(false)
       if (confirmed !== null) {
         setRows(confirmed.ranges.map(rowOf))
-        setSaved(`Version ${confirmed.version} confirmed.`)
+        setSaved(`Version ${confirmed.version} confirmed; extraction started.`)
       }
       onConfirmed(result.success)
       return
@@ -142,6 +158,8 @@ export const BookMapEditor = (
         return setServerProblems(result.failure.problems)
       case "BookNotReady":
         return setServerProblems(["The book changed in the meantime; reload the page."])
+      case "RunCapNeeded":
+        return setServerProblems(["Enter a spend cap for extraction."])
       default:
         return onFailure(result.failure)
     }
@@ -282,6 +300,23 @@ export const BookMapEditor = (
             <ul>
               {shownProblems.map((problem) => <li key={problem}>{problem}</li>)}
             </ul>
+          </div>
+        )}
+        <p className="map-hint">
+          Confirming starts extracting the Problem Solving Questions into the Review Queue. A page read before is not
+          read again, so fixing the Book Map later costs little.
+        </p>
+        {needsCap && (
+          <div className="field cap-field confirm-cap">
+            <label htmlFor={`${ids.title}-cap`}>Spend cap for extraction, in dollars</label>
+            <input
+              id={`${ids.title}-cap`}
+              type="text"
+              inputMode="decimal"
+              autoComplete="off"
+              value={cap}
+              onChange={(event) => setCap(event.target.value)}
+            />
           </div>
         )}
         <div className="actions confirm-actions">

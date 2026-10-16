@@ -84,17 +84,25 @@ export const mathIn = (source: string): ReadonlyArray<{ readonly tex: string; re
 
 // KaTeX without anything that reaches outside the page, such as links or
 // images. Such commands show as red text; refused names the ones used.
+const katexOptions = (display: boolean, refused: Array<string>) => ({
+  throwOnError: true,
+  strict: "ignore" as const,
+  output: "htmlAndMathml" as const,
+  displayMode: display,
+  trust: (context: { readonly command: string }) => {
+    refused.push(context.command)
+    return false
+  }
+})
+
 export const renderMath = (tex: string, display: boolean, refused: Array<string> = []): string =>
-  katex.renderToString(tex, {
-    throwOnError: true,
-    strict: "ignore",
-    output: "htmlAndMathml",
-    displayMode: display,
-    trust: (context) => {
-      refused.push(context.command)
-      return false
-    }
-  })
+  katex.renderToString(tex, katexOptions(display, refused))
+
+// Renders into an element. KaTeX then sets its positioning through the DOM
+// rather than in style attributes, which the app's content security policy
+// refuses.
+export const renderMathInto = (element: HTMLElement, tex: string, display: boolean) =>
+  katex.render(tex, element, katexOptions(display, []))
 
 // Why the text does not render, or undefined when it does. Math left open,
 // such as a \( with no \), is a failure too.
