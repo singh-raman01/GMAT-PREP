@@ -1,11 +1,12 @@
 import type { Effect } from "effect"
 import { useCallback, useEffect, useId, useRef, useState } from "react"
-import type {
-  PracticeOutOfStep,
-  PracticeResult,
-  PracticeView,
-  SelectionInvalid,
-  ServedView
+import {
+  type PracticeOutOfStep,
+  type PracticeResult,
+  type PracticeView,
+  type SelectionInvalid,
+  type ServedView,
+  SessionId
 } from "../../../src/api/Practice.ts"
 import { call, type Client } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
@@ -34,7 +35,7 @@ export const PracticeSet = ({ id, onSessionLost, onStopped }: Props) => {
   useEffect(() => {
     let live = true
     setView(undefined)
-    void call((client) => client.practice.get({ params: { id: id as never } })).then((result) => {
+    void call((client) => client.practice.get({ params: { id: SessionId.make(id) } })).then((result) => {
       if (!live) return
       if (result._tag === "Success") setView(result.success)
       else if (result.failure._tag === "PracticeNotFound") setMissing(true)
@@ -66,8 +67,12 @@ const isOutOfStep = (failure: { readonly _tag: string }): failure is PracticeOut
 const isSelectionInvalid = (failure: { readonly _tag: string }): failure is SelectionInvalid =>
   failure._tag === "SelectionInvalid"
 
+// Keys typed into a text field are the field's; a radio button or a
+// checkbox leaves the shortcuts working.
 const isTyping = (target: EventTarget | null) =>
-  target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
+  target instanceof HTMLElement &&
+  (target.isContentEditable || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement ||
+    (target instanceof HTMLInputElement && !["radio", "checkbox", "button", "submit"].includes(target.type)))
 
 const QuestionScreen = (
   { view, onView, onFailure }: {
@@ -213,7 +218,9 @@ const QuestionScreen = (
       <p className="question-meta">
         <span className="swatch" aria-hidden="true" />
         {question.questionType.name}
-        {question.source === null ? "" : `, ${question.source.bookTitle}, ${question.source.set} ${question.source.number}`}
+        {question.source === null
+          ? ""
+          : `. ${question.source.bookTitle}, ${question.source.set}, question ${question.source.number}`}
       </p>
 
       <div className="question-body">
@@ -299,6 +306,37 @@ const BookmarkButton = (
   </button>
 )
 
+// A served Question's options as reviewed after the set: the pick marked,
+// and the answer named.
+const AnsweredOptions = ({ served }: { readonly served: ServedView }) => {
+  const part = served.question.parts[0]
+  const picked = served.response?.selection.find((each) => each.part === part?.position)?.choice
+  const key = served.debrief?.keys.find((each) => each.part === part?.position)?.key
+  return (
+    <ul className="answered-options">
+      {part?.options.map((option) => {
+        const isPicked = option.label === picked
+        const isKey = option.label === key
+        return (
+          <li
+            key={option.label}
+            className="answered-option"
+            data-key={isKey || undefined}
+            data-missed={(isPicked && !isKey) || undefined}
+          >
+            <span className={isPicked ? "answer-letter mark" : "answer-letter"}>{option.label}</span>
+            <span className="answer-text">
+              <RichInline source={option.text} />
+              {isKey && <span className="answer-flag">The answer</span>}
+              {isPicked && !isKey && <span className="answer-flag">Your answer</span>}
+            </span>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
 const resultText = (result: PracticeResult) =>
   result.correct === null ? "Not answered" : result.correct ? "Right" : "Wrong"
 
@@ -369,7 +407,7 @@ const ResultRow = (
   return (
     <li className="set-result" data-result={result.correct === null ? "unanswered" : result.correct ? "right" : "wrong"}>
       <div className="set-result-head">
-        <span className="set-result-name">{result.questionType.name}</span>
+        <span className="set-result-name">Question {result.position + 1}, {result.questionType.name}</span>
         <span className="set-result-outcome">{resultText(result)}</span>
         <span className="set-result-facts">
           {[
@@ -392,16 +430,7 @@ const ResultRow = (
         {review._tag === "Open" && (
           <>
             <RichText source={review.served.question.stem} />
-            <ul className="choices">
-              {review.served.question.parts[0]?.options.map((option) => (
-                <li key={option.label} className="choice">
-                  <span className="choice-letter">{option.label}</span>
-                  <span className="choice-text">
-                    <RichInline source={option.text} />
-                  </span>
-                </li>
-              ))}
-            </ul>
+            <AnsweredOptions served={review.served} />
             {review.served.debrief !== null && (
               <DebriefPanel debrief={review.served.debrief} response={review.served.response} />
             )}

@@ -3,8 +3,10 @@ import type { ProfileSummary } from "../../src/api/Profiles.ts"
 import { announceUnlockChanged, call, onUnlockChanged, showProfile, type Trouble, troubleOf } from "./api.ts"
 import { CuratorArea } from "./curator/CuratorArea.tsx"
 import { useFocusOnMount } from "./focus.ts"
+import { PracticeHome } from "./practice/PracticeHome.tsx"
+import { PracticeSet } from "./practice/PracticeSet.tsx"
 import { ProfilePicker } from "./ProfilePicker.tsx"
-import { usePath } from "./router.ts"
+import { linkProps, usePath } from "./router.ts"
 import { TaxonomyBrowser } from "./TaxonomyBrowser.tsx"
 
 type Screen =
@@ -108,11 +110,39 @@ export const App = () => {
             </div>
           </header>
           <main className="page">
-            <TaxonomyBrowser key={screen.profile.id} onSessionLost={sessionLost} onStopped={stop} />
+            <LearnerArea key={screen.profile.id} path={path} onSessionLost={sessionLost} onStopped={stop} />
           </main>
         </>
       )
   }
+}
+
+// A Learner's pages: Practice, a set, and the Taxonomy.
+const LearnerArea = ({ path, onSessionLost, onStopped }: {
+  readonly path: string
+  readonly onSessionLost: () => void
+  readonly onStopped: (error: { readonly _tag: string }) => void
+}) => {
+  const setId = /^\/practice\/([^/]+)$/.exec(path)?.[1]
+  if (setId !== undefined) {
+    return <PracticeSet key={setId} id={setId} onSessionLost={onSessionLost} onStopped={onStopped} />
+  }
+  const taxonomy = path === "/taxonomy"
+  return (
+    <>
+      <nav className="subnav" aria-label="Learner pages">
+        <a {...linkProps("/")} aria-current={taxonomy ? undefined : "page"}>
+          <span className={taxonomy ? undefined : "mark"}>Practice</span>
+        </a>
+        <a {...linkProps("/taxonomy")} aria-current={taxonomy ? "page" : undefined}>
+          <span className={taxonomy ? "mark" : undefined}>What the GMAT tests</span>
+        </a>
+      </nav>
+      {taxonomy
+        ? <TaxonomyBrowser onSessionLost={onSessionLost} onStopped={onStopped} />
+        : <PracticeHome onSessionLost={onSessionLost} onStopped={onStopped} />}
+    </>
+  )
 }
 
 const troubleText: Record<Trouble, { readonly title: string; readonly body: string; readonly action: string }> = {

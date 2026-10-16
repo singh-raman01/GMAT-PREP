@@ -1574,3 +1574,384 @@ input[type="file"]::file-selector-button {
   padding: 0.3rem 0;
   border-bottom: 1px solid var(--rule);
 }
+
+/* Practice: choosing a set, answering, and the Debrief. The highlighter marks
+   the option picked; borders say which option is the answer and which pick
+   missed, and words say so too. */
+
+.set-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rule);
+  max-width: 52rem;
+}
+
+.set-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 1rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.set-name {
+  color: var(--graphite);
+  font-weight: 700;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+}
+
+.set-facts {
+  flex: 1 1 14rem;
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+.practice-start,
+.practice-fields {
+  display: grid;
+  gap: 1.25rem;
+  max-width: 52rem;
+}
+
+.practice-start select {
+  width: 100%;
+}
+
+.inline-field {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.inline-field legend {
+  padding: 0;
+  font-size: var(--step-0);
+  font-weight: 700;
+}
+
+.inline-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1.5rem;
+  margin-top: 0.15rem;
+}
+
+.inline-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2.75rem;
+  font-size: var(--step-0);
+  cursor: pointer;
+}
+
+.inline-choice input,
+.answer-option input {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin: 0;
+  accent-color: var(--graphite);
+}
+
+input.number-input {
+  max-width: 7rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.item-range {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 1.5rem;
+}
+
+.practice-preview {
+  min-height: 1.5em;
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+.set-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.25rem 1.5rem;
+  max-width: 68ch;
+}
+
+.set-title {
+  color: var(--pencil);
+  font-size: var(--step-0);
+  font-weight: 700;
+}
+
+.set-end {
+  font-size: var(--step-0);
+}
+
+.practice-set h1.question-count {
+  margin-top: 0.75rem;
+  font-size: var(--step-3);
+}
+
+.question-meta {
+  margin: 0.4rem 0 1.5rem;
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+.question-meta .swatch {
+  margin-right: 0.5rem;
+}
+
+.answer-options {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.answer-option {
+  display: grid;
+  grid-template-columns: auto 1.75rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0.6rem;
+  min-height: 2.75rem;
+  padding: 0.6rem 0.85rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.answer-option > * {
+  min-width: 0;
+}
+
+.answer-option:hover {
+  background: var(--hover);
+}
+
+.answer-option[data-picked] {
+  border-color: var(--graphite);
+}
+
+.answer-option[data-key],
+.answered-option[data-key] {
+  box-shadow: inset 5px 0 0 var(--graphite);
+}
+
+.answer-option[data-key] .answer-text {
+  font-weight: 700;
+}
+
+.answer-option[data-missed],
+.answered-option[data-missed] {
+  box-shadow: inset 5px 0 0 var(--alert);
+}
+
+.answer-options:disabled .answer-option {
+  cursor: default;
+}
+
+.answer-options:disabled .answer-option:hover {
+  background: transparent;
+}
+
+.answer-letter {
+  font-weight: 700;
+  justify-self: start;
+}
+
+/* An answered Question as reviewed later: the same marks, nothing to press. */
+.answered-options {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.answered-option {
+  display: grid;
+  grid-template-columns: 1.75rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.35rem 0.85rem;
+}
+
+.answered-option > * {
+  min-width: 0;
+}
+
+.answered-option[data-key] .answer-text {
+  font-weight: 700;
+}
+
+.select-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 1.25rem;
+}
+
+.answer-flag {
+  margin-left: 0.6rem;
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  color: var(--pencil);
+  font-size: var(--step--1);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.answer-actions {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+  max-width: 68ch;
+}
+
+.debrief {
+  display: grid;
+  gap: 1rem;
+  max-width: 68ch;
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--rule);
+}
+
+.debrief > * {
+  min-width: 0;
+}
+
+.debrief h2 {
+  font-size: var(--step-2);
+}
+
+.debrief-facts {
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+.trap-note {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.75rem 1rem;
+  border-left: 4px solid var(--alert);
+  background: var(--hover);
+}
+
+.trap-note h3 {
+  font-size: var(--step-1);
+}
+
+.trap-kind {
+  color: var(--pencil);
+  font-size: var(--step-0);
+  font-weight: 700;
+}
+
+.ways-title {
+  font-size: var(--step-1);
+}
+
+.ways {
+  display: grid;
+  gap: 1.5rem;
+  margin: 0;
+  padding-left: 1.4rem;
+}
+
+.ways > li > * + * {
+  margin-top: 0.4rem;
+}
+
+.way-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+}
+
+.way-name {
+  font-weight: 700;
+}
+
+.way-time,
+.way-when {
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+.debrief-actions {
+  margin-top: 1.5rem;
+}
+
+.held-note {
+  max-width: 68ch;
+  margin-bottom: 1rem;
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+.set-results {
+  display: grid;
+  margin: 1.5rem 0 2rem;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rule);
+  max-width: 68ch;
+}
+
+.set-result {
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.set-result-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 1rem;
+}
+
+.set-result-name {
+  font-weight: 700;
+}
+
+.set-result-outcome {
+  font-weight: 700;
+}
+
+.set-result[data-result="wrong"] .set-result-outcome {
+  color: var(--alert);
+}
+
+.set-result-facts {
+  flex: 1 1 10rem;
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+.set-result-review {
+  display: grid;
+  gap: 0.9rem;
+  margin-top: 1rem;
+}
+
+.set-result-review > * {
+  min-width: 0;
+}
+
+.release-form {
+  display: grid;
+  gap: 1rem;
+  max-width: 40rem;
+  margin-top: 1.5rem;
+}
