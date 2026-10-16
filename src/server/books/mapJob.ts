@@ -7,9 +7,10 @@ import type { JobKind } from "../jobs/JobKind.ts"
 import { assembleMap } from "./bookMap.ts"
 import { readSurvey, SurveyPromptVersion, surveyPages } from "./survey.ts"
 
-// The full run, for now: the Book Map model reads every page with text that
-// the sample did not, ten at a time, and code joins the pages into the
-// proposed Book Map, which waits for the Curator.
+// The first part of the full run: the Book Map model reads every page with
+// text, ten at a time and in order, so each page is read among its
+// neighbours, and code joins the pages into the proposed Book Map, which
+// waits for the Curator. Starting the run clears the sample's surveys.
 
 export const PagesPerBatch = 10
 

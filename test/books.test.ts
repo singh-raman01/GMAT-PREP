@@ -284,18 +284,19 @@ describe("The cost preview", () => {
         // Every call takes 1000 tokens in and 100 out: $0.0014 with the Book
         // Map model, $0.0028 with the extraction model.
         expect(preview.model).toBe("map-model")
-        expect(preview.projectedPages).toBe(14)
+        expect(preview.projectedPages).toBe(24)
         const [map, extraction] = preview.steps
-        // The survey of the 10 pages, then the 14 other pages with text.
+        // The survey of the 10 pages, then of all 24 pages with text, since
+        // the full run surveys the sampled ones again among their neighbours.
         expect(map).toMatchObject({
           name: "Book Map",
           sampledPages: 10,
           sampleTokens: 1100,
-          projectedPages: 14,
-          projectedTokens: 1540
+          projectedPages: 24,
+          projectedTokens: 2640
         })
         expect(map?.sampleCost).toBeCloseTo(0.0014, 12)
-        expect(map?.projectedCost).toBeCloseTo(0.0014 / 10 * 14, 12)
+        expect(map?.projectedCost).toBeCloseTo(0.0014 / 10 * 24, 12)
         // 9 of the 10 are Problem Solving pages; the tenth holds Data
         // Sufficiency, which this version does not extract. 9 in 10 of the
         // 24 pages with text is 22 such pages, 13 of them still to read.
@@ -308,7 +309,7 @@ describe("The cost preview", () => {
         })
         expect(extraction?.projectedCost).toBeCloseTo(9 * 0.0028 / 9 * 13, 12)
         expect(preview.sampleTokens).toBe(11000)
-        expect(preview.projectedTokens).toBe(1540 + 14300)
+        expect(preview.projectedTokens).toBe(2640 + 14300)
         const [sampleRequest] = yield* fake.requests
         expect(sampleRequest?.model).toBe("map-model")
         expect(quotedPages(sampleRequest!).map((page) => page.number)).toEqual([...preview.sampledPages])
@@ -320,15 +321,18 @@ describe("The cost preview", () => {
         expect((yield* detailOf(curator.api, view.id)).book.status).toBe("previewed")
 
         const started = yield* curator.api.books.start({ params: { id: view.id }, payload: { spendCap: 0.05 } })
-        expect(started.job).toMatchObject({ kind: "book-map", spendCap: 0.05, stepsTotal: 3 })
+        expect(started.job).toMatchObject({ kind: "book-map", spendCap: 0.05, stepsTotal: 4 })
         const again = yield* curator.api.books.start({ params: { id: view.id }, payload: { spendCap: 0.05 } }).pipe(
           Effect.flip
         )
         expect(again).toMatchObject({ _tag: "BookNotReady", status: "mapping" })
         yield* waitForStatus(curator.api, view.id, "map-proposed")
-        // The full run read the 14 pages the sample did not, ten at a time.
+        // The full run surveyed all 24 pages with text in order, ten at a time.
         const runRequests = (yield* fake.requests).slice(10)
-        expect(runRequests.map((request) => quotedPages(request).length)).toEqual([10, 4])
+        expect(runRequests.map((request) => quotedPages(request).length)).toEqual([10, 10, 4])
+        expect(runRequests.flatMap((request) => quotedPages(request).map((page) => page.number))).toEqual(
+          Array.from({ length: 25 }, (_, i) => i + 1).filter((number) => number !== 24)
+        )
       }),
       AllJobKinds
     ))
@@ -385,7 +389,7 @@ describe("The Book Map", () => {
           { role: "questions", firstPage: 23, lastPage: 23, set: "Data Sufficiency", group: "ds" },
           { role: "answer-key", firstPage: 25, lastPage: 25, set: "Data Sufficiency", group: "ds" }
         ])
-        expect(proposed.proposal).toMatchObject({ model: "map-model", promptVersion: "book-survey@1" })
+        expect(proposed.proposal).toMatchObject({ model: "map-model", promptVersion: "book-survey@2" })
         expect(proposed.confirmed).toBeNull()
         expect(proposed.book.job).toMatchObject({
           kind: "book-map",
@@ -427,7 +431,8 @@ describe("The Book Map", () => {
         const first = yield* curator.api.books.confirmMap({ params: { id }, payload: { ranges: fixed } })
         // Confirming starts extraction, within what is left of the run's cap.
         expect(first.book).toMatchObject({ status: "extracting", mapVersion: 1, runCap: 1, job: { kind: "book-extract" } })
-        expect(first.book.job!.spendCap).toBeCloseTo(1 - 0.0028, 12)
+        // The Book Map run took three calls of $0.0014.
+        expect(first.book.job!.spendCap).toBeCloseTo(1 - 0.0042, 12)
         expect(first.confirmed?.version).toBe(1)
         expect(first.confirmed?.ranges.find((range) => range.group === "ds" && range.role === "questions")).toMatchObject({
           firstPage: 23,

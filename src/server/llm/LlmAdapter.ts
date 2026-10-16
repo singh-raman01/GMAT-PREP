@@ -56,9 +56,9 @@ export interface LlmReply<A> {
   readonly model: string
   readonly promptVersion: string
   readonly at: number
+  // Tokens and dollars for this call and any retries it needed.
   readonly tokensIn: number
   readonly tokensOut: number
-  // Dollars, for this call and any retries it needed.
   readonly cost: number
 }
 
@@ -306,8 +306,8 @@ export class LlmAdapter extends Context.Service<LlmAdapter, {
             model,
             promptVersion: request.promptVersion,
             at,
-            tokensIn: final.sent.tokensIn,
-            tokensOut: final.sent.tokensOut,
+            tokensIn: final === first ? first.sent.tokensIn : first.sent.tokensIn + final.sent.tokensIn,
+            tokensOut: final === first ? first.sent.tokensOut : first.sent.tokensOut + final.sent.tokensOut,
             cost: spent
           }
         })

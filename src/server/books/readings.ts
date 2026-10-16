@@ -5,6 +5,7 @@ import { Db } from "../db/Database.ts"
 import { bookPages, pageReadings } from "../db/schema.ts"
 import { JobStepFailed } from "../jobs/JobKind.ts"
 import { LlmAdapter } from "../llm/LlmAdapter.ts"
+import { quoteData } from "../llm/quoting.ts"
 
 // Extraction reads a page in the role the Book Map gives it: the questions
 // that start on it, the answers on an answer key page, the explanations that
@@ -152,7 +153,7 @@ const promptFor = (role: MapRole, group: TypeGroup): Prompt<unknown> => {
 // Every output schema extraction sends, for the strict-schema test.
 export const readingOutputs = Object.values(prompts).map((prompt) => prompt.output)
 
-const quote = (tag: string, text: string) => `<${tag}>\n${text.replaceAll(`</${tag}`, `</ ${tag}`)}\n</${tag}>`
+const quote = (tag: string, text: string) => quoteData(tag, text)
 
 export interface ReadResult {
   readonly reading: PageReading
