@@ -146,7 +146,12 @@ const Report = ({ report }: { readonly report: BookReport }) => {
     ["Withdrawn", report.withdrawn, ""],
     ["Already in the Question Bank", report.merged, "joined that Question as another Source"],
     ["Skipped: geometry", report.skippedGeometry, "a Retired item"],
-    ["Skipped: Sentence Correction", report.skippedSentenceCorrection, "a Retired item"]
+    ["Skipped: Sentence Correction", report.skippedSentenceCorrection, "a Retired item"],
+    [
+      "Skipped: number used twice",
+      report.skippedRepeatedNumbers,
+      "a second item with a number its set already has; check the set's ranges in the Book Map"
+    ]
   ]
   return (
     <section className="group" aria-labelledby={id}>

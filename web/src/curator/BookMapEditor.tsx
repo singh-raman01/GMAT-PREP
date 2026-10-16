@@ -12,6 +12,7 @@ import {
   TypeGroups,
   TypeGroupSections
 } from "../../../src/api/Books.ts"
+import { formatDollars } from "../../../src/api/money.ts"
 import { call, refusedStatus } from "../api.ts"
 import { dayAndTime } from "../format.ts"
 import { pageRuns } from "./bookText.ts"
@@ -97,11 +98,18 @@ export const BookMapEditor = (
   const [focusTarget, setFocusTarget] = useState<string>()
   const heading = useRef<HTMLHeadingElement>(null)
   const table = useRef<HTMLTableElement>(null)
-  // Extraction spends from the full run's cap; a Book mapped by hand before
-  // any run needs one here.
-  const needsCap = book.runCap === null
+  // Extraction spends from the full run's cap. A Book mapped by hand before
+  // any run needs one here, and so does a run that has spent its cap.
+  const capSpent = book.runCap !== null && book.runSpent >= book.runCap
+  const needsCap = book.runCap === null || capSpent
   const [cap, setCap] = useState(() =>
-    String(book.preview === null ? 1 : Math.max(0.1, Math.ceil(book.preview.projectedCost * 1.5 * 100) / 100))
+    String(
+      book.runCap !== null
+        ? Math.ceil(book.runCap * 2 * 100) / 100
+        : book.preview === null
+        ? 1
+        : Math.max(0.1, Math.ceil(book.preview.projectedCost * 1.5 * 100) / 100)
+    )
   )
   const busy = useRef(false)
 
@@ -198,8 +206,12 @@ export const BookMapEditor = (
     setTried(true)
     setServerProblems([])
     const spendCap = Number(cap)
-    const capProblem = needsCap && (!Number.isFinite(spendCap) || spendCap <= 0 || spendCap > 10_000)
+    const capProblem = !needsCap
+      ? []
+      : !Number.isFinite(spendCap) || spendCap <= 0 || spendCap > 10_000
       ? ["Enter a spend cap in dollars, above 0."]
+      : capSpent && spendCap <= book.runSpent
+      ? [`Enter a cap above the ${formatDollars(book.runSpent)} the run already spent.`]
       : []
     if (capProblem.length > 0) return showProblems(capProblem)
     if (problems.length > 0) return setFocusTarget(ids.problems)
@@ -399,9 +411,17 @@ export const BookMapEditor = (
         </p>
         {needsCap && (
           <div className="field cap-field confirm-cap">
-            <label htmlFor={`${ids.title}-cap`}>Spend cap for extraction, in dollars</label>
+            <label htmlFor={`${ids.title}-cap`}>
+              {capSpent ? "Spend cap for the whole run, in dollars" : "Spend cap for extraction, in dollars"}
+            </label>
+            {capSpent && (
+              <p id={`${ids.title}-cap-hint`} className="hint">
+                The run has spent its cap of {formatDollars(book.runCap!)}. A new cap covers what it spent too.
+              </p>
+            )}
             <input
               id={`${ids.title}-cap`}
+              aria-describedby={capSpent ? `${ids.title}-cap-hint` : undefined}
               type="text"
               inputMode="decimal"
               autoComplete="off"

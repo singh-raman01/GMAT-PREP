@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useId, useRef, useState } from "react"
 import { bookFilePath } from "../../../src/api/Books.ts"
 import {
   PublishableReasons,
@@ -39,11 +39,27 @@ const RepeatCodes: ReadonlySet<ReasonCode> = new Set(["near-match", "same-text-o
 
 type Action = "publish" | "withdraw" | "keepAsVariant" | "merge" | "dismiss"
 
+// What an item is, in a few words: its first Source, or its page.
+const itemName = (item: ReviewItemView) => {
+  if (item.page !== null) return `${item.page.bookTitle}, page ${item.page.number}`
+  const first = item.question?.sources[0]
+  return first === undefined ? "A Question" : `${first.bookTitle}: ${first.set}, question ${first.number}`
+}
+
+const Done: Record<string, string> = {
+  published: "Published",
+  withdrawn: "Withdrawn",
+  merged: "Merged",
+  dismissed: "Dismissed"
+}
+
 export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
   const heading = useFocusOnMount<HTMLHeadingElement>()
   const [items, setItems] = useState<ReadonlyArray<ReviewItemView>>()
   const [announcement, setAnnouncement] = useState("")
   const [since, setSince] = useState<"now">()
+  // The item whose heading takes focus next, after the one acted on goes.
+  const [focusItem, setFocusItem] = useState<string>()
   const mounted = useRef(true)
 
   const handle = useCallback(
@@ -76,16 +92,31 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
     () => void afterStreamClosed(load, onLocked, () => mounted.current)
   )
 
+  useEffect(() => {
+    if (focusItem === undefined) return
+    const target = focusItem === "" ? heading.current : document.getElementById(`item-${focusItem}`)
+    target?.focus()
+    setFocusItem(undefined)
+  }, [focusItem, heading])
+
   const act = async (item: ReviewItemView, action: Action): Promise<ReadonlyArray<ReviewReason> | string | undefined> => {
     const params = { params: { id: item.id } }
     const result = await call((client) => client.review[action](params))
     if (result._tag === "Success") {
       const next = result.success
+      if (next.status !== "open" && items !== undefined) {
+        const index = items.findIndex((each) => each.id === next.id)
+        const after = items[index + 1] ?? items[index - 1]
+        setFocusItem(after?.id ?? "")
+      }
       setItems((current) =>
         current?.flatMap((each) => (each.id !== next.id ? [each] : next.status === "open" ? [next] : []))
       )
+      // Each announcement names its item, so two in a row are both read out.
       setAnnouncement(
-        next.status === "open" ? "Kept as a Variant; it still waits for you." : `Done: ${next.decision ?? "decided"}.`
+        next.status === "open"
+          ? `${itemName(item)} is kept as a Variant; it still waits for you.`
+          : `${Done[next.decision ?? ""] ?? "Decided"}: ${itemName(item)}.`
       )
       return undefined
     }
@@ -163,7 +194,9 @@ const ReviewItem = (
     readonly onAct: (item: ReviewItemView, action: Action) => Promise<ReadonlyArray<ReviewReason> | string | undefined>
   }
 ) => {
+  const headingId = useId()
   const [problem, setProblem] = useState<string>()
+  const [checkingMerge, setCheckingMerge] = useState(false)
   const busy = useRef(false)
   const run = async (action: Action) => {
     if (busy.current) return
@@ -177,19 +210,26 @@ const ReviewItem = (
         : `Publishing waits for: ${outcome.map((reason) => ReasonLabels[reason.code].toLowerCase()).join(", ")}.`
     )
   }
+  // Every button is read out with the item it acts on.
+  const about = { "aria-describedby": headingId }
+  const title = (
+    <h2 id={headingId} className="review-heading">
+      <span id={`item-${item.id}`} tabIndex={-1}>{itemName(item)}</span>
+    </h2>
+  )
 
   if (item.page !== null) {
     return (
       <li className="review-item">
+        {title}
         <p className="review-source">
-          {item.page.bookTitle}, page {item.page.number}.{" "}
           <a href={`${bookFilePath(item.page.bookId)}#page=${item.page.number}`} target="_blank" rel="noopener">
             Open page {item.page.number}
           </a>
         </p>
         <Reasons reasons={item.reasons} />
         <div className="actions">
-          <button type="button" className="button button-quiet" onClick={() => void run("dismiss")}>
+          <button type="button" className="button button-quiet" {...about} onClick={() => void run("dismiss")}>
             Dismiss
           </button>
         </div>
@@ -204,6 +244,7 @@ const ReviewItem = (
   const repeats = item.related !== null && item.reasons.some((reason) => RepeatCodes.has(reason.code))
   return (
     <li className="review-item">
+      {title}
       <p className="review-source">
         {sourceText(question)}
         {first !== undefined && (
@@ -233,19 +274,42 @@ const ReviewItem = (
         </div>
       )}
       <div className="actions">
-        {canPublish && <button type="button" className="button" onClick={() => void run("publish")}>Publish</button>}
+        {canPublish && (
+          <button type="button" className="button" {...about} onClick={() => void run("publish")}>Publish</button>
+        )}
         {repeats && (
           <>
-            <button type="button" className="button button-quiet" onClick={() => void run("keepAsVariant")}>
+            <button type="button" className="button button-quiet" {...about} onClick={() => void run("keepAsVariant")}>
               Keep as a Variant
             </button>
-            <button type="button" className="button button-quiet" onClick={() => void run("merge")}>
+            <button
+              type="button"
+              className="button button-quiet"
+              {...about}
+              aria-expanded={checkingMerge}
+              onClick={() => setCheckingMerge(true)}
+            >
               Merge into the other
             </button>
           </>
         )}
-        <button type="button" className="button button-quiet" onClick={() => void run("withdraw")}>Withdraw</button>
+        <button type="button" className="button button-quiet" {...about} onClick={() => void run("withdraw")}>
+          Withdraw
+        </button>
       </div>
+      {checkingMerge && (
+        <div className="merge-check" role="group" aria-label="Merge into the other Question">
+          <p>
+            This Question's Sources join the other Question, and this one is removed. Merging cannot be undone.
+          </p>
+          <div className="actions">
+            <button type="button" className="button" {...about} onClick={() => void run("merge")}>Merge</button>
+            <button type="button" className="button button-quiet" onClick={() => setCheckingMerge(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
       {problem !== undefined && <p className="problem" role="alert">{problem}</p>}
     </li>
   )

@@ -173,16 +173,39 @@ const katexOptions = (display: boolean, refused: Array<string>) => ({
 export const renderMath = (tex: string, display: boolean, refused: Array<string> = []): string =>
   katex.renderToString(tex, katexOptions(display, refused))
 
-// Renders into an element. The content security policy refuses style
-// attributes, and KaTeX sets a few, such as the width of an arrow over a
-// vector; set again through the DOM, they apply.
-export const renderMathInto = (element: HTMLElement, tex: string, display: boolean) => {
-  katex.render(tex, element, katexOptions(display, []))
-  for (const styled of element.querySelectorAll<HTMLElement | SVGElement>("[style]")) {
-    const declared = styled.getAttribute("style") ?? ""
-    styled.removeAttribute("style")
-    styled.style.cssText = declared
+// KaTeX's tree before it becomes DOM nodes.
+interface KatexNode {
+  attributes?: Record<string, string>
+  children?: Array<KatexNode>
+  toNode(): Node
+}
+
+const renderToDomTree = (katex as unknown as {
+  readonly __renderToDomTree: (tex: string, options: ReturnType<typeof katexOptions>) => KatexNode
+}).__renderToDomTree
+
+// KaTeX gives a few nodes a style attribute, such as the width of the arrow
+// over a vector, and the content security policy refuses style attributes.
+// Those styles are set through the DOM instead, which the policy allows.
+const styleThroughDom = (node: KatexNode) => {
+  const style = node.attributes?.["style"]
+  if (style !== undefined) {
+    delete node.attributes!["style"]
+    const build = node.toNode.bind(node)
+    node.toNode = () => {
+      const built = build() as HTMLElement | SVGElement
+      built.style.cssText = style
+      return built
+    }
   }
+  node.children?.forEach(styleThroughDom)
+}
+
+// Renders into an element, as katex.render does, without style attributes.
+export const renderMathInto = (element: HTMLElement, tex: string, display: boolean) => {
+  const tree = renderToDomTree(tex, katexOptions(display, []))
+  styleThroughDom(tree)
+  element.replaceChildren(tree.toNode())
 }
 
 // LaTeX in plain text: a command, or math between dollar signs, which shows
