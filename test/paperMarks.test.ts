@@ -6,6 +6,7 @@ import { DefaultBlueprint } from "../src/api/blueprint.ts"
 import { BookId } from "../src/api/Books.ts"
 import { Db } from "../src/server/db/Database.ts"
 import { books } from "../src/server/db/schema.ts"
+import { lastSeenBy } from "../src/server/practice/history.ts"
 import { paperSeenOf } from "../src/server/practice/paperSeen.ts"
 import { numbered, seedBook } from "./fixtures/bank.ts"
 import { openBrowser, runWithWorkers } from "./harness.ts"
@@ -82,6 +83,20 @@ describe("What Paper Marks make Seen", () => {
     )
     expect(Object.fromEntries(seen)).toEqual({ q10: 50, q30: 300 })
   })
+
+  test("a Question two marks cover was last Seen at the later one", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const og = yield* seedBook("Official Guide", numbered(3))
+      const asha = yield* openBrowser
+      const profile = yield* asha.profiles.create({ payload: { name: "Asha" } })
+      yield* asha.paperMarks.add({ payload: { bookId: BookId.make(og.bookId), firstPage: null, lastPage: null } })
+      yield* TestClock.adjust("1 hour")
+      yield* asha.paperMarks.add({ payload: { bookId: BookId.make(og.bookId), firstPage: 1, lastPage: 1 } })
+      const marks = yield* asha.paperMarks.list()
+      const [later, earlier] = marks.map((mark) => mark.createdAt).toSorted((a, b) => b - a)
+      const last = yield* lastSeenBy(profile.id)
+      expect([last.get(og.ids.get(1)!), last.get(og.ids.get(2)!)]).toEqual([later, earlier])
+    })))
 })
 
 describe("Paper-Marked Questions", () => {

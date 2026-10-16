@@ -21,25 +21,30 @@ export const TotalScoreRange = { lowest: 205, highest: 805 } as const
 const within = (value: number, range: { readonly lowest: number; readonly highest: number }) =>
   Math.min(range.highest, Math.max(range.lowest, value))
 
-// A slope below this, as noisy Official Scores can fit, says nothing about the
-// scale; the line then keeps the uncalibrated slope and fits its offset.
-export const MinimumSlope = 1
+// Official Scores whose Abilities lie closer together than this say nothing
+// about the slope, so the line keeps the uncalibrated slope and fits only its
+// offset. The same holds for points that fit no rising line.
+export const MinimumAbilitySpread = 0.5
+
+// A fitted slope stays within half to twice the uncalibrated one, so a few
+// noisy Official Scores cannot stretch the scale.
+export const SlopeRange = { lowest: Uncalibrated.slope / 2, highest: Uncalibrated.slope * 2 } as const
 
 // The line Official Scores give: none leaves it uncalibrated, one shifts it to
-// match, and two or more fit slope and offset by least squares. Each point
-// pairs the Section Ability as it stood on the Official Score's date with the
-// Section score it gave.
+// match, and two or more fit slope and offset by least squares, within the
+// limits above. Each point pairs the Section Ability as it stood on the
+// Official Score's date with the Section score it gave.
 export const calibratedLine = (points: ReadonlyArray<{ readonly ability: number; readonly score: number }>): ScoreLine => {
   if (points.length === 0) return UncalibratedLine
   const meanAbility = points.reduce((sum, point) => sum + point.ability, 0) / points.length
   const meanScore = points.reduce((sum, point) => sum + point.score, 0) / points.length
-  const shifted = { offset: meanScore - UncalibratedLine.slope * meanAbility, slope: UncalibratedLine.slope, calibrated: true }
-  if (points.length === 1) return shifted
+  const through = (slope: number): ScoreLine => ({ offset: meanScore - slope * meanAbility, slope, calibrated: true })
+  const abilities = points.map((point) => point.ability)
+  if (Math.max(...abilities) - Math.min(...abilities) < MinimumAbilitySpread) return through(UncalibratedLine.slope)
   const spread = points.reduce((sum, point) => sum + (point.ability - meanAbility) ** 2, 0)
-  if (spread < 1e-9) return shifted
-  const slope = points.reduce((sum, point) => sum + (point.ability - meanAbility) * (point.score - meanScore), 0) / spread
-  if (!(slope >= MinimumSlope)) return shifted
-  return { offset: meanScore - slope * meanAbility, slope, calibrated: true }
+  const fitted = points.reduce((sum, point) => sum + (point.ability - meanAbility) * (point.score - meanScore), 0) / spread
+  if (!(fitted > 0)) return through(UncalibratedLine.slope)
+  return through(Math.min(SlopeRange.highest, Math.max(SlopeRange.lowest, fitted)))
 }
 
 export const lineScore = (line: ScoreLine, ability: number) =>

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm"
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm"
 import { Cause, Clock, Context, Effect, Latch, Layer, Schema, Semaphore } from "effect"
 import {
   BreakMinutes,
@@ -23,6 +23,7 @@ import { responses, sessions } from "../db/schema.ts"
 import type { Caller } from "../practice/Practice.ts"
 import { TickMs } from "../practice/clock.ts"
 import { keysOf } from "../practice/history.ts"
+import { rateSession } from "../ratings/rateSession.ts"
 import { totalEstimate } from "../ratings/scale.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { decodeConfig, lineOf } from "./config.ts"
@@ -33,7 +34,8 @@ import { Sectionals } from "./Sectionals.ts"
 // Mocks (docs/design.md, "Sessions"): a Session of kind mock whose three
 // Sections are Sessions of kind mock-section, each run by the Sectional
 // engine. The Mock moves on when a Section closes: to the break, or straight
-// to the next Section. Its own clock ticks only the break.
+// to the next Section. It checks every second; only the break runs on its
+// clock, the Sections on their own.
 
 const MockConfig = Schema.Struct({
   // The Sections in the order chosen.
@@ -77,6 +79,13 @@ export class Mocks extends Context.Service<Mocks, {
       // Requests and the break's ticks take turns.
       const oneAtATime = (yield* Semaphore.make(1)).withPermits(1)
       const run = <A, E>(effect: Effect.Effect<A, E, Db>) => effect.pipe(Effect.provideService(Db, db), Effect.orDie)
+      // Runs an action in one transaction; its failures come back as values
+      // so they do not roll back as defects.
+      const inTransaction = <A, E>(action: Effect.Effect<A, E, never>) =>
+        db.transaction(() => Effect.result(action)).pipe(
+          Effect.orDie,
+          Effect.flatMap((result) => (result._tag === "Success" ? Effect.succeed(result.success) : Effect.fail(result.failure)))
+        )
       // Open while a Mock may be running; it starts open, so the first tick
       // picks up Mocks left running when the app last stopped.
       const wake = yield* Latch.make(true)
@@ -108,44 +117,60 @@ export class Mocks extends Context.Service<Mocks, {
       // The device that holds the Mock starts each of its Sections.
       const callerOf = (mock: SessionRow): Caller => ({ profileId: mock.profileId, device: mock.holder ?? undefined })
 
-      const beginSection = (mock: SessionRow, config: MockConfig, place: number) =>
-        sectionals.beginMockSection(callerOf(mock), config.order[place - 1]!, { id: mock.id, place }).pipe(
-          Effect.map((id): MockConfig => ({ ...config, sections: [...config.sections, id] }))
-        )
+      // Begins the Section at the next place, or takes up the one begun
+      // there already: the Mock's config is saved after the Section begins,
+      // so a stop in between leaves a Section the config does not name yet.
+      const beginNext = (mock: SessionRow, config: MockConfig) =>
+        Effect.gen(function*() {
+          const place = config.sections.length + 1
+          const [begun] = yield* db.select({ id: sessions.id }).from(sessions)
+            .where(and(
+              eq(sessions.profileId, mock.profileId),
+              eq(sessions.kind, "mock-section"),
+              sql`json_extract(${sessions.config}, '$.mock.id') = ${mock.id}`,
+              sql`json_extract(${sessions.config}, '$.mock.place') = ${place}`
+            )).pipe(Effect.orDie)
+          const id = begun?.id ??
+            (yield* sectionals.beginMockSection(callerOf(mock), config.order[place - 1]!, { id: mock.id, place }))
+          return { ...config, sections: [...config.sections, id] } satisfies MockConfig
+        })
 
       // Moves the Mock on as far as it can go now: from a closed Section to
       // the break or the next Section, from a break run out to the next
-      // Section, and from the last Section to the end.
+      // Section, and from the last Section to the end. When it ends, its
+      // Sections' Rated Responses move Difficulty and the Score Estimates, in
+      // the order they were taken.
       const settle = (mock: SessionRow) =>
         Effect.gen(function*() {
           if (mock.status !== "active") return mock
           const now = yield* Clock.currentTimeMillis
           let config = decodeMockConfig(mock.config)
-          let finishedAt: number | undefined
           const start = config
-          for (let step = 0; step < 6 && finishedAt === undefined; step++) {
+          for (let step = 0; step < 9 && config.flow.stage !== "finished"; step++) {
             const flow = config.flow
-            if (flow.stage === "section") {
+            if (flow.stage === "section" && config.sections.length < flow.started) {
+              config = yield* beginNext(mock, config)
+            } else if (flow.stage === "section") {
               const [section] = yield* db.select({ status: sessions.status, finishedAt: sessions.finishedAt }).from(sessions)
                 .where(eq(sessions.id, config.sections[flow.started - 1]!)).pipe(Effect.orDie)
               if (section?.status !== "finished") break
-              const next = afterSection(flow, section.finishedAt ?? now)
-              config = { ...config, flow: next }
-              if (next.stage === "finished") finishedAt = section.finishedAt ?? now
-              else if (next.stage === "section") config = yield* beginSection(mock, config, next.started)
-            } else if (flow.stage === "break") {
+              config = { ...config, flow: afterSection(flow, section.finishedAt ?? now) }
+            } else {
               if (breakLeftMs(flow, now) > 0) break
-              const next = nextSection(flow, flow.breakStartedAt! + BreakMs)
-              config = yield* beginSection(mock, { ...config, flow: next }, next.started)
-            } else break
+              config = { ...config, flow: nextSection(flow, flow.breakStartedAt! + BreakMs) }
+            }
           }
-          if (config === start) return mock
-          yield* saveConfig(mock.id, config)
-          if (finishedAt !== undefined) {
-            yield* db.update(sessions).set({ status: "finished", endedBy: "finished", finishedAt })
-              .where(eq(sessions.id, mock.id)).pipe(Effect.orDie)
-          }
-          if (config.flow.stage === "break" || config.flow.stage === "section") yield* wake.open
+          if (config !== start) yield* saveConfig(mock.id, config)
+          if (config.flow.stage === "finished") {
+            const [last] = yield* db.select({ finishedAt: sessions.finishedAt }).from(sessions)
+              .where(eq(sessions.id, config.sections.at(-1)!)).pipe(Effect.orDie)
+            yield* inTransaction(Effect.gen(function*() {
+              yield* db.update(sessions).set({ status: "finished", endedBy: "finished", finishedAt: last?.finishedAt ?? now })
+                .where(eq(sessions.id, mock.id)).pipe(Effect.orDie)
+              for (const id of config.sections) yield* run(rateSession({ id, profileId: mock.profileId }))
+            }))
+          } else if (config === start) return mock
+          else yield* wake.open
           return yield* own(mock.profileId, mock.id).pipe(Effect.orDie)
         })
 
@@ -287,7 +312,7 @@ export class Mocks extends Context.Service<Mocks, {
             createdAt: now
           }).pipe(Effect.orDie)
           const mock = yield* own(caller.profileId, id).pipe(Effect.orDie)
-          yield* saveConfig(id, yield* beginSection(mock, config, 1))
+          yield* saveConfig(id, yield* beginNext(mock, config))
           yield* wake.open
           return yield* settled(caller, id).pipe(Effect.orDie)
         }).pipe(oneAtATime)
@@ -322,12 +347,12 @@ export class Mocks extends Context.Service<Mocks, {
       const goOn = (caller: Caller, id: SessionId) =>
         Effect.gen(function*() {
           const mock = yield* settle(yield* own(caller.profileId, id))
-          if (!holdsIt(mock, caller.device)) return yield* new MockHeldElsewhere({ view: yield* viewOf(mock, caller.device) })
           if (mock.status === "finished") return yield* outOfStep(mock, caller, "finished")
+          if (!holdsIt(mock, caller.device)) return yield* new MockHeldElsewhere({ view: yield* viewOf(mock, caller.device) })
           const config = decodeMockConfig(mock.config)
           if (config.flow.stage !== "break") return yield* outOfStep(mock, caller, "not-on-break")
           const next = nextSection(config.flow, yield* Clock.currentTimeMillis)
-          yield* saveConfig(mock.id, yield* beginSection(mock, { ...config, flow: next }, next.started))
+          yield* saveConfig(mock.id, yield* beginNext(mock, { ...config, flow: next }))
           return yield* settled(caller, id).pipe(Effect.orDie)
         }).pipe(oneAtATime)
 

@@ -31,3 +31,17 @@ export const studyDayOf = (millis: number, timeZone: string, rolloverHour: numbe
   const local = Date.UTC(part("year"), part("month") - 1, part("day")) / DayMs
   return part("hour") < rolloverHour ? local - 1 : local
 }
+
+// When a Study Day begins: the first millisecond whose Study Day it is. The
+// local start moves with the zone's offset and daylight saving, so it is
+// found by halving a window that holds it in every zone.
+export const studyDayStart = (day: number, timeZone: string, rolloverHour: number): number => {
+  let before = (day - 1) * DayMs
+  let from = (day + 2) * DayMs
+  while (from - before > 1) {
+    const middle = Math.floor((before + from) / 2)
+    if (studyDayOf(middle, timeZone, rolloverHour) >= day) from = middle
+    else before = middle
+  }
+  return from
+}

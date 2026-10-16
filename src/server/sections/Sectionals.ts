@@ -443,8 +443,10 @@ export class Sectionals extends Context.Service<Sectionals, {
           })
         })
 
-      // Ends the Sectional: the Learner finished it, or its time ran out. Its
-      // report is kept, then its Rated Responses move Difficulty and Ability.
+      // Ends the Section: the Learner finished it, or its time ran out. Its
+      // report is kept, then a Sectional's Rated Responses move Difficulty and
+      // Ability. A Mock's Sections are rated when the Mock is over, so nothing
+      // shows how a closed Section went while it runs.
       const end = (session: SessionRow, endedBy: "finished" | "time", elapsedMs: number) =>
         Effect.gen(function*() {
           const now = yield* Clock.currentTimeMillis
@@ -456,7 +458,7 @@ export class Sectionals extends Context.Service<Sectionals, {
           const line = lines[config.section as keyof typeof lines] ?? UncalibratedLine
           const report = yield* reportOf(session, config, elapsedMs, line)
           yield* saveConfig(session.id, { ...config, report, line })
-          yield* run(rateSession(session))
+          if (config.mock === undefined) yield* run(rateSession(session))
         })
 
       // When time runs out on a Question, it gets a time-out Response: wrong,
@@ -868,11 +870,18 @@ export class Sectionals extends Context.Service<Sectionals, {
           else yield* end(session, "finished", elapsedMs)
         })).pipe(Effect.flatMap(() => after(caller, id)), oneAtATime)
 
+      // This device takes over the Section. Taking over a Mock's Section
+      // takes over the Mock too, so its break and next Section follow.
       const claim = (caller: Caller, id: SessionId) =>
         Effect.gen(function*() {
           const session = yield* own(caller.profileId, id)
-          if (caller.device !== undefined && session.holder !== caller.device) {
+          if (caller.device !== undefined) {
             yield* db.update(sessions).set({ holder: caller.device }).where(eq(sessions.id, id)).pipe(Effect.orDie)
+            const mock = decodeConfig(session.config).mock
+            if (mock !== undefined) {
+              yield* db.update(sessions).set({ holder: caller.device })
+                .where(and(eq(sessions.id, mock.id), eq(sessions.status, "active"))).pipe(Effect.orDie)
+            }
           }
           return yield* after(caller, id)
         }).pipe(oneAtATime)

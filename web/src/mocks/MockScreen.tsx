@@ -223,8 +223,8 @@ const Report = ({ view, report }: { readonly view: MockView; readonly report: Mo
         </ul>
       )}
       <p className="quiet">
-        Difficulty and your Score Estimates moved as each Section closed. Questions you had not seen before count toward
-        them.
+        Difficulty and your Score Estimates moved when the Mock ended, Section by Section. Questions you had not seen
+        before count toward them.
       </p>
       <div className="actions">
         <a className="button" {...linkProps("/mocks")}>Back to Mocks</a>
