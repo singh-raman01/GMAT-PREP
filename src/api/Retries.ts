@@ -25,6 +25,8 @@ export class RetryDue extends Schema.Class<RetryDue>("gmat-prep/api/RetryDue")({
 }) {}
 
 export class RetriesView extends Schema.Class<RetriesView>("gmat-prep/api/RetriesView")({
+  // Today's Study Day.
+  today: Day,
   // Due today or before, the longest waiting first.
   due: Schema.Array(RetryDue),
   // How many fall due on each of the next 7 Study Days.

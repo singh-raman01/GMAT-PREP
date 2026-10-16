@@ -31,3 +31,10 @@ export const spokenDuration = (millis: number) => {
   if (minutes === 0) return unit(rest, "second")
   return rest === 0 ? unit(minutes, "minute") : `${unit(minutes, "minute")} ${unit(rest, "second")}`
 }
+
+// A calendar day as the server sends it (2026-10-03), read as written, not in
+// a time zone: "Sat, Oct 3".
+export const calendarDay = (day: string) =>
+  new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" }).format(
+    Date.parse(`${day}T00:00:00Z`)
+  )

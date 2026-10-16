@@ -15,6 +15,7 @@ import { call } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
 import { dayAndTime, spokenDuration } from "../format.ts"
 import { linkProps, navigate } from "../router.ts"
+import { RetriesPanel } from "./RetriesPanel.tsx"
 
 interface Props {
   readonly onSessionLost: () => void
@@ -188,6 +189,7 @@ export const PracticeHome = ({ onSessionLost, onStopped }: Props) => {
         Answer one Question at a time. An untimed set shows how each is solved straight after; a timed set runs on
         the clock, shows it all at the end, and moves your Score Estimates.
       </p>
+      <RetriesPanel onFailure={handle} />
       {scores !== undefined && scores.sections.length > 0 && <Scores scores={scores} />}
       {active.length > 0 && (
         <section className="group" aria-labelledby="sets-active">

@@ -92,6 +92,11 @@ Under Done on paper, mark the Books, or the pages of them, you worked through on
 
 Every Question you answer wrong, or right but slowly in a timed set, or by a guess, goes into your Error Log, one entry each with every answer you gave it. A wrong answer's Debrief says what went wrong in each wrong part, as a Mistake Type the app picks from your answer and its timing; one tap changes it, and your choice is kept. An answer you fixed in Review & Edit stays out, and a Sectional's or Mock's answers come in only once their results show. Filter the log by Section, Question Type, Skill, Mistake Type (Not yet labelled finds the ones to label), Trap Pattern, Difficulty, Book, status or date, and open an entry to see the Question and its Debrief again. While a Sectional or Mock runs, the entries for its Questions wait until it ends.
 
+
+## Retries
+
+A Question you missed comes back on a Retry Ladder: 2 Study Days later the Question itself, 7 days later a Question like it you have not seen (a Sibling, of the same type and Skill and close in Difficulty), and 21 days later another. The Practice page lists what is due today, with one button for the untimed retries and one for the timed ones; a Question you were slow on, and every Sibling, comes timed. A miss puts the step back by 2 days. Get all three right and the entry is resolved, and stays in your Error Log as Resolved. The Curator's Siblings page shows the Skills running out of Siblings.
+
 ## Scores
 
 Scores shows each Section's Score Estimate, and the Total once all three have one. Enter an Official Score from an official practice exam or the GMAT itself to calibrate them: each one is matched with your estimates as they stood that day, so it calibrates only the Sections you had an estimate for by then. One shifts each Section's scale to match it, and two or more fit it, as long as your estimates on those days were far enough apart to say how the scale runs.

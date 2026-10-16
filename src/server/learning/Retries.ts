@@ -57,6 +57,7 @@ export class Retries extends Context.Service<Retries, {
           const held = today.length === 0 ? new Set<string>() : yield* run(heldBySections(profileId))
           const named = (id: string) => names.named(id)
           return new RetriesView({
+            today: dayText(state.today),
             due: today.map((each) =>
               new RetryDue({
                 questionId: QuestionId.make(each.questionId),

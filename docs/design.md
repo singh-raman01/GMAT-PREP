@@ -200,6 +200,7 @@ Profiles and activity, written by the server:
 | responses | Profile, Session, Question, client sequence number, selection per Part, time spent, guessed flag, kind (first, edit, retry, time-out with no selection), the Response it supersedes, time |
 | bookmarks | Session, Question |
 | mistake labels | Profile, Response, Part, Mistake Type the Learner set, time (the app's own are worked out, not stored) |
+| retry skips | Profile, entry, Retry Ladder step, time, note: a Sibling step with no Sibling left |
 | official scores | Profile, date, kind, Total and Section scores |
 | tutor messages | Profile, Question, message, reply, model, prompt version, tokens, time |
 | plan completions | Plan Item, the Session or Lesson that completed it, time |
@@ -213,7 +214,7 @@ Derived and rebuildable:
 | abilities | Profile, scope (Section, Skill or Question Type), value, uncertainty, evidence count |
 | score estimates | Profile, Section or Total, time, value, range, calibrated flag |
 | error log entries | worked out on read, not stored: Profile, Question, reasons (wrong, slow, guessed), status (open, Resolved, withdrawn) |
-| retry steps | entry, step, due Study Day, Sibling, outcome |
+| retry steps | worked out on read, not stored: entry, step, due Study Day, Sibling, outcome (decision 66) |
 | weak areas | Profile, Skill or Question Type, gap, Priority, slow flag, evidence count |
 | daily logs | Profile, Study Day, minutes, Questions, accuracy by Section, Mocks, planned and completed items |
 | analytics rollups | aggregates behind each analytics view |
@@ -660,6 +661,11 @@ These came up while building a ticket. Like the starting values above, they can 
 63. An entry shows its latest miss: why it is there, its wrong Parts with Mistake Type and Trap Pattern, how many misses and when. Its status is open, or withdrawn when its Question is Withdrawn; Resolved comes with the Retry Ladder. While a running Sectional or Mock holds an entry's Question, the list leaves the entry out and says how many wait, and the entry does not open, as Practice leaves such Questions out (decision 46).
 64. The Error Log filters on the server by Section, Skill (primary or secondary), Question Type, Mistake Type (Slow and Guessed among them), Trap Pattern, Difficulty Band (current Difficulty), Book (any Source), status and the latest miss's day in the Profile's time zone; each filter lists the values entries have, with counts over every entry, Difficulty Bands from easy to hard, Mistake Types with Not yet labelled for wrong Parts still to label, and Books by title and edition, with the day added for two that share both. The list comes 50 entries at a time, and times show in the Profile's time zone. An entry opens to the Question as last missed, its Debrief and every answer given to it, each as the screen showed it.
 65. The Debrief of a wrong answer, once its Session shows how it went, has a one-tap control for each wrong Part's Mistake Type, in Practice Sets, Sectional and Mock reports and the Error Log alike. Each Part sends one save at a time, and picks made meanwhile wait for it, only the latest going next, so the stored label is the last one picked; a failed save puts back the last one saved. Any of an entry's misses can be labelled, as each Session's Debrief shows its own, and the Error Log's list follows a change at once.
+66. The Retry Ladder (ticket 14) is worked out from the facts on every read, with the Error Log: an entry's misses outside its own step-1 retries start a run (again after an earlier one, even once Resolved); the final Response to each retry Question, once its set shows how it went, is a step taken; and a stored skip (retry_skips: Profile, entry, step, time, note) is a step with nothing to serve. Steps fall due 2, 7 and 21 Study Days after the miss that started the run; a missed step repeats 2 Study Days later; a step taken late puts the next no sooner than the next Study Day. Passing step 3 resolves the entry, which stays in the Error Log as Resolved.
+67. Retries are Practice Sets whose config lists, for each Question served, the entry and step it is for. Starting retries makes one set of the steps due with one timing: untimed for step 1 of a wrong or guessed entry, timed for step 1 of a slow entry and for every Sibling step. One retry set runs at a time, and starting another goes back to it. Step 1 serves the entry's Question as any set does, so its Approaches stay hidden until it is answered; while a running Sectional or Mock holds that Question, the step waits. A Sibling is picked when its set starts: unseen, not held by a running Section, and not already in the set. With none left, the step is skipped with a note, stored, and the next step falls due as after a pass.
+68. A step passes on a right answer; for a slow entry, also within 1.5 times the Target Time; for a guessed entry, also not marked guessed. The entry's reasons are those of the miss that started the run. A wrong answer to the entry's own Question in its step 1 is that step missed, not a new miss; a missed Sibling enters the Error Log itself, with a ladder of its own. A Sibling first Seen in its timed step is Rated, as in any timed set.
+69. Error Log entries gain the status Resolved and a ladder view: the step due and its Study Day, and the steps of the current run with their outcomes and notes. The Practice home lists the steps due today with a start button for each timing, and how many fall due on each of the next 7 Study Days.
+70. The Curator's Siblings view lists the Skills with a Sibling step skipped for want of one, over every Profile, or with 5 or fewer published Questions outside the Mock Reserve to serve one, the most skipped first.
 
 ### Taxonomy review notes
 
