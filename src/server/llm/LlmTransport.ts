@@ -31,17 +31,24 @@ export interface TransportReply {
 }
 
 // status is null when no response arrived: a network error or a timeout.
+// sent is false when the request could not be sent at all, such as an API key
+// with characters a header cannot carry; trying again cannot help.
 export class TransportFailure extends Schema.TaggedError<TransportFailure>()("TransportFailure", {
   status: Schema.NullOr(Schema.Int),
   retryAfterMs: Schema.NullOr(Schema.Number),
-  message: Schema.String
+  message: Schema.String,
+  sent: Schema.Boolean
 }) {}
 
 export class LlmTransport extends Context.Service<LlmTransport, {
   complete(request: TransportRequest): Effect.Effect<TransportReply, TransportFailure>
 }>()("gmat-prep/server/LlmTransport") {}
 
+// For the whole exchange, the reply body included.
 const RequestTimeout = "180 seconds"
+
+// What an Authorization header can carry.
+const isSendableKey = (key: string) => /^[\x21-\x7e]+$/.test(key)
 
 // Retry-After is either seconds or an HTTP date.
 export const parseRetryAfter = (header: string | undefined, now: number): number | null => {
@@ -97,28 +104,48 @@ export const LlmTransportHttp = Layer.effect(
   Effect.gen(function*() {
     const client = yield* HttpClient.HttpClient
     const complete = Effect.fn("LlmTransport.complete")(function*(request: TransportRequest) {
-      const response = yield* client.execute(
-        HttpClientRequest.post(request.url).pipe(
-          HttpClientRequest.bearerToken(request.apiKey),
-          HttpClientRequest.bodyJsonUnsafe(requestBody(request))
+      if (!isSendableKey(Redacted.value(request.apiKey))) {
+        return yield* new TransportFailure({
+          status: null,
+          retryAfterMs: null,
+          message: "the API key has characters that cannot be sent; paste it again in Settings",
+          sent: false
+        })
+      }
+      const exchange = Effect.gen(function*() {
+        const response = yield* client.execute(
+          HttpClientRequest.post(request.url).pipe(
+            HttpClientRequest.bearerToken(request.apiKey),
+            HttpClientRequest.bodyJsonUnsafe(requestBody(request))
+          )
         )
-      ).pipe(
+        const body = yield* response.text
+        return { response, body }
+      })
+      const { response, body } = yield* exchange.pipe(
         Effect.timeoutOrElse({
           duration: RequestTimeout,
-          orElse: () => Effect.fail(new TransportFailure({ status: null, retryAfterMs: null, message: "timed out" }))
+          orElse: () =>
+            Effect.fail(new TransportFailure({ status: null, retryAfterMs: null, message: "timed out", sent: true }))
         }),
-        Effect.catchTag(
-          "HttpClientError",
-          (error) => Effect.fail(new TransportFailure({ status: null, retryAfterMs: null, message: error.message }))
-        )
+        Effect.catchTag("HttpClientError", (error) =>
+          Effect.fail(
+            new TransportFailure({
+              status: null,
+              retryAfterMs: null,
+              message: error.message,
+              // A URL or body that cannot be encoded never reaches the API.
+              sent: error.reason._tag !== "InvalidUrlError" && error.reason._tag !== "EncodeError"
+            })
+          ))
       )
-      const body = yield* response.text.pipe(Effect.orElseSucceed(() => ""))
       if (response.status < 200 || response.status >= 300) {
         const now = yield* Clock.currentTimeMillis
         return yield* new TransportFailure({
           status: response.status,
           retryAfterMs: parseRetryAfter(response.headers["retry-after"], now),
-          message: errorMessage(body)
+          message: errorMessage(body),
+          sent: true
         })
       }
       const parsed = Option.flatMap(
@@ -141,11 +168,18 @@ export const LlmTransportHttp = Layer.effect(
 )
 
 // A fake for tests: replies are queued by the test, and requests are kept so
-// the test can check what was sent.
+// the test can check what was sent. Token counts default to 100 in and 20
+// out; null stands for an API that reports no usage.
 export type FakeOutcome =
-  | { readonly content: string; readonly tokensIn?: number; readonly tokensOut?: number; readonly finishReason?: string }
+  | {
+    readonly content: string
+    readonly tokensIn?: number | null
+    readonly tokensOut?: number | null
+    readonly finishReason?: string
+  }
   | { readonly status: number; readonly retryAfterMs?: number; readonly message?: string }
   | { readonly networkError: string }
+  | { readonly notSent: string }
 
 export class FakeLlm extends Context.Service<FakeLlm, {
   reply(...outcomes: ReadonlyArray<FakeOutcome>): Effect.Effect<void>
@@ -159,8 +193,8 @@ const toResult = (outcome: FakeOutcome): Effect.Effect<TransportReply, Transport
     return Effect.succeed({
       content: outcome.content,
       finishReason: outcome.finishReason ?? "stop",
-      tokensIn: outcome.tokensIn ?? 100,
-      tokensOut: outcome.tokensOut ?? 20
+      tokensIn: outcome.tokensIn === undefined ? 100 : outcome.tokensIn,
+      tokensOut: outcome.tokensOut === undefined ? 20 : outcome.tokensOut
     })
   }
   if ("status" in outcome) {
@@ -168,11 +202,17 @@ const toResult = (outcome: FakeOutcome): Effect.Effect<TransportReply, Transport
       new TransportFailure({
         status: outcome.status,
         retryAfterMs: outcome.retryAfterMs ?? null,
-        message: outcome.message ?? `status ${outcome.status}`
+        message: outcome.message ?? `status ${outcome.status}`,
+        sent: true
       })
     )
   }
-  return Effect.fail(new TransportFailure({ status: null, retryAfterMs: null, message: outcome.networkError }))
+  if ("notSent" in outcome) {
+    return Effect.fail(new TransportFailure({ status: null, retryAfterMs: null, message: outcome.notSent, sent: false }))
+  }
+  return Effect.fail(
+    new TransportFailure({ status: null, retryAfterMs: null, message: outcome.networkError, sent: true })
+  )
 }
 
 export const LlmTransportFake = Effect.gen(function*() {

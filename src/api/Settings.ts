@@ -100,9 +100,13 @@ export const LlmSettingsInput = Schema.Struct({
 })
 export type LlmSettingsInput = typeof LlmSettingsInput.Type
 
+// Visible ASCII only: a key travels in an HTTP header, which cannot carry
+// spaces or characters such as a zero-width space pasted along with it.
+export const isApiKey = (key: string) => /^[\x21-\x7e]{8,1000}$/.test(key.trim())
+
 export const ApiKey = Schema.String.check(
-  Schema.makeFilter((key: string) => key.trim().length >= 8 && key.trim().length <= 1000 && !/\s/.test(key.trim()), {
-    description: "an API key of 8 to 1000 characters with no spaces"
+  Schema.makeFilter(isApiKey, {
+    description: "an API key of 8 to 1000 visible ASCII characters, with no spaces"
   })
 )
 

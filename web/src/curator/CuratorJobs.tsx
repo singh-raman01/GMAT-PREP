@@ -1,62 +1,74 @@
-import { Schema } from "effect"
-import { useEffect, useId, useState } from "react"
-import { EventsPath, ServerEvent } from "../../../src/api/Events.ts"
+import { useCallback, useEffect, useId, useRef, useState } from "react"
 import type { JobView } from "../../../src/api/Jobs.ts"
 import { formatDollars } from "../../../src/api/money.ts"
 import { call } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
 import { clockTime, dayAndTime, endedAt } from "../format.ts"
 import { linkProps } from "../router.ts"
+import { latestRevision, mergeJob, useJobEvents } from "./jobEvents.ts"
 
 interface Props {
   readonly onLocked: () => void
   readonly onStopped: (error: { readonly _tag: string }) => void
 }
 
-const decodeEvent = Schema.decodeUnknownOption(Schema.fromJsonString(ServerEvent))
-
-// Keeps the newest version of each job, newest job first.
-const merge = (jobs: ReadonlyArray<JobView>, changed: JobView): ReadonlyArray<JobView> => {
-  const current = jobs.find((job) => job.id === changed.id)
-  if (current !== undefined && current.revision >= changed.revision) return jobs
-  const others = jobs.filter((job) => job.id !== changed.id)
-  return [changed, ...others].toSorted((a, b) => b.createdAt - a.createdAt)
-}
-
 export const CuratorJobs = ({ onLocked, onStopped }: Props) => {
   const heading = useFocusOnMount<HTMLHeadingElement>()
   const [jobs, setJobs] = useState<ReadonlyArray<JobView>>()
+  // The revision the events stream starts after: the list's highest.
+  const [since, setSince] = useState<number>()
+  const [announcement, setAnnouncement] = useState("")
+  const mounted = useRef(true)
 
-  const handle = (failure: { readonly _tag: string }) =>
-    failure._tag === "CuratorNotUnlocked" ? onLocked() : onStopped(failure)
+  const handle = useCallback(
+    (failure: { readonly _tag: string }) => failure._tag === "CuratorNotUnlocked" ? onLocked() : onStopped(failure),
+    [onLocked, onStopped]
+  )
 
-  // Live changes arrive over the events stream, opened before the list is
-  // read so that nothing between the two is missed.
+  const load = useCallback(async () => {
+    const result = await call((client) => client.jobs.list())
+    if (!mounted.current) return
+    if (result._tag === "Failure") return handle(result.failure)
+    setJobs(result.success)
+    setSince(latestRevision(result.success))
+  }, [handle])
+
   useEffect(() => {
-    let live = true
-    const events = new EventSource(EventsPath)
-    events.onmessage = (message) => {
-      const event = decodeEvent(message.data)
-      if (event._tag === "Some" && event.value._tag === "JobChanged") {
-        const job = event.value.job
-        setJobs((current) => (current === undefined ? current : merge(current, job)))
-      }
-    }
-    void call((client) => client.jobs.list()).then((result) => {
-      if (!live) return
-      if (result._tag === "Failure") return handle(result.failure)
-      setJobs((current) => {
-        let merged: ReadonlyArray<JobView> = result.success
-        for (const job of current ?? []) merged = merge(merged, job)
-        return merged
-      })
-    })
+    mounted.current = true
+    void load()
     return () => {
-      live = false
-      events.close()
+      mounted.current = false
     }
-    // Opens once, when the screen opens.
+  }, [load])
+
+  // A job that ends its turn is announced, since the list changes without
+  // the Curator doing anything.
+  const shown = useRef(jobs)
+  shown.current = jobs
+  const changed = useCallback((job: JobView) => {
+    const before = shown.current?.find((known) => known.id === job.id)
+    if (
+      before !== undefined && before.revision < job.revision && before.status !== job.status &&
+      job.status !== "running"
+    ) {
+      setAnnouncement(`${job.label}: ${statusText(job)}`)
+    }
+    setJobs((current) => (current === undefined ? current : mergeJob(current, job)))
   }, [])
+
+  // The stream closes for good when the Curator is locked, or after the app
+  // restarted; in the second case the list is read again.
+  const closed = useCallback(async () => {
+    const status = await call((client) => client.curatorAccess.status())
+    if (!mounted.current) return
+    if (status._tag === "Success" && status.success.unlocked) {
+      setSince(undefined)
+      return load()
+    }
+    onLocked()
+  }, [load, onLocked])
+
+  useJobEvents(since, changed, () => void closed())
 
   const act = async (job: JobView, action: "pause" | "resume" | "cancel", spendCap?: number) => {
     const result = await call((client) =>
@@ -67,7 +79,7 @@ export const CuratorJobs = ({ onLocked, onStopped }: Props) => {
         : client.jobs.resume({ params: { id: job.id }, payload: spendCap === undefined ? {} : { spendCap } })
     )
     if (result._tag === "Success") {
-      setJobs((current) => (current === undefined ? current : merge(current, result.success)))
+      setJobs((current) => (current === undefined ? current : mergeJob(current, result.success)))
       return undefined
     }
     switch (result.failure._tag) {
@@ -88,6 +100,7 @@ export const CuratorJobs = ({ onLocked, onStopped }: Props) => {
       <p className="lede">
         Work the app does in the background, such as reading a book. Progress and spend update as it runs.
       </p>
+      <p className="visually-hidden" role="status">{announcement}</p>
       {jobs === undefined
         ? <p className="quiet" aria-busy="true">Loading the jobs</p>
         : jobs.length === 0
@@ -136,7 +149,9 @@ const JobRow = (
   const capId = useId()
   const [problem, setProblem] = useState<string>()
   const [cap, setCap] = useState("")
-  const capReached = job.status === "paused" && job.resumeAt === null && job.spend >= job.spendCap
+  // Resuming a job that has spent its cap needs a higher one.
+  const capReached = (job.status === "paused" || job.status === "failed") && job.resumeAt === null &&
+    job.spend >= job.spendCap
   const canPause = job.status === "queued" || (job.status === "running" && job.requested === null)
   const canResume = job.status === "paused" || job.status === "failed"
   const canCancel = job.status === "queued" || job.status === "paused" || job.status === "failed" ||

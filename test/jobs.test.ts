@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test"
-import { Deferred, Effect, Fiber, Schema } from "effect"
+import { Deferred, Effect, Fiber, Option, Schema } from "effect"
 import type { JobView } from "../src/api/Jobs.ts"
 import { type JobKind, JobStepFailed } from "../src/server/jobs/JobKind.ts"
-import { JobStore } from "../src/server/jobs/JobStore.ts"
+import { JobStore, settleEnd } from "../src/server/jobs/JobStore.ts"
 import { ConnectionTest } from "../src/server/jobs/kinds/connectionTest.ts"
 import { LlmAdapter } from "../src/server/llm/LlmAdapter.ts"
 import { FakeLlm } from "../src/server/llm/LlmTransport.ts"
@@ -269,5 +269,90 @@ describe("Jobs", () => {
       }),
       [counting.kind]
     )
+  })
+
+  test("a pause asked while a step runs into an API outage waits for the Curator", async () => {
+    const counting = makeCounting()
+    await runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const fake = yield* FakeLlm
+        // A long Retry-After ends the call at once as unavailable.
+        yield* fake.respondWith(() => ({ status: 429, retryAfterMs: 120_000 }))
+        const store = yield* JobStore
+        const release = yield* counting.hold(1)
+        const job = yield* store.create(counting.kind, { steps: 2 }, 1)
+        yield* advanceUntil(whenJob(job.id, (current) => current.status === "running" && counting.started.includes(1)))
+        yield* store.pause(job.id)
+        yield* release
+        const paused = yield* advanceUntil(whenJob(job.id, (current) => current.status === "paused"))
+        expect(paused).toMatchObject({ note: "Paused by the Curator", resumeAt: null })
+        // It does not resume on its own.
+        yield* advanceUntil(Effect.succeed(undefined), { step: "1 minute", maxSteps: 10 }).pipe(Effect.ignore)
+        expect((yield* jobById(job.id))?.status).toBe("paused")
+        expect(yield* fake.requests).toHaveLength(1)
+      }),
+      [counting.kind]
+    )
+  })
+
+  test("a cancel asked just before an API outage still cancels the job", async () => {
+    const counting = makeCounting()
+    await runWithWorker(
+      Effect.gen(function*() {
+        yield* configure
+        const fake = yield* FakeLlm
+        yield* fake.respondWith(() => ({ status: 429, retryAfterMs: 120_000 }))
+        const store = yield* JobStore
+        const release = yield* counting.hold(1)
+        const job = yield* store.create(counting.kind, { steps: 2 }, 1)
+        yield* advanceUntil(whenJob(job.id, (current) => current.status === "running" && counting.started.includes(1)))
+        // Released before the next heartbeat could see the cancel.
+        yield* store.cancel(job.id)
+        yield* release
+        const cancelled = yield* advanceUntil(whenJob(job.id, (current) => current.status === "cancelled"), {
+          step: "100 millis"
+        })
+        expect(cancelled.note).toBe("Cancelled by the Curator")
+      }),
+      [counting.kind]
+    )
+  })
+
+  test("a pause the Curator takes back before the worker ends its turn leaves the job running", async () => {
+    const counting = makeCounting()
+    await runWithWorkers(
+      Effect.gen(function*() {
+        const store = yield* JobStore
+        const job = yield* store.create(counting.kind, { steps: 2 }, 1)
+        const claimed = yield* store.claim("worker-a")
+        expect(Option.isSome(claimed)).toBe(true)
+        yield* store.pause(job.id)
+        yield* store.resume(job.id, undefined)
+        expect(yield* store.finish(job.id, "worker-a", { _tag: "PausedOnRequest" })).toBe("running")
+        expect((yield* jobById(job.id))).toMatchObject({ status: "running", requested: null })
+        expect(yield* store.finish(job.id, "worker-a", { _tag: "Done", result: "Counted." })).toBe("ended")
+        expect((yield* jobById(job.id))?.status).toBe("done")
+        expect(yield* store.finish(job.id, "worker-a", { _tag: "Done", result: "Again." })).toBe("lost")
+      }),
+      [counting.kind]
+    )
+  })
+
+  test("what the Curator asked while a step ran decides how the job's turn ends", () => {
+    const outage = { _tag: "Paused", note: "The API is not responding", resumeAt: 1000 } as const
+    const failed = { _tag: "Failed", note: "Bad reply" } as const
+    const done = { _tag: "Done", result: "Done." } as const
+    const cancelled = { _tag: "Cancelled", note: "Cancelled by the Curator" } as const
+    const pausedByCurator = { _tag: "Paused", note: "Paused by the Curator", resumeAt: null } as const
+    expect(settleEnd(outage, "cancel")).toEqual(cancelled)
+    expect(settleEnd(failed, "cancel")).toEqual(cancelled)
+    expect(settleEnd(done, "cancel")).toEqual(done)
+    expect(settleEnd(outage, "pause")).toEqual(pausedByCurator)
+    expect(settleEnd(failed, "pause")).toEqual(failed)
+    expect(settleEnd(outage, null)).toEqual(outage)
+    expect(settleEnd({ _tag: "PausedOnRequest" }, "pause")).toEqual(pausedByCurator)
+    expect(settleEnd({ _tag: "PausedOnRequest" }, "cancel")).toEqual(cancelled)
+    expect(settleEnd({ _tag: "PausedOnRequest" }, null)).toBe("keep-running")
   })
 })
