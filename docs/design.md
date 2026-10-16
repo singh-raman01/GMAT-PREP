@@ -171,6 +171,8 @@ Question Bank, written by the worker and by Curator decisions:
 | book pages | Book, page number, text, whether it has a text layer, how it is read (text, image or Review Queue), what the Book Map model found on it |
 | book map proposals | Book, page ranges, model, prompt version, time |
 | book maps | Book, version, page ranges by role (questions, answer key, explanations, difficulty labels), each with its question set and Question Type group, confirmation time |
+| page readings | Book, page, role, Question Type group, what the extraction model read there, model, prompt version, time |
+| book skips | Book, question set, number, page, why it is not a Question (geometry or Sentence Correction) |
 | stimuli | kind (passage, MSR tabs, table, chart, figure), Markdown body, Dataset, chart spec, figure crop, Reserve flag |
 | datasets | typed columns (number, percent, currency, date, text), rows, whether a Book or the generator made it |
 | questions | Section, Question Type, Stimulus, stem, status (draft, held, published, withdrawn), Difficulty seed and its basis (Book Label or LLM estimate), Book Label, primary and secondary Skills, Reserve flag, normalized-text hash, Taxonomy version |
@@ -178,9 +180,9 @@ Question Bank, written by the worker and by Curator decisions:
 | options | Part, position, text; for wrong options the Trap Note, Mistake Type and Trap Pattern |
 | statement predicates | Part, predicate, independent second predicate, evaluated result (Generated Questions only) |
 | approaches | Question, Strategy, steps, expected seconds, valid-when note, author (Book or LLM), position |
-| sources | Question, with a Book, page and number, or a generation batch |
+| sources | Question, with a Book, question set, page and number, the Book's key, explanation and label, and whether it joined a Question already in the Bank; or a generation batch |
 | key overrides | Part, previous key, new key, reason, time |
-| review items | Question, reasons, status, decision, time |
+| review items | Question, or a Book page extraction could not read; reasons, the related Question, status, decision, time |
 | problem reports | Question, Profile, text, status |
 | lessons | subject (Skill or Question Type), body, worked-example Questions, check Questions, status (draft or approved) |
 | generation batches | spec, status, counts |
@@ -255,12 +257,12 @@ Books with a text layer come first, starting with the Official Guide family. A p
 Ingestion runs these steps. Each step saves its progress, so a job resumes from the last finished step after a crash, a rate limit or its spend cap.
 
 1. Register. The PDF streams to the books folder while it is hashed; its SHA-256 is its fingerprint, and a known fingerprint does nothing. The file is stored once under its hash, with the official flag the Curator set. The worker then reads every page's text, a hundred pages a step, and records which pages carry a text layer.
-2. Preview cost. The pipeline runs on a 10-page sample spread through the Book and projects the tokens and cost of the full run from it. The full run waits for the Curator, who starts it with a spend cap.
+2. Preview cost. The pipeline runs on a 10-page sample spread through the Book: the Book Map model surveys the 10 pages, and the extraction model reads those it can extract. The preview projects each step's tokens and cost for the rest of the Book from what the sample's calls took. The full run waits for the Curator, who starts it with a spend cap that all the run's jobs share. The sample's readings are kept for the full run.
 3. Map. The Book Map model reads the other pages with text, ten at a time, and says what each holds: its role, its Question Type group and its chapter. Code joins neighbouring pages into ranges; answer keys, explanations and difficulty labels join the questions of their chapter, or else the nearest earlier questions of their group. The Curator corrects the proposal on one screen, opening pages in the browser's PDF viewer to check, and confirms it. Each confirmation is a new Book Map version.
-4. Extract. Each range yields Questions, Parts, options, Stimuli and figure crops, and tables and charts become Datasets where possible. Retired items are skipped and counted. Old DS becomes Data Insights, and old Integrated Reasoning maps onto MSR, TA, GI and TPA (ADR 0004).
-5. Link. Each Question is linked to its key and explanation by number.
+4. Extract. Confirming a Book Map starts extraction. The extraction model reads each page of a range in the range's role: the questions that start on the page, finishing one that runs on from the next page; the answers on a key page; the explanations that start on the page; or its difficulty labels. Each reading is stored by page, role and Question Type group, so a page is read once however often the Book Map changes. Each range yields Questions, Parts, options, Stimuli and figure crops, and tables and charts become Datasets where possible. Question text is Markdown with LaTeX between `\(` and `\)` or `\[` and `\]`, so a dollar sign stays a price. Retired items, geometry and Sentence Correction, are skipped and counted. Old DS becomes Data Insights, and old Integrated Reasoning maps onto MSR, TA, GI and TPA (ADR 0004). Pages with no text layer in a mapped range wait in the Review Queue until the image path exists.
+5. Link. Each Question is linked by its question set and number to its key, its explanation and its difficulty label. The key comes from the answer key, else from the explanation; when both give one and they differ, the Question is held.
 6. Enrich. The LLM tags the Question Type and Skills from the Taxonomy, estimates Difficulty and writes one or two Approaches with their Strategies; a Book's own explanation becomes one Approach. For each wrong option it writes a Trap Note, the Mistake Type the option most likely signals and, where one fits, a Trap Pattern. Option tags never use Time pressure, which comes only from timing.
-7. Dedupe. Questions with identical normalized text and the same key merge into one Question with several Sources. Identical text with different keys, and near matches, go to the Review Queue, because a copy with changed numbers is a Variant.
+7. Dedupe. Questions with identical normalized text (question and choices, ignoring case, spacing and math delimiters) and the same key merge into one Question with several Sources. Identical text with different keys, and near matches, go to the Review Queue with the other Question beside them, because a copy with changed numbers is a Variant. A near match is text whose three-character pieces, with every number masked, are at least 85% shared. The Curator keeps a near match as a Variant or merges it into the other Question.
 8. Publish Gate.
 
 A Question publishes only when every check passes. Otherwise it is held with every failing reason.
@@ -460,6 +462,7 @@ The Curator view shows Question Bank coverage by Skill and Difficulty Band, the 
 - Every stored output records its model, prompt version and date, so a better model can re-run only what it would change.
 - Spend is tokens times the per-model prices the Curator enters, since the API reports tokens but not cost. A reply without usage figures is priced from an estimate of four characters per token and marked as estimated. Spend counts against each job's cap and the monthly Tutor Chat cap; no call starts once a job's cap is reached, so the job pauses at its last saved step.
 - Book text goes to the model as quoted data. Schema checks and key verification stop instruction-like text in a Book from changing a key.
+- Math renders with KaTeX without commands that reach outside the page, such as links; a Question that uses one is held. The web app renders math through the DOM, so the content security policy can refuse style attributes.
 
 ### Data safety and operations
 
