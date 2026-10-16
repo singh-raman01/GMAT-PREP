@@ -142,11 +142,12 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           const details = new Map(rowsOf.map((row) => [row.id, row] as const))
           const overrides = yield* settings.targetTimes
           const stimulusOf = new Map(rowsOf.map((row) => [row.id, row.stimulusId] as const))
+          const answeredQuestions = questionFacts(stored, stimulusOf, overrides)
           const misses = missesOf({
             sessions: sessionFacts,
             responses: responseFacts,
             served,
-            questions: questionFacts(stored, stimulusOf, overrides)
+            questions: answeredQuestions
           })
           const labels = yield* run(labelsOf(eq(mistakeLabels.profileId, profileId)))
           const [profile] = yield* run(
@@ -166,7 +167,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             misses,
             sessions: retrySessions,
             responses: responseFacts,
-            questions: new Map(questionFacts(stored, stimulusOf, overrides).map((question) => [question.id, question] as const)),
+            questions: new Map(answeredQuestions.map((question) => [question.id, question] as const)),
             skips: skipRows.map((row) => ({ questionId: row.questionId, step: row.step as Step, at: row.createdAt, note: row.note })),
             resolve,
             dayOf

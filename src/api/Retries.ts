@@ -19,7 +19,9 @@ export class RetryDue extends Schema.Class<RetryDue>("gmat-prep/api/RetryDue")({
   // Step 1 of a wrong or guessed entry is untimed; the rest are timed.
   timed: Schema.Boolean,
   // The Study Day it fell due.
-  dueOn: Day
+  dueOn: Day,
+  // Step 1 waits while a running Sectional or Mock holds its Question.
+  held: Schema.Boolean
 }) {}
 
 export class RetriesView extends Schema.Class<RetriesView>("gmat-prep/api/RetriesView")({
@@ -31,7 +33,14 @@ export class RetriesView extends Schema.Class<RetriesView>("gmat-prep/api/Retrie
   running: Schema.NullOr(SessionId)
 }) {}
 
-export class NoRetriesDue extends Schema.TaggedError<NoRetriesDue>()("NoRetriesDue", {}, { httpApiStatus: 409 }) {}
+// Nothing to serve with that timing: none was due, or each step due was a
+// Sibling step with no Sibling left, skipped now with a note, or a Question a
+// running Sectional or Mock holds.
+export class NoRetriesDue extends Schema.TaggedError<NoRetriesDue>()(
+  "NoRetriesDue",
+  { skipped: Schema.Int, held: Schema.Int },
+  { httpApiStatus: 409 }
+) {}
 
 // A retry set is running; it is the one to go back to.
 export class RetriesRunning extends Schema.TaggedError<RetriesRunning>()(

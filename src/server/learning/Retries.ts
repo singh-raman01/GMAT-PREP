@@ -1,4 +1,4 @@
-import { Clock, Context, Effect, Layer } from "effect"
+import { Clock, Context, Effect, Layer, Semaphore } from "effect"
 import { PracticeView, SessionId } from "../../api/Practice.ts"
 import { NoRetriesDue, RetriesRunning, RetriesView, RetryDue } from "../../api/Retries.ts"
 import { Db } from "../db/Database.ts"
@@ -7,8 +7,7 @@ import { heldBySections, mergeTargets, publishedPool, seenBy } from "../practice
 import { type Caller, Practice } from "../practice/Practice.ts"
 import { ErrorLog, type RetryState } from "./ErrorLog.ts"
 import type { Step } from "./ladder.ts"
-import type { RetryItem } from "./retryConfig.ts"
-import { pickSibling } from "./siblings.ts"
+import { planRetries } from "./retryPlan.ts"
 
 // Retries (docs/design.md, "Learning loop"): the Retry Ladder steps due, and
 // the Practice Sets that take them. Step 1 of a wrong or guessed entry is
@@ -43,12 +42,15 @@ export class Retries extends Context.Service<Retries, {
       const errorLog = yield* ErrorLog
       const practice = yield* Practice
       const run = <A, E>(effect: Effect.Effect<A, E, Db>) => effect.pipe(Effect.provideService(Db, db), Effect.orDie)
+      // Two starts at once, from two tabs, make one set.
+      const oneAtATime = (yield* Semaphore.make(1)).withPermits(1)
 
       const due = (profileId: string) =>
         Effect.gen(function*() {
           const state = yield* errorLog.retryState(profileId)
           const all = dueOf(state)
           const today = all.filter((each) => each.dueDay <= state.today)
+          const held = today.length === 0 ? new Set<string>() : yield* run(heldBySections(profileId))
           return new RetriesView({
             due: today.map((each) =>
               new RetryDue({
@@ -58,7 +60,8 @@ export class Retries extends Context.Service<Retries, {
                 primarySkill: each.view.primarySkill,
                 reasons: each.ladder.reasons,
                 timed: each.timed,
-                dueOn: dayText(each.dueDay)
+                dueOn: dayText(each.dueDay),
+                held: each.step === 1 && held.has(each.view.questionId)
               })
             ),
             upcoming: Array.from({ length: Ahead }, (_, index) => state.today + 1 + index).map((day) => ({
@@ -69,52 +72,48 @@ export class Retries extends Context.Service<Retries, {
           })
         })
 
-      // Starts a set of the steps due with the timing asked for. A Sibling
-      // step picks its Sibling now, unseen and not already in this set; with
-      // none left, the step is skipped with a note. A Question a running
-      // Sectional or Mock holds waits for it to end.
+      // Starts a set of the steps due with the timing asked for. Each Sibling
+      // step picks its Sibling now; one with none left is skipped, stored
+      // with a note.
       const start = (caller: Caller, timed: boolean) =>
         Effect.gen(function*() {
           const state = yield* errorLog.retryState(caller.profileId)
           if (state.running !== undefined) return yield* new RetriesRunning({ id: SessionId.make(state.running) })
           const wanted = dueOf(state).filter((each) => each.dueDay <= state.today && each.timed === timed)
-          if (wanted.length === 0) return yield* new NoRetriesDue()
+          if (wanted.length === 0) return yield* new NoRetriesDue({ skipped: 0, held: 0 })
           const held = yield* run(heldBySections(caller.profileId))
           const seen = yield* run(seenBy(caller.profileId))
           const resolve = yield* run(mergeTargets)
           const pool = yield* run(publishedPool)
           const now = yield* Clock.currentTimeMillis
-          const items: Array<RetryItem> = []
-          for (const each of wanted) {
-            const entry = each.view.questionId
-            if (each.step === 1) {
-              if (!held.has(resolve(entry))) items.push({ entry, step: 1, questionId: entry })
-              continue
-            }
-            const taken = new Set([...seen, ...held, ...items.map((item) => item.questionId)])
-            const sibling = pickSibling(pool, taken, {
-              id: entry,
-              questionType: each.question.questionType,
-              primarySkill: each.question.primarySkill,
-              secondarySkills: each.secondarySkills,
-              difficulty: each.question.difficulty
-            }, `${entry}|${each.step}|${now}`)
-            if (sibling === undefined) {
-              yield* run(db.insert(retrySkips).values({
-                id: crypto.randomUUID(),
-                profileId: caller.profileId,
-                questionId: entry,
-                step: each.step,
-                note: NoSiblingNote,
-                createdAt: now
-              }))
-              continue
-            }
-            items.push({ entry, step: each.step, questionId: sibling.id })
+          const plan = planRetries(
+            wanted.map((each) => ({
+              step: each.step,
+              target: {
+                id: each.view.questionId,
+                questionType: each.question.questionType,
+                primarySkill: each.question.primarySkill,
+                secondarySkills: each.secondarySkills,
+                difficulty: each.question.difficulty
+              }
+            })),
+            { held, seen, pool, resolve, salt: String(now) }
+          )
+          for (const skip of plan.skipped) {
+            yield* run(db.insert(retrySkips).values({
+              id: crypto.randomUUID(),
+              profileId: caller.profileId,
+              questionId: skip.target.id,
+              step: skip.step,
+              note: NoSiblingNote,
+              createdAt: now
+            }))
           }
-          if (items.length === 0) return yield* new NoRetriesDue()
-          return yield* practice.startRetries(caller, items, timed)
-        })
+          if (plan.items.length === 0) {
+            return yield* new NoRetriesDue({ skipped: plan.skipped.length, held: plan.waiting.length })
+          }
+          return yield* practice.startRetries(caller, plan.items, timed)
+        }).pipe(oneAtATime)
 
       return Retries.of({ due, start })
     })
