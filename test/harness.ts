@@ -3,7 +3,7 @@ import { Context, type Duration, Effect, type Fiber, Layer, Option, Ref } from "
 import { Cookies, HttpClient, HttpClientRequest, HttpRouter, type HttpServer } from "effect/http"
 import { HttpApiClient } from "effect/http-api"
 import { TestClock } from "effect/testing"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Api } from "../src/api/Api.ts"
@@ -25,17 +25,13 @@ import { workerServices } from "../src/server/worker/services.ts"
 import { WorkerSupervisor } from "../src/server/worker/WorkerSupervisor.ts"
 import { FigureFiles } from "../src/server/books/FigureFiles.ts"
 import { ErrorLog } from "../src/server/learning/ErrorLog.ts"
+import { removeAtEnd } from "./cleanup.ts"
 
-// Each test's data folder, removed when the test run ends: a full run makes
-// hundreds, and left behind they fill the disk.
-const madeDirs: Array<string> = []
-process.once("exit", () => {
-  for (const dir of madeDirs) rmSync(dir, { recursive: true, force: true })
-})
-
+// A test's data folder, with the config folder AppConfig puts beside it,
+// both removed when the run ends.
 export const tempDataDir = () => {
   const dir = mkdtempSync(join(tmpdir(), "gmat-prep-test-"))
-  madeDirs.push(dir)
+  removeAtEnd(dir, `${dir}-config`)
   return dir
 }
 

@@ -239,6 +239,9 @@ export class ErrorLog extends Context.Service<ErrorLog, {
   // What the database holds now, as a key: it changes with every write, so
   // anything worked out from a Profile's facts can be kept under it.
   version(profileId: string): Effect.Effect<string>
+  // The same but for Mistake Type changes, which change only the labels: for
+  // what is worked out without them, such as the Abilities (decision 127).
+  factsVersion(profileId: string): Effect.Effect<string>
 }>()("gmat-prep/server/ErrorLog") {
   static readonly layer = Layer.effect(
     ErrorLog,
@@ -326,14 +329,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           const overrides = yield* settings.targetTimes
           const questionFacts = new Map([...summaries].map(([id, question]) => [id, questionFactOf(question, overrides)] as const))
           const misses = missesOf({ sessions: [...found.values()], responses: responseFacts, served, questions: questionFacts, resolve })
-          // The labels of a few misses are read by their Responses; of many,
-          // by the Profile.
-          const missed = misses.map((miss) => miss.responseId)
-          const labels = missed.length === 0 ? new Map<string, string>() : yield* run(labelsOf(
-            missed.length > 500
-              ? eq(mistakeLabels.profileId, profileId)
-              : and(eq(mistakeLabels.profileId, profileId), inArray(mistakeLabels.responseId, missed))!
-          ))
+          const labels = yield* labelsFor(profileId, misses)
           const rules = (yield* dayRulesOf(profileId).pipe(Effect.provideService(Db, db))) ?? DefaultRules
           const now = yield* Clock.currentTimeMillis
           const timeZone = ruleInEffect(rules, now).timeZone
@@ -446,25 +442,62 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           return { answers, served }
         })
 
-      // Every fact of the Profile's history.
       // The database as it stands: any write, from this process or another,
-      // changes one of the two.
-      const databaseVersion = (profileId: string) =>
+      // changes one of the two. The facts' version leaves out the rows
+      // Mistake Type changes write, which change only the labels; a
+      // transaction holds the one connection, so the changes counted inside
+      // one are its own.
+      let labelChanges = 0
+      const versionsOf = (profileId: string) =>
         run(
           db.select({ changes: sql<number>`total_changes()`, version: sql<number>`(select data_version from pragma_data_version)` })
             .from(profiles).where(eq(profiles.id, profileId))
-        ).pipe(Effect.map(([row]) => `${row?.changes}:${row?.version}`))
+        ).pipe(Effect.map(([row]) => ({
+          database: `${row?.changes}:${row?.version}`,
+          facts: `${(row?.changes ?? 0) - labelChanges}:${row?.version}`
+        })))
+      const databaseVersion = (profileId: string) => versionsOf(profileId).pipe(Effect.map((versions) => versions.database))
+      const factsVersion = (profileId: string) => versionsOf(profileId).pipe(Effect.map((versions) => versions.facts))
+      const totalChanges = run(db.select({ changes: sql<number>`total_changes()` }).from(sql`(select 1)`)).pipe(
+        Effect.map(([row]) => row?.changes ?? 0)
+      )
+      const labelWrite = <A, E, R>(write: Effect.Effect<A, E, R>) =>
+        db.transaction(() =>
+          Effect.gen(function*() {
+            const before = yield* totalChanges
+            const result = yield* write
+            labelChanges += (yield* totalChanges) - before
+            return result
+          })
+        ).pipe(Effect.orDie)
+
+      // The labels of a few misses are read by their Responses; of many, by
+      // the Profile.
+      const labelsFor = (profileId: string, misses: ReadonlyArray<{ readonly responseId: string }>) => {
+        const missed = misses.map((miss) => miss.responseId)
+        return missed.length === 0 ? Effect.succeed(new Map<string, string>() as ReadonlyMap<string, string>) : run(labelsOf(
+          missed.length > 500
+            ? eq(mistakeLabels.profileId, profileId)
+            : and(eq(mistakeLabels.profileId, profileId), inArray(mistakeLabels.responseId, missed))!
+        ))
+      }
 
       // The whole history's facts, kept for the few Profiles read last until
       // the database changes, so the analytics views read one after another
-      // share them; only today is worked out again. The version is read
-      // first, so a write made meanwhile is read next time.
-      const factsKept = new Map<string, { readonly version: string; readonly facts: Facts }>()
+      // share them; only today is worked out again, and the labels when only
+      // Mistake Types changed. The versions are read first, so a write made
+      // meanwhile is read next time.
+      const factsKept = new Map<string, { readonly version: string; readonly labelsAt: number; readonly facts: Facts }>()
       const profileFacts = (profileId: string) =>
         Effect.gen(function*() {
-          const version = yield* databaseVersion(profileId)
-          const kept = factsKept.get(profileId)
+          const labelsAt = labelChanges
+          const version = yield* factsVersion(profileId)
+          let kept = factsKept.get(profileId)
           if (kept !== undefined && kept.version === version) {
+            if (kept.labelsAt !== labelsAt) {
+              const labels = yield* labelsFor(profileId, kept.facts.misses)
+              kept = { version, labelsAt, facts: Object.create(kept.facts, { labels: { value: labels, enumerable: true } }) as Facts }
+            }
             // The latest read moves to the end, so the least recent goes first.
             factsKept.delete(profileId)
             factsKept.set(profileId, kept)
@@ -480,7 +513,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           const history = yield* historyOf(profileId)
           const facts = yield* factsFrom(profileId, found, history.answers, history.served, yield* run(mergeTargets), sql`1 = 1`)
           factsKept.delete(profileId)
-          factsKept.set(profileId, { version, facts })
+          factsKept.set(profileId, { version, labelsAt, facts })
           for (const oldest of [...factsKept.keys()].slice(0, Math.max(0, factsKept.size - KeptProfiles))) factsKept.delete(oldest)
           return facts
         })
@@ -747,13 +780,14 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           if (miss === undefined || !miss.parts.some((part) => part.part === change.part)) {
             return yield* new MistakeTypeInvalid({ problem: "That Part was not answered wrong in this entry." })
           }
-          yield* run(db.insert(mistakeLabels).values({
+          const createdAt = yield* Clock.currentTimeMillis
+          yield* labelWrite(db.insert(mistakeLabels).values({
             id: crypto.randomUUID(),
             profileId,
             responseId: change.responseId,
             part: change.part,
             mistakeType: change.mistakeType,
-            createdAt: yield* Clock.currentTimeMillis
+            createdAt
           }))
           const after = yield* entryOf(profileId, questionId).pipe(Effect.orDie)
           return viewOf(after.facts, after.entry, yield* bookNames(after.facts.timeZone))
@@ -810,7 +844,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
         }).pipe(Effect.catchCause((cause) => Effect.logWarning(`The Error Log could not be read ahead: ${Cause.pretty(cause)}`)))
       )
 
-      return ErrorLog.of({ list, get, setMistakeType, retryState, history, servings, version: databaseVersion })
+      return ErrorLog.of({ list, get, setMistakeType, retryState, history, servings, version: databaseVersion, factsVersion })
     })
   )
 }

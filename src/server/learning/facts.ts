@@ -78,7 +78,7 @@ export const inChunks = <A, E, R>(ids: ReadonlyArray<string>, read: (chunk: Arra
   })
 
 // Each Question's summary, with the Difficulty seed it falls back on.
-const readSummaries = (ids: ReadonlyArray<string>) =>
+export const readSummaries = (ids: ReadonlyArray<string>) =>
   Effect.gen(function*() {
     const db = yield* Db
     const wanted = [...new Set(ids)]
@@ -159,29 +159,33 @@ export const questionSummaries = (ids: ReadonlyArray<string>) =>
 // Difficulty come from the Question Bank's tables, so they are kept until the
 // bank's version moves, which triggers do on every write to those tables, in
 // this process or the worker's; the Difficulty moves with each Rated Response
-// and is read again every time. The version is read before the rows, so rows
-// read meanwhile are newer than their key, never older.
-export const makeSummaryReader = () => {
-  let kept: { readonly version: number; readonly summaries: Map<string, { readonly summary: QuestionSummary; readonly seed: number }> } = {
-    version: -1,
-    summaries: new Map()
-  }
+// and is read again every time. Each read works on the map for the version it
+// read before its rows: what it reads is never older than that version, and
+// never goes into a newer version's map that another read put in place
+// meanwhile. `read` is the rows' reader, which tests replace.
+export const makeSummaryReader = (read: typeof readSummaries = readSummaries) => {
+  type Kept = { readonly version: number; readonly summaries: Map<string, { readonly summary: QuestionSummary; readonly seed: number }> }
+  let kept: Kept = { version: -1, summaries: new Map() }
   return (ids: ReadonlyArray<string>) =>
     Effect.gen(function*() {
       const db = yield* Db
       const [row] = yield* db.select({ version: bankVersion.version }).from(bankVersion).where(eq(bankVersion.id, 1))
       const version = row?.version ?? -1
-      if (version !== kept.version) kept = { version, summaries: new Map() }
+      let mine = kept
+      if (version !== mine.version) {
+        mine = { version, summaries: new Map() }
+        if (version > kept.version) kept = mine
+      }
       const wanted = [...new Set(ids)]
-      const missing = wanted.filter((id) => !kept.summaries.has(id))
-      if (missing.length > 0) for (const [id, each] of yield* readSummaries(missing)) kept.summaries.set(id, each)
+      const missing = wanted.filter((id) => !mine.summaries.has(id))
+      if (missing.length > 0) for (const [id, each] of yield* read(missing)) mine.summaries.set(id, each)
       const rated = yield* inChunks(wanted, (chunk) =>
         db.select({ questionId: difficulty.questionId, value: difficulty.value }).from(difficulty).where(inArray(difficulty.questionId, chunk))
       )
       const current = new Map(rated.map((each) => [each.questionId, each.value] as const))
       const found = new Map<string, QuestionSummary>()
       for (const id of wanted) {
-        const each = kept.summaries.get(id)
+        const each = mine.summaries.get(id)
         if (each === undefined) continue
         const value = current.get(id)
         found.set(id, { ...each.summary, difficulty: value ?? each.seed })

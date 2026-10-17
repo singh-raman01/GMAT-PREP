@@ -4,10 +4,12 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { HttpRouter } from "effect/http"
 import { filesOnDisk, makeWebRoutes } from "../src/server/http/web.ts"
+import { removeAtEnd } from "./cleanup.ts"
 
 // The web app's files, served from a folder laid out as Vite builds it.
 const serve = () => {
   const outside = mkdtempSync(join(tmpdir(), "gmat-prep-web-"))
+  removeAtEnd(outside)
   const root = join(outside, "dist")
   mkdirSync(join(root, "assets", "nested"), { recursive: true })
   writeFileSync(join(root, "index.html"), "<!doctype html><title>GMAT prep</title>")

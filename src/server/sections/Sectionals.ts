@@ -177,8 +177,10 @@ export class Sectionals extends Context.Service<Sectionals, {
       // Each Question the Profile has Seen, by the Question it counts as, with
       // when they last saw it: served in a Session, done on paper or worked
       // through in a Lesson.
-      const lastSeenOf = (profileId: string) =>
-        Effect.gen(function*() {
+      // The kept rows and the times worked out from them move together: an
+      // interruption between the two would leave rows the times never got.
+      const servedTimes = (profileId: string) =>
+        Effect.uninterruptible(Effect.gen(function*() {
           const read = yield* keptServed(profileId)
           let served = lastServedKept.get(profileId)
           const added = read.fresh || served === undefined ? read.items : read.added
@@ -187,6 +189,11 @@ export class Sectionals extends Context.Service<Sectionals, {
           lastServedKept.delete(profileId)
           lastServedKept.set(profileId, served)
           for (const oldest of [...lastServedKept.keys()].slice(0, Math.max(0, lastServedKept.size - KeptProfiles))) lastServedKept.delete(oldest)
+          return served as ReadonlyMap<string, number>
+        }))
+      const lastSeenOf = (profileId: string) =>
+        Effect.gen(function*() {
+          const served = yield* servedTimes(profileId)
           const resolve = yield* run(mergeTargets)
           const last = new Map<string, number>()
           for (const [questionId, at] of served) {

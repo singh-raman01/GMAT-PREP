@@ -20,8 +20,10 @@ import {
   responses,
   sources
 } from "../src/server/db/schema.ts"
+import { makeSummaryReader, readSummaries } from "../src/server/learning/facts.ts"
 import { numbered, seedBook } from "./fixtures/bank.ts"
-import { runWithWorkers } from "./harness.ts"
+import { seedExamBank, SmallBlueprint } from "./fixtures/examBank.ts"
+import { openBrowser, runWithWorkers } from "./harness.ts"
 
 // What the Error Log, the analytics and the Sectional engine keep between
 // reads (decision 127) is read again once what it came from changes.
@@ -118,4 +120,94 @@ describe("Kept reads", () => {
       yield* db.insert(difficulty).values({ questionId: ids.get(1)!, value: 1.25, ratedResponses: 1 }).pipe(Effect.orDie)
       expect((yield* asha.errorLog.list({ query: {} })).entries[0]!.difficulty).toBe(1.25)
     })))
+
+  test("a summary read that overlaps a Bank write and another read keeps nothing old under the new version, and drops nothing", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const db = yield* Db
+      const { ids } = yield* seedBook("Quant Review", numbered(3))
+      const [q1, q2, q3] = [ids.get(1)!, ids.get(2)!, ids.get(3)!]
+      // What runs between this read's rows and its next step, as the
+      // scheduler can run another request between two statements.
+      let meanwhile: Effect.Effect<void, never, Db> | undefined
+      const read = (wanted: ReadonlyArray<string>) =>
+        readSummaries(wanted).pipe(Effect.tap(() => {
+          const next = meanwhile
+          meanwhile = undefined
+          return next ?? Effect.void
+        }))
+      const reader = makeSummaryReader(read)
+      yield* reader([q3])
+      // Q1's rows are read, then the Bank changes Q1's key and another read
+      // moves to the new version.
+      meanwhile = Effect.gen(function*() {
+        yield* db.update(parts).set({ key: "A" }).where(eq(parts.questionId, q1)).pipe(Effect.orDie)
+        yield* reader([q2]).pipe(Effect.orDie)
+      })
+      const first = yield* reader([q1, q3])
+      expect([...first.keys()].toSorted()).toEqual([q1, q3].toSorted())
+      // Nothing is written after that, and the key read now is the Bank's.
+      const later = yield* reader([q1, q3])
+      expect(later.get(q1)!.parts[0]!.key).toBe("A")
+      expect(later.get(q3)!.parts[0]!.key).toBe("C")
+    })))
+
+  test("a Sectional counts as Seen what a merge made since it last read the Profile's history, and stays right past the few Profiles kept", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const curator = yield* openBrowser
+      yield* curator.curatorAccess.setPassphrase({ payload: { passphrase: "correct horse battery" } })
+      yield* curator.settings.saveBlueprint({ payload: { blueprint: SmallBlueprint } })
+      const { quant } = yield* seedExamBank()
+      const db = yield* Db
+      const unseenProblems = (tab: { readonly sectionals: { options: () => Effect.Effect<{ readonly sections: ReadonlyArray<{ readonly section: { readonly id: string }; readonly groups: ReadonlyArray<{ readonly group: { readonly id: string }; readonly unseen: number }> }> }, unknown> } }) =>
+        tab.sectionals.options().pipe(Effect.map((options) =>
+          options.sections.find((each) => each.section.id === "quant")!.groups.find((group) => group.group.id === "ps")!.unseen
+        ))
+      const asha = yield* learner("Asha")
+      expect(yield* unseenProblems(asha)).toBe(4)
+      // Asha sees one Problem Solving Question, then ends the Sectional.
+      const sectional = yield* asha.sectionals.start({ payload: { section: "quant" } })
+      const seen = sectional.current!.question.id
+      yield* asha.sectionals.finish({ params: { id: sectional.id } })
+      expect(yield* unseenProblems(asha)).toBe(3)
+      // The Curator merges the one she saw into another: that one is Seen
+      // now, and the merged one leaves the Bank.
+      const into = [...quant.ids.values()].find((id) => id !== seen)!
+      yield* db.update(questions).set({ mergedInto: into, status: "withdrawn" }).where(eq(questions.id, seen)).pipe(Effect.orDie)
+      expect(yield* unseenProblems(asha)).toBe(2)
+      // Five more Profiles read theirs, past the four kept; Asha's is read
+      // again from the start and is still right.
+      for (const name of ["Ben", "Cleo", "Dev", "Eli", "Fay"]) expect(yield* unseenProblems(yield* learner(name))).toBe(3)
+      expect(yield* unseenProblems(asha)).toBe(2)
+    })), 30_000)
+
+  test("a Mistake Type set through the Error Log shows at once, with the facts kept, and an answer after it is read again", () =>
+    runWithWorkers(Effect.gen(function*() {
+      yield* seedBook("Quant Review", numbered(3))
+      const asha = yield* learner("Asha")
+      const set: PracticeView = yield* asha.practice.start({ payload: { choice: { kind: "filters", status: "any", size: 2 } } })
+      const answered = yield* asha.practice.answer({
+        params: { id: set.id },
+        payload: { seq: set.nextSeq, questionId: set.current!.question.id, selection: [{ part: 0, choice: "A" }], guessed: false }
+      })
+      const [entry] = (yield* asha.errorLog.list({ query: {} })).entries
+      expect(entry!.parts[0]!.mistakeType?.id).not.toBe("misread")
+      yield* asha.errorLog.setMistakeType({
+        params: { questionId: entry!.questionId },
+        payload: { responseId: entry!.responseId, part: entry!.parts[0]!.part, mistakeType: "misread" }
+      })
+      const labelled = (yield* asha.errorLog.list({ query: {} })).entries
+      expect(labelled.map((each) => each.parts[0]!.mistakeType?.id)).toEqual(["misread"])
+      expect((yield* asha.errorLog.list({ query: { mistakeType: "misread" } })).total).toBe(1)
+      // Another wrong answer is a write the facts depend on: it shows too.
+      const next = yield* asha.practice.next({ params: { id: set.id }, payload: { position: 1 } })
+      yield* asha.practice.answer({
+        params: { id: set.id },
+        payload: { seq: next.nextSeq, questionId: next.current!.question.id, selection: [{ part: 0, choice: "B" }], guessed: false }
+      })
+      expect(answered.total).toBe(2)
+      const both = (yield* asha.errorLog.list({ query: {} })).entries
+      expect(both).toHaveLength(2)
+      expect(both.find((each) => each.questionId === entry!.questionId)!.parts[0]!.mistakeType?.id).toBe("misread")
+    })))
 })
+
