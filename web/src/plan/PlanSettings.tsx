@@ -1,5 +1,5 @@
-import { useId, useMemo, useRef, useState } from "react"
-import type { PlanView } from "../../../src/api/Plan.ts"
+import { useEffect, useId, useMemo, useRef, useState } from "react"
+import { isTotal, type PlanView, TestDateDays } from "../../../src/api/Plan.ts"
 import { call } from "../api.ts"
 import { dayAndTime, hoursAndMinutes, longDay } from "../format.ts"
 
@@ -35,7 +35,7 @@ const zones = (() => {
   }
 })()
 
-const nextDay = (day: string) => new Date(Date.parse(`${day}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10)
+const daysAfter = (day: string, days: number) => new Date(Date.parse(`${day}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10)
 
 interface Form {
   readonly testDate: string
@@ -57,12 +57,24 @@ const formOf = (plan: PlanView): Form => ({
 
 type Field = "testDate" | "target" | "hours" | "daysOff"
 
+// The latest test date the plan takes.
+const nextDayLimit = (today: string) => daysAfter(today, TestDateDays)
+
 export const PlanSettingsForm = ({ plan, onSaved, onFailure }: Props) => {
   const ids = { testDate: useId(), target: useId(), hours: useId(), zone: useId(), rollover: useId() }
   const [form, setForm] = useState<Form>(() => formOf(plan))
   const [problems, setProblems] = useState<ReadonlyArray<{ readonly field: Field | "form"; readonly text: string }>>([])
   const [saved, setSaved] = useState<string>()
+  // Focus goes to the first field with a problem, so its message is read.
+  const [checked, setChecked] = useState(0)
+  const fields = {
+    testDate: useRef<HTMLInputElement>(null),
+    target: useRef<HTMLInputElement>(null),
+    hours: useRef<HTMLInputElement>(null),
+    daysOff: useRef<HTMLInputElement>(null)
+  }
   const busy = useRef(false)
+  const latest = nextDayLimit(plan.today)
   const zoneChoices = useMemo(() => (zones.includes(form.timeZone) ? zones : [form.timeZone, ...zones]), [form.timeZone])
   const change = (next: Partial<Form>) => {
     setForm((current) => ({ ...current, ...next }))
@@ -76,13 +88,14 @@ export const PlanSettingsForm = ({ plan, onSaved, onFailure }: Props) => {
     const hours = Number(form.hours.replace(",", "."))
     if (!Number.isFinite(hours) || hours < 1 || hours > 60) found.push({ field: "hours", text: "Give the hours a week as a number from 1 to 60." })
     const target = form.target.trim() === "" ? null : Number(form.target)
-    if (target !== null && (!Number.isInteger(target) || target < 205 || target > 805)) {
-      found.push({ field: "target", text: "Give the target as a Total from 205 to 805, or leave it empty." })
+    if (target !== null && !isTotal(target)) {
+      found.push({ field: "target", text: "Give the target as a Total from 205 to 805 that ends in 5, such as 655, or leave it empty." })
     }
     if (form.testDate !== "" && form.testDate <= plan.today) found.push({ field: "testDate", text: "Choose a test date after today." })
+    if (form.testDate !== "" && form.testDate > latest) found.push({ field: "testDate", text: "Choose a test date within 2 years." })
     if (form.daysOff.length >= 7) found.push({ field: "daysOff", text: "Keep at least one day of the week for study." })
     setProblems(found)
-    if (found.length > 0) return
+    if (found.length > 0) return setChecked((count) => count + 1)
     busy.current = true
     const result = await call((client) =>
       client.plan.saveSettings({
@@ -98,8 +111,17 @@ export const PlanSettingsForm = ({ plan, onSaved, onFailure }: Props) => {
     )
     busy.current = false
     if (result._tag === "Success") {
-      setSaved(plan.settings === null ? undefined : "Saved. The plan is made again from today.")
-      return onSaved(result.success)
+      const after = result.success
+      setSaved(
+        plan.settings === null
+          ? undefined
+          : after.version !== plan.version
+          ? "Saved. The plan is made again from today."
+          : after.days.pending !== null && JSON.stringify(after.days.pending) !== JSON.stringify(plan.days.pending)
+          ? "Saved. The change takes effect at your next rollover."
+          : "Saved. Nothing had changed, so the plan stays as it is."
+      )
+      return onSaved(after)
     }
     if (result.failure._tag === "PlanSettingsInvalid") {
       return setProblems(result.failure.problems.map((text) => ({ field: "form", text })))
@@ -109,6 +131,12 @@ export const PlanSettingsForm = ({ plan, onSaved, onFailure }: Props) => {
     }
     onFailure(result.failure)
   }
+
+  useEffect(() => {
+    if (checked === 0) return
+    const first = (["testDate", "target", "hours", "daysOff"] as const).find((field) => problems.some((each) => each.field === field))
+    if (first !== undefined) fields[first].current?.focus()
+  }, [checked])
 
   const describedBy = (field: Field, hint?: string) =>
     [problemOf(field) === undefined ? undefined : `${field}-error`, hint].filter((each) => each !== undefined).join(" ") ||
@@ -129,12 +157,14 @@ export const PlanSettingsForm = ({ plan, onSaved, onFailure }: Props) => {
     >
       <div className="field">
         <label htmlFor={ids.testDate}>Test date</label>
-        <p id={`${ids.testDate}-hint`} className="hint">Leave it empty to plan two weeks at a time.</p>
+        <p id={`${ids.testDate}-hint`} className="hint">Within 2 years. Leave it empty to plan two weeks at a time.</p>
         <input
+          ref={fields.testDate}
           id={ids.testDate}
           type="date"
           value={form.testDate}
-          min={nextDay(plan.today)}
+          min={daysAfter(plan.today, 1)}
+          max={latest}
           aria-invalid={problemOf("testDate") !== undefined}
           aria-describedby={describedBy("testDate", `${ids.testDate}-hint`)}
           onChange={(event) => change({ testDate: event.target.value })}
@@ -143,8 +173,9 @@ export const PlanSettingsForm = ({ plan, onSaved, onFailure }: Props) => {
       </div>
       <div className="field">
         <label htmlFor={ids.target}>Target Total</label>
-        <p id={`${ids.target}-hint`} className="hint">From 205 to 805. Each Section's target is the score that, in all three, reaches it.</p>
+        <p id={`${ids.target}-hint`} className="hint">From 205 to 805, ending in 5. Each Section's target is the score that, in all three, reaches it.</p>
         <input
+          ref={fields.target}
           id={ids.target}
           className="number-input"
           type="text"
@@ -161,6 +192,7 @@ export const PlanSettingsForm = ({ plan, onSaved, onFailure }: Props) => {
         <label htmlFor={ids.hours}>Hours of study a week</label>
         <p id={`${ids.hours}-hint`} className="hint">A Mock takes 2 hours 25 minutes; under that, Mock weeks get Sectionals.</p>
         <input
+          ref={fields.hours}
           id={ids.hours}
           className="number-input"
           type="text"
@@ -176,9 +208,10 @@ export const PlanSettingsForm = ({ plan, onSaved, onFailure }: Props) => {
       <fieldset className="inline-field" aria-describedby={problemOf("daysOff") === undefined ? undefined : "daysOff-error"}>
         <legend>Days off</legend>
         <div className="inline-choices">
-          {Weekdays.map(({ day, name }) => (
+          {Weekdays.map(({ day, name }, index) => (
             <label key={day} className="inline-choice">
               <input
+                ref={index === 0 ? fields.daysOff : undefined}
                 type="checkbox"
                 checked={form.daysOff.includes(day)}
                 onChange={(event) =>

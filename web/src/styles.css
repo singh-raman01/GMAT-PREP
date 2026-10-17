@@ -3538,3 +3538,14 @@ input[type="date"] {
 .lesson-decision .actions {
   margin-top: 1rem;
 }
+
+/* Skipping the Diagnostic asks first, in the panel. */
+.plan-confirm {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.plan-confirm p {
+  margin: 0;
+  font-weight: 700;
+}

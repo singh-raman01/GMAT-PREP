@@ -261,13 +261,14 @@ export const publishedPool = Effect.gen(function*() {
 })
 
 // The pool with the Trap Patterns each Question's options carry, for a
-// choice that names one.
+// choice that names one. Notes count once enrichment is done, as notes
+// written for an older key wait to be written again (decision 62).
 export const withTrapPatterns = (pool: ReadonlyArray<PoolQuestion>) =>
   Effect.gen(function*() {
     const db = yield* Db
     const rows = yield* db.selectDistinct({ questionId: parts.questionId, trapPattern: optionNotes.trapPattern })
-      .from(optionNotes).innerJoin(parts, eq(parts.id, optionNotes.partId))
-      .where(isNotNull(optionNotes.trapPattern))
+      .from(optionNotes).innerJoin(parts, eq(parts.id, optionNotes.partId)).innerJoin(questions, eq(questions.id, parts.questionId))
+      .where(and(isNotNull(optionNotes.trapPattern), eq(questions.enrichment, "done")))
     const byQuestion = new Map<string, Array<string>>()
     for (const row of rows) byQuestion.set(row.questionId, [...(byQuestion.get(row.questionId) ?? []), row.trapPattern!])
     return pool.map((question): PoolQuestion => ({ ...question, trapPatterns: byQuestion.get(question.id) ?? [] }))
