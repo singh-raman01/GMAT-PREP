@@ -111,6 +111,12 @@ Progress shows how your practice is going, in five views:
 
 Every chart has its numbers in a table below it.
 
+## Lessons
+
+Every Skill and Question Type gets a Lesson: its rules, the ways to solve its questions and when each works, the common traps, and up to three worked examples taken from real questions, then a 5-question check. Under Lessons in the Curator area, "Write the Lessons needed" queues a job that writes a draft for each subject with at least six published questions outside the Mock Reserve; read each draft as a Learner will and approve it or turn it down with a note. A Lesson is marked to write again when the Taxonomy changes how it describes the subject, or a worked example leaves the subject.
+
+Learners find the approved Lessons under Lessons, and a Debrief links to the Lesson on its question's main Skill. Opening a Lesson counts its worked examples as seen, so they never change your scores later. Its check is an untimed set of five questions on the subject. The Study Plan sets a Lesson before practice when a Weak Area's misses are mostly a concept gap, and the Lesson's ways to solve it when they are mostly a wrong approach.
+
 ## Study Plan
 
 The Study Plan sets out each Study Day from your test date, target Total, hours a week and days off, which you set on its Settings page along with your time zone and when a Study Day starts. It begins with a Diagnostic, a Mock or, with under 2 hours 25 minutes a week, the three Sectionals; you can skip it, and each Section is then practised at Medium until it has 20 timed answers. Then come sets on your Weak Areas, mixed practice, and due Retries, which take at most a fifth of a day. A set follows what most often goes wrong in its Weak Area, such as Questions with the same Trap Pattern for traps, and is pitched where you get about two in three right. Over the last 4 weeks there is a Mock a week, the last at least 3 days before the test, as many as the Mock Reserve can serve. Without a test date the plan covers 2 weeks at a time.
