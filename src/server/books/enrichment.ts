@@ -446,6 +446,13 @@ export const loadQuestion = (questionId: string) =>
     return { question, partIds: partRows.map((part) => part.id), text, explanationReaches: explained.reaches }
   })
 
+// The Book's explanation is an Approach of its own, and is shown to a model,
+// only when it reaches the current key and can be shown; one written for a
+// key the Curator has since replaced teaches the old answer.
+export const explanationFits = (loaded: NonNullable<Effect.Success<ReturnType<typeof loadQuestion>>>) =>
+  loaded.text.explanation !== null && loaded.explanationReaches !== null &&
+  loaded.explanationReaches === loaded.text.key && shownTextProblem(loaded.text.explanation) === undefined
+
 const retryNote = (problems: ReadonlyArray<string>) =>
   `Your last reply had these problems:\n${problems.map((problem) => `- ${problem}`).join("\n")}\nWrite the whole reply again, fixing them.`
 
@@ -460,10 +467,7 @@ const writeContent = (
   Effect.gen(function*() {
     const db = yield* Db
     const { question, partIds, explanationReaches } = loaded
-    // The Book's explanation is an Approach of its own, and is shown to the
-    // model, only when it reaches the key and can be shown.
-    const bookExplains = loaded.text.explanation !== null && explanationReaches !== null &&
-      explanationReaches === loaded.text.key && shownTextProblem(loaded.text.explanation) === undefined
+    const bookExplains = explanationFits(loaded)
     const text: QuestionText = bookExplains ? loaded.text : { ...loaded.text, explanation: null }
     const first = yield* unlessInvalid(writeApproaches(jobId, taxonomy, text, undefined))
     const problems = first === undefined ? [] : approachesProblems(first.value, text)

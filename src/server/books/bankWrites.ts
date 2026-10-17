@@ -311,13 +311,14 @@ export const KeyCodes: ReadonlySet<string> = new Set<ReasonCode>(["no-key", "key
 // Problems that leave an item's text or figure in doubt.
 export const UnsureCodes: ReadonlySet<string> = new Set<ReasonCode>(["structure", "render", "figure"])
 
-// Opens a review item for a Question, or updates the open one.
+// Opens a review item for a Question, or updates the open one; an item
+// gathering Learners' reports on it is left as it is.
 export const holdForReview = (questionId: string, reasons: ReadonlyArray<Reason>, relatedQuestionId: string | null) =>
   Effect.gen(function*() {
     const db = yield* Db
     const now = yield* Clock.currentTimeMillis
     const [open] = yield* db.select({ id: reviewItems.id }).from(reviewItems)
-      .where(and(eq(reviewItems.questionId, questionId), eq(reviewItems.status, "open")))
+      .where(and(eq(reviewItems.questionId, questionId), eq(reviewItems.status, "open"), eq(reviewItems.kind, "check")))
     if (open !== undefined) {
       yield* db.update(reviewItems).set({ reasons: JSON.stringify(reasons), relatedQuestionId })
         .where(eq(reviewItems.id, open.id))
