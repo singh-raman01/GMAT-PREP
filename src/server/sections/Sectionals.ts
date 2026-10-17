@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm"
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm"
 import { Cause, Clock, Context, Effect, Latch, Layer, Semaphore } from "effect"
 import { type GroupId, groupOf, groupsOf, sectionCount } from "../../api/blueprint.ts"
 import { bandOf } from "../../api/difficulty.ts"
@@ -43,14 +43,15 @@ import {
   encodeSelection,
   isCorrect,
   keysOf,
-  lastSeenBy,
   mergeTargets,
   paperSeenBy,
   publishedPool,
-  readSelection
+  readSelection,
+  seenWithoutSessionsBy
 } from "../practice/history.ts"
 import { scoreLinesOf } from "../ratings/OfficialScores.ts"
 import { sessionMistakes } from "../learning/facts.ts"
+import { keptRows } from "../learning/kept.ts"
 import { ratedAmong } from "../ratings/rated.ts"
 import { rateSession } from "../ratings/rateSession.ts"
 import { type ScoreLine, UncalibratedLine } from "../ratings/scale.ts"
@@ -136,6 +137,66 @@ export class Sectionals extends Context.Service<Sectionals, {
       const oneAtATime = (yield* Semaphore.make(1)).withPermits(1)
       const run = <A, E>(effect: Effect.Effect<A, E, Db>) => effect.pipe(Effect.provideService(Db, db), Effect.orDie)
 
+      // When the Profile last had each Question served, kept between picks
+      // (decision 127): served rows are only ever added, so each pick reads
+      // just the rows served since the last, rather than every row of a long
+      // history. Kept by the Question served, and resolved through merges on
+      // each read, so a merge made meanwhile counts at once.
+      const KeptProfiles = 4
+      const servedRowid = sql<number>`${servedQuestions}.rowid`
+      const keptServed = keptRows<{ readonly questionId: string; readonly at: number }>({
+        since: (profileId, after) =>
+          run(
+            db.select({
+              questionId: servedQuestions.questionId,
+              at: servedQuestions.servedAt,
+              rowid: servedRowid,
+              sessionId: servedQuestions.sessionId,
+              position: servedQuestions.position
+            }).from(servedQuestions).crossJoin(sessions)
+              .where(and(eq(sessions.id, servedQuestions.sessionId), sql`${servedQuestions}.rowid > ${after}`, eq(sessions.profileId, profileId)))
+          ).pipe(Effect.map((rows) => {
+            let newest: (typeof rows)[number] | undefined
+            for (const row of rows) if (newest === undefined || row.rowid > newest.rowid) newest = row
+            return {
+              items: rows.map((row) => ({ questionId: row.questionId, at: Number(row.at ?? 0) })),
+              newest: newest === undefined ? undefined : { rowid: newest.rowid, identity: `${newest.sessionId}:${newest.position}` }
+            }
+          })),
+        check: (profileId, upTo) =>
+          run(
+            db.select({
+              count: sql<number>`count(*)`,
+              identity: sql<string | null>`(select ${servedQuestions.sessionId} || ':' || ${servedQuestions.position} from ${servedQuestions} where rowid = ${upTo})`
+            }).from(servedQuestions).innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
+              .where(and(eq(sessions.profileId, profileId), sql`${servedQuestions}.rowid <= ${upTo}`))
+          ).pipe(Effect.map(([row]) => ({ count: Number(row?.count ?? 0), identity: row?.identity ?? null }))),
+        profiles: KeptProfiles
+      })
+      const lastServedKept = new Map<string, Map<string, number>>()
+      // Each Question the Profile has Seen, by the Question it counts as, with
+      // when they last saw it: served in a Session, done on paper or worked
+      // through in a Lesson.
+      const lastSeenOf = (profileId: string) =>
+        Effect.gen(function*() {
+          const read = yield* keptServed(profileId)
+          let served = lastServedKept.get(profileId)
+          const added = read.fresh || served === undefined ? read.items : read.added
+          if (read.fresh || served === undefined) served = new Map()
+          for (const row of added) served.set(row.questionId, Math.max(served.get(row.questionId) ?? 0, row.at))
+          lastServedKept.delete(profileId)
+          lastServedKept.set(profileId, served)
+          for (const oldest of [...lastServedKept.keys()].slice(0, Math.max(0, lastServedKept.size - KeptProfiles))) lastServedKept.delete(oldest)
+          const resolve = yield* run(mergeTargets)
+          const last = new Map<string, number>()
+          for (const [questionId, at] of served) {
+            const id = resolve(questionId)
+            last.set(id, Math.max(last.get(id) ?? 0, at))
+          }
+          for (const [id, at] of yield* run(seenWithoutSessionsBy(profileId, "last"))) last.set(id, Math.max(last.get(id) ?? 0, at))
+          return last as ReadonlyMap<string, number>
+        })
+
       // Runs an action in one transaction; its failures come back as values
       // so they do not roll back as defects.
       const inTransaction = <A, E>(action: Effect.Effect<A, E, never>) =>
@@ -215,7 +276,7 @@ export class Sectionals extends Context.Service<Sectionals, {
 
       const poolAndSightings = (profileId: string, section: string) =>
         Effect.gen(function*() {
-          const lastSeen = yield* run(lastSeenBy(profileId))
+          const lastSeen = yield* lastSeenOf(profileId)
           const paperSeen = yield* run(paperSeenBy(profileId))
           return { units: unitsOf(yield* run(publishedPool), lastSeen, section), lastSeen, paperSeen }
         })
@@ -244,7 +305,7 @@ export class Sectionals extends Context.Service<Sectionals, {
         Effect.gen(function*() {
           const blueprint = yield* settings.blueprint
           const all = yield* run(publishedPool)
-          const lastSeen = yield* run(lastSeenBy(profileId))
+          const lastSeen = yield* lastSeenOf(profileId)
           return sections.map((section) => readinessOf(blueprint, section, unitsOf(all, lastSeen, section)))
         })
 

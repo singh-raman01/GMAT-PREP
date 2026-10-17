@@ -5,7 +5,19 @@ import { MissedPartView, MistakesView, type Named, type Selection } from "../../
 import { QuestionId } from "../../api/Review.ts"
 import { targetSecondsFor } from "../../api/targetTimes.ts"
 import { Db } from "../db/Database.ts"
-import { books, difficulty, mistakeLabels, optionNotes, options, parts, questions, responses, servedQuestions, sources } from "../db/schema.ts"
+import {
+  bankVersion,
+  books,
+  difficulty,
+  mistakeLabels,
+  optionNotes,
+  options,
+  parts,
+  questions,
+  responses,
+  servedQuestions,
+  sources
+} from "../db/schema.ts"
 import type { Names } from "../practice/content.ts"
 import { currentDifficulty } from "../practice/history.ts"
 import { type MissedPart, missesOf, type QuestionFact, type ResponseFact } from "./misses.ts"
@@ -65,7 +77,8 @@ export const inChunks = <A, E, R>(ids: ReadonlyArray<string>, read: (chunk: Arra
     return found
   })
 
-export const questionSummaries = (ids: ReadonlyArray<string>) =>
+// Each Question's summary, with the Difficulty seed it falls back on.
+const readSummaries = (ids: ReadonlyArray<string>) =>
   Effect.gen(function*() {
     const db = yield* Db
     const wanted = [...new Set(ids)]
@@ -77,6 +90,7 @@ export const questionSummaries = (ids: ReadonlyArray<string>) =>
         primarySkill: questions.primarySkill,
         secondarySkills: questions.secondarySkills,
         difficulty: currentDifficulty,
+        seed: questions.difficultySeed,
         stem: questions.stem,
         status: questions.status,
         enrichment: questions.enrichment,
@@ -113,6 +127,8 @@ export const questionSummaries = (ids: ReadonlyArray<string>) =>
     const notesOf = Map.groupBy(noteRows, (note) => note.partId)
     const booksOf = Map.groupBy(bookRows, (book) => book.questionId)
     return new Map(rows.map((row) => [row.id, {
+      seed: row.seed ?? 0,
+      summary: {
       id: row.id,
       section: row.section,
       questionType: row.questionType,
@@ -130,8 +146,49 @@ export const questionSummaries = (ids: ReadonlyArray<string>) =>
         notes: new Map((notesOf.get(part.id) ?? []).map((note) => [note.label, note] as const))
       })),
       books: [...new Map((booksOf.get(row.id) ?? []).map((book) => [book.id, book] as const)).values()]
-    } satisfies QuestionSummary] as const)) as ReadonlyMap<string, QuestionSummary>
+    } satisfies QuestionSummary
+    }] as const)) as ReadonlyMap<string, { readonly summary: QuestionSummary; readonly seed: number }>
   })
+
+export const questionSummaries = (ids: ReadonlyArray<string>) =>
+  readSummaries(ids).pipe(
+    Effect.map((read) => new Map([...read].map(([id, each]) => [id, each.summary] as const)) as ReadonlyMap<string, QuestionSummary>)
+  )
+
+// Question summaries kept between reads (decision 127). All but the current
+// Difficulty come from the Question Bank's tables, so they are kept until the
+// bank's version moves, which triggers do on every write to those tables, in
+// this process or the worker's; the Difficulty moves with each Rated Response
+// and is read again every time. The version is read before the rows, so rows
+// read meanwhile are newer than their key, never older.
+export const makeSummaryReader = () => {
+  let kept: { readonly version: number; readonly summaries: Map<string, { readonly summary: QuestionSummary; readonly seed: number }> } = {
+    version: -1,
+    summaries: new Map()
+  }
+  return (ids: ReadonlyArray<string>) =>
+    Effect.gen(function*() {
+      const db = yield* Db
+      const [row] = yield* db.select({ version: bankVersion.version }).from(bankVersion).where(eq(bankVersion.id, 1))
+      const version = row?.version ?? -1
+      if (version !== kept.version) kept = { version, summaries: new Map() }
+      const wanted = [...new Set(ids)]
+      const missing = wanted.filter((id) => !kept.summaries.has(id))
+      if (missing.length > 0) for (const [id, each] of yield* readSummaries(missing)) kept.summaries.set(id, each)
+      const rated = yield* inChunks(wanted, (chunk) =>
+        db.select({ questionId: difficulty.questionId, value: difficulty.value }).from(difficulty).where(inArray(difficulty.questionId, chunk))
+      )
+      const current = new Map(rated.map((each) => [each.questionId, each.value] as const))
+      const found = new Map<string, QuestionSummary>()
+      for (const id of wanted) {
+        const each = kept.summaries.get(id)
+        if (each === undefined) continue
+        const value = current.get(id)
+        found.set(id, { ...each.summary, difficulty: value ?? each.seed })
+      }
+      return found as ReadonlyMap<string, QuestionSummary>
+    })
+}
 
 // A Question as the rules read it: its Parts, its Target Time and, for an RC
 // passage's or MSR set's Question, the Stimulus it is timed with. Option

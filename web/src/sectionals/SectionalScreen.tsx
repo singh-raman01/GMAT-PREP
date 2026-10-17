@@ -117,7 +117,11 @@ export const SectionalScreen = ({ id, onSessionLost, onStopped, onClosed }: Prop
   }
   if (view === undefined) return <p className="quiet" aria-busy="true">Opening the Section</p>
   if (view.stage === "finished") {
-    return view.report === null ? <SectionClosed view={view} onClosed={onClosed} /> : <Report view={view} onFailure={handle} />
+    if (view.report === null) return <SectionClosed view={view} onClosed={onClosed} />
+    // The last Section of a Mock, finished or run out of time on the Mock's
+    // screen: the Mock's report comes next, not this Section's.
+    if (view.mock !== null && onClosed !== undefined) return <MockOver onClosed={onClosed} />
+    return <Report view={view} onFailure={handle} />
   }
   return <Running key={view.id} view={view} reading={reading} onView={show} onRefresh={refresh} onFailure={handle} />
 }
@@ -731,6 +735,11 @@ const SectionClosed = ({ view, onClosed }: { readonly view: SectionalView; reado
       <a className="button" {...linkProps(backOf(view).to)}>Back to the Mock</a>
     </>
   )
+}
+
+const MockOver = ({ onClosed }: { readonly onClosed: () => void }) => {
+  useEffect(() => onClosed(), [onClosed])
+  return <p className="quiet" aria-busy="true">Opening the Mock's report</p>
 }
 
 type Debriefed = { readonly _tag: "Closed" } | { readonly _tag: "Loading" } | { readonly _tag: "Open"; readonly question: SectionalQuestion }

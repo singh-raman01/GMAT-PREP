@@ -154,4 +154,12 @@ bun run typecheck
 bun test
 ```
 
+Two slower checks run only when asked. The speed check seeds 50,000 Responses and times the targets in `docs/design.md` (Speed targets). The end-to-end check takes a full Mock in Chromium on a fake clock, offline.
+
+```sh
+bun run test:speed            # builds the executable first; PERF_SLACK=2 doubles every limit on a slow machine
+bunx playwright install chromium   # once, before the first end-to-end run
+bun run test:e2e              # builds the web app first
+```
+
 After changing `src/server/db/schema.ts`, run `bun run db:generate` to write the migration and bundle it.

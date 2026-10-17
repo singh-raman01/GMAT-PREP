@@ -29,14 +29,7 @@ import { bookmarkedBy, heldBySections, isCorrect, mergeTargets } from "../practi
 import { ratedAmong } from "../ratings/rated.ts"
 import { Settings } from "../settings/Settings.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
-import {
-  labelsOf,
-  missedPartView,
-  questionFactOf,
-  type QuestionSummary,
-  questionSummaries,
-  responseFact
-} from "./facts.ts"
+import { labelsOf, makeSummaryReader, missedPartView, questionFactOf, type QuestionSummary, responseFact } from "./facts.ts"
 import type { Step } from "./ladder.ts"
 import { type EntryLadder, laddersOf } from "./ladders.ts"
 import { keptRows } from "./kept.ts"
@@ -255,6 +248,8 @@ export class ErrorLog extends Context.Service<ErrorLog, {
       const taxonomy = (yield* Taxonomy).view
       const names = namesOf(taxonomy)
       const run = <A, E>(effect: Effect.Effect<A, E, Db>) => effect.pipe(Effect.provideService(Db, db), Effect.orDie)
+      // The answered Questions' summaries, kept until the Question Bank changes.
+      const summariesOf = makeSummaryReader()
 
       // Sessions, with whether each shows how its answers went yet: an
       // untimed Practice Set at once, a timed one when it ends, a Sectional
@@ -327,7 +322,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
         Effect.gen(function*() {
           const answered = new Set<string>()
           for (const response of responseFacts) answered.add(response.questionId).add(resolve(response.questionId))
-          const summaries = yield* run(questionSummaries([...answered]))
+          const summaries = yield* run(summariesOf([...answered]))
           const overrides = yield* settings.targetTimes
           const questionFacts = new Map([...summaries].map(([id, question]) => [id, questionFactOf(question, overrides)] as const))
           const misses = missesOf({ sessions: [...found.values()], responses: responseFacts, served, questions: questionFacts, resolve })

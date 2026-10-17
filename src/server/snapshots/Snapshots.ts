@@ -46,7 +46,10 @@ const KeptOnRestore = new Set([
   "curator_unlocks",
   "curator_access",
   "lan_mode",
-  "devices"
+  "devices",
+  // The Question Bank's version (decision 127) only goes up: the restore's
+  // writes move it on, so nothing kept under an older one is read again.
+  "bank_version"
 ])
 
 const hostZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone
