@@ -137,6 +137,10 @@ The app takes a snapshot of its database each day, keeping the last 7 days and o
 
 From your name at the top, your profile page downloads everything your profile holds as one JSON file, and deletes the profile, with your PIN if it has one. The Curator's Data page sets a new PIN for a Learner who forgot theirs, deletes a Profile with the Curator passphrase entered again, and makes one archive of the whole install: the database, the Books and their page images. To move the install to another computer, unpack that archive into the data folder there before starting the app, and enter the LLM key again. If the Curator passphrase is lost, run `gmat-prep reset-passphrase` on the computer the app runs on.
 
+## Display
+
+The Display button at the top of every screen sets this browser's colours (match the device, light or dark) and text size (standard, larger or largest). The choice stays in this browser. During a timed set, Sectional or Mock you can hide the timer; a warning still shows when 5 minutes are left.
+
 ## Use it on a tablet or phone
 
 LAN mode lets other devices on your network use the app running on this computer. In Curator tools, open Devices and turn on LAN mode; the page lists the addresses to open on the other device, such as http://192.168.1.20:4747. Open one there, and the app asks for a pairing code: on this computer choose Show a pairing code, and enter the 6 digits on the other device with a name for it, such as "Asha's tablet". A code works once, within 5 minutes. Each device then opens Profiles as usual, and a Profile with a PIN still asks for it.

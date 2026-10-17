@@ -404,7 +404,7 @@ const QuestionScreen = (
       if (locked || event.altKey || event.ctrlKey || event.metaKey || isTyping(event.target)) return
       // Keys typed in the calculator, or in the Mistake Type control, are
       // their own: Enter there does not move on.
-      if (event.target instanceof Element && event.target.closest(".calculator, .mistakes") !== null) return
+      if (event.target instanceof Element && event.target.closest(".calculator, .mistakes, .display-menu") !== null) return
       const label = event.key.toUpperCase()
       if (
         !answered && lettered !== undefined && label.length === 1 &&

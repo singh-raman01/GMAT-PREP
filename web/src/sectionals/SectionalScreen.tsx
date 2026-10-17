@@ -356,7 +356,7 @@ const QuestionStage = (
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (locked || event.altKey || event.ctrlKey || event.metaKey || isTyping(event.target)) return
-      if (event.target instanceof Element && event.target.closest(".calculator") !== null) return
+      if (event.target instanceof Element && event.target.closest(".calculator, .display-menu") !== null) return
       const label = event.key.toUpperCase()
       if (lettered !== undefined && label.length === 1 && lettered.options.some((option) => option.label === label)) {
         event.preventDefault()

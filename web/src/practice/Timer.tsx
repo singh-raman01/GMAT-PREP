@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { minutesAndSeconds } from "../format.ts"
+import { minutesAndSeconds, spokenDuration } from "../format.ts"
 
 // The time left in a timed set. The server owns the clock: this counts down
 // from the time it last sent, and the set screen reads it again on every
@@ -28,6 +28,8 @@ export const useRemaining = (reading: ClockReading | undefined): number | undefi
 // of a set shorter than that allows.
 export const warningFor = (limitMs: number) => Math.min(5 * 60 * 1000, limitMs / 5)
 
+// The timer, which the Learner can hide, and a warning once the time left
+// reaches warningMs, shown and announced whether the timer is shown or not.
 export const Timer = (
   { remainingMs, warningMs, hidden, onToggle }: {
     readonly remainingMs: number
@@ -35,15 +37,27 @@ export const Timer = (
     readonly hidden: boolean
     readonly onToggle: () => void
   }
-) => (
-  <div className="timer">
-    {!hidden && (
-      <span className={remainingMs <= warningMs ? "timer-time timer-low" : "timer-time"}>
-        <span className="visually-hidden">Time left:</span> {minutesAndSeconds(remainingMs)}
-      </span>
-    )}
-    <button type="button" className="link-button" onClick={onToggle}>
-      {hidden ? "Show the timer" : "Hide the timer"}
-    </button>
-  </div>
-)
+) => {
+  const low = remainingMs <= warningMs
+  const [warned, setWarned] = useState(false)
+  const [dismissed, setDismissed] = useState(false)
+  if (low && remainingMs > 0 && !warned) setWarned(true)
+  return (
+    <div className="timer">
+      {!hidden && (
+        <span className={low ? "timer-time timer-low" : "timer-time"}>
+          <span className="visually-hidden">Time left:</span> {minutesAndSeconds(remainingMs)}
+        </span>
+      )}
+      <button type="button" className="link-button" onClick={onToggle}>
+        {hidden ? "Show the timer" : "Hide the timer"}
+      </button>
+      {warned && !dismissed && (
+        <p className="timer-warning" role="alert">
+          {spokenDuration(warningMs)} left.
+          <button type="button" className="link-button" onClick={() => setDismissed(true)}>OK</button>
+        </p>
+      )}
+    </div>
+  )
+}

@@ -9,6 +9,7 @@ import { BookPage } from "./BookPage.tsx"
 import { CuratorBooks } from "./CuratorBooks.tsx"
 import { CuratorJobs } from "./CuratorJobs.tsx"
 import { CuratorSettings } from "./CuratorSettings.tsx"
+import { DisplayMenu } from "../DisplayMenu.tsx"
 import { DataPage } from "./DataPage.tsx"
 import { DevicesPage } from "./DevicesPage.tsx"
 import { Generation } from "./Generation.tsx"
@@ -101,6 +102,7 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
           <header className="topbar">
             <span className="wordmark">GMAT prep</span>
             <div className="who">
+              <DisplayMenu />
               <a className="quiet-link" {...linkProps("/")}>Profiles</a>
               <span className="who-name">Curator</span>
               <button type="button" className="button button-quiet" onClick={() => void lock()}>

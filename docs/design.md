@@ -439,7 +439,7 @@ The Curator view shows Question Bank coverage by Skill and Difficulty Band, the 
 
 - Layout: the Stimulus on the left and the Question on the right, stacked on narrow screens, with the question count and timer at the top.
 - Exam rules: answer before moving on, no going back, Bookmark any Question, calculator only in Data Insights, Review & Edit at the end.
-- Additions: a timer that can be hidden, a warning at 5 minutes left, keyboard shortcuts (A to E select, Enter submits), dark mode and adjustable font size.
+- Additions: a timer that can be hidden, a warning at 5 minutes left, keyboard shortcuts (A to E select, Enter submits), dark mode and adjustable font size (decision 126).
 - Practice Set extras that never appear in Mocks: the guessed button, the instant Debrief in untimed sets, and pause.
 - The calculator offers addition, subtraction, multiplication, division, square root, percent and memory.
 
@@ -723,6 +723,7 @@ These came up while building a ticket. Like the starting values above, they can 
 123. Revoking a device ends its requests at once, and the open event streams of any device that may no longer reach the app end too. A revoked device pairs again with a new code, as a new device. A Profile's PIN guards it on a paired device as on this computer, and Curator tools work from a paired device with the passphrase, but LAN mode, pairing codes and the devices list answer only on this computer, checked again in their handlers.
 124. LAN traffic is plain HTTP: the Devices page and the pairing page say so, and that LAN mode is for a trusted network such as home Wi-Fi, never public Wi-Fi.
 125. On a narrow screen the Stimulus stands above its Question, and beside it from 64rem. Both layouts share one tree, so turning a tablet keeps the source tab and the table sort the Learner chose.
+126. The exam screen's comforts (ticket 21): every screen's top bar has a Display button that sets this browser's colours (match the device, light or dark) and text size (standard, larger at 112.5% and largest at 125%, which scale everything set in rem). The choice is kept in this browser's storage only, as one person's eyes and screen decide it, and applied before the first paint. The timer can be hidden and shown again; once the time left reaches 5 minutes, or a fifth of a shorter limit, a warning shows under the timer, and is announced, whether the timer is shown or not, until dismissed. A to E pick an option and Enter submits in Practice Sets, Sectionals and Mocks, but not while focus is in the calculator, the Mistake Type control or the Display panel. The guessed button, the instant Debrief and pause belong to Practice Sets only: the Sectional and Mock screens and their API have none.
 
 ### Taxonomy review notes
 

@@ -21,6 +21,7 @@ import { MocksHome } from "./mocks/MocksHome.tsx"
 import { ScoresPage } from "./scores/ScoresPage.tsx"
 import { SectionalScreen } from "./sectionals/SectionalScreen.tsx"
 import { SectionalsHome } from "./sectionals/SectionalsHome.tsx"
+import { DisplayMenu } from "./DisplayMenu.tsx"
 import { PairingPage } from "./PairingPage.tsx"
 import { ProfilePicker } from "./ProfilePicker.tsx"
 import { PlanPage } from "./plan/PlanPage.tsx"
@@ -141,6 +142,7 @@ export const App = () => {
           <header className="topbar">
             <span className="wordmark">GMAT prep</span>
             <div className="who">
+              <DisplayMenu />
               <a className="who-name" {...linkProps("/profile")}>{screen.profile.name}</a>
               <button type="button" className="button button-quiet" onClick={() => void lock()}>
                 Lock

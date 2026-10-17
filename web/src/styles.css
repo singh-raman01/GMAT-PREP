@@ -37,8 +37,10 @@
   --radius: 6px;
 }
 
+/* Dark colours follow the device unless this browser chose light or dark
+   (web/src/display.ts). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --paper: #16181c;
     --graphite: #e8e9ec;
     --pencil: #a7adb7;
@@ -53,6 +55,36 @@
     --verbal: #d682c7;
     --di: #86a9f0;
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #16181c;
+  --graphite: #e8e9ec;
+  --pencil: #a7adb7;
+  --rule: #343841;
+  --field: #6e7480;
+  --hover: #20232a;
+  --on-highlight: #16181c;
+  --highlight-band: 100%;
+  --alert: #ff8a80;
+
+  --quant: #52c49c;
+  --verbal: #d682c7;
+  --di: #86a9f0;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+/* Larger text scales everything set in rem. */
+:root[data-text-size="larger"] {
+  font-size: 112.5%;
+}
+
+:root[data-text-size="largest"] {
+  font-size: 125%;
 }
 
 *,
@@ -205,10 +237,12 @@ mark {
   border-bottom: 1px solid var(--rule);
 }
 
+/* Wraps at the larger text sizes on a phone rather than run off the screen. */
 .who {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 1rem;
+  gap: 0.5rem 1rem;
   min-width: 0;
 }
 
@@ -262,8 +296,10 @@ a.who-name {
   cursor: not-allowed;
 }
 
+/* One column no wider than the field, so its controls shrink to fit. */
 .field {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.35rem;
   justify-items: start;
 }
@@ -654,9 +690,11 @@ code {
   max-width: 60ch;
 }
 
+/* Never wider than its column: a long option, such as a time zone at the
+   largest text size, must not push the page past a phone's screen. */
 select {
   min-height: 2.75rem;
-  max-width: 24rem;
+  max-width: min(24rem, 100%);
   padding: 0.45rem 0.75rem;
   border: 2px solid var(--field);
   border-radius: var(--radius);
@@ -1775,6 +1813,22 @@ input.number-input {
 
 .timer-low {
   color: var(--alert);
+}
+
+/* The warning a few minutes before the end, under the timer or in its
+   place when it is hidden. */
+.timer-warning {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+  margin: 0.25rem 0 0;
+  padding: 0.35rem 0.75rem;
+  border-inline-start: 4px solid var(--alert);
+  border-radius: var(--radius);
+  background: var(--hover);
+  font-weight: 700;
 }
 
 .clock-note {
@@ -3734,4 +3788,40 @@ input[type="text"].pairing-code {
   font-size: var(--step-3);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.2em;
+}
+
+/* The top bar's Display button and its panel: this browser's colours and
+   text size. */
+.display-menu {
+  position: relative;
+}
+
+.display-panel {
+  position: absolute;
+  inset-inline-end: 0;
+  top: calc(100% + 0.5rem);
+  z-index: 20;
+  display: grid;
+  gap: 1rem;
+  justify-items: start;
+  width: max-content;
+  max-width: min(22rem, calc(100vw - 2rem));
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper);
+  box-shadow: 0 0.5rem 1.5rem color-mix(in srgb, var(--graphite) 18%, transparent);
+}
+
+.display-panel fieldset {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.display-panel legend {
+  margin-bottom: 0.25rem;
+  font-weight: 700;
 }
