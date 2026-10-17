@@ -1010,3 +1010,28 @@ export const snapshots = sqliteTable(
   },
   (t) => [index("snapshots_taken").on(t.takenAt), uniqueIndex("snapshots_file").on(t.file)]
 )
+
+// LAN mode (decision 119): one row, kept when a snapshot is restored, as it
+// says who may reach this computer rather than what was studied.
+export const lanMode = sqliteTable("lan_mode", {
+  id: integer("id").primaryKey(),
+  on: integer("on", { mode: "boolean" }).notNull(),
+  changedAt: integer("changed_at").notNull()
+})
+
+// Devices paired in LAN mode (decisions 121 and 122). Only the SHA-256 of a
+// device's token is stored. Kept when a snapshot is restored, so a restore
+// never brings back a device that was revoked.
+export const devices = sqliteTable(
+  "devices",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    pairedAt: integer("paired_at").notNull(),
+    // Written at most every 5 minutes.
+    lastSeenAt: integer("last_seen_at").notNull(),
+    revokedAt: integer("revoked_at")
+  },
+  (t) => [uniqueIndex("devices_token").on(t.tokenHash)]
+)

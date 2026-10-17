@@ -37,7 +37,7 @@ import { TutorPage } from "../src/server/tutor/Tutor.ts"
 import { WorkerSupervisor } from "../src/server/worker/WorkerSupervisor.ts"
 import { curatorBrowser } from "./bookFlow.ts"
 import { numbered, seedBook } from "./fixtures/bank.ts"
-import { runWithWorkers, SnapshotCopierTest, tempDataDir, TestWorkers, type WorkerTestServices } from "./harness.ts"
+import { NetworkTest, runWithWorkers, SnapshotCopierTest, tempDataDir, TestWorkers, type WorkerTestServices } from "./harness.ts"
 
 // The review of Tutor Chat and Problem Reports (ticket 18): each test shows
 // one finding fixed, through the API with a fake model.
@@ -118,6 +118,7 @@ const runSlow = <A, E>(effect: Effect.Effect<A, E, WorkerTestServices>) =>
       Layer.provideMerge(makeAppServices(JobKinds.layer([ConnectionTest]))),
       Layer.provide(WorkerSupervisor.layerIdle),
       Layer.provideMerge(SnapshotCopierTest),
+      Layer.provideMerge(NetworkTest),
       Layer.provideMerge(AppConfig.layer({ dataDir: tempDataDir(), preferredPort: 0 })),
       Layer.provideMerge(BunHttpServer.layerTest),
       Layer.provideMerge(TestClock.layer()),

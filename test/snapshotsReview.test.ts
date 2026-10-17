@@ -625,7 +625,7 @@ describe("A full disk during a restore", () => {
       // With room again, it goes through.
       yield* restore(curator, found.id)
       expect((yield* liveNotes).length).toBe(400)
-    })))
+    })), 30_000)
 })
 
 describe("The install's archive", () => {

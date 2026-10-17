@@ -1,24 +1,15 @@
-import { Cause, Effect } from "effect"
-import { HttpEffect, HttpRouter, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http"
+import { Cause, Effect, Stream } from "effect"
+import { HttpBody, HttpEffect, HttpRouter, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { BookUploadPath, MaxBookBytes } from "../../api/Books.ts"
+import { RefusedHeader } from "../../api/Lan.ts"
+import { LanAccess } from "../access/LanAccess.ts"
+import { RefusalTexts, type Refused } from "../access/reach.ts"
 
-// The server listens on 127.0.0.1 only, but a web page on another site can
-// still reach it by pointing its own host name at 127.0.0.1 (DNS rebinding).
-// Such a request carries that site's name in its Host header, so requests are
-// answered only when they name this computer.
-const ThisComputer = new Set(["127.0.0.1", "localhost", "[::1]"])
-
-// The host name in a Host header, without the port.
-export const hostName = (header: string | undefined): string | undefined => {
-  if (header === undefined) return undefined
-  const value = header.trim().toLowerCase()
-  if (value.startsWith("[")) {
-    const end = value.indexOf("]")
-    return end === -1 ? undefined : value.slice(0, end + 1)
-  }
-  const colon = value.indexOf(":")
-  return colon === -1 ? value : value.slice(0, colon)
-}
+// Who may reach the server is decided in LanAccess (decisions 119 to 125):
+// a web page on another site can point its own host name at this computer
+// (DNS rebinding), so requests are answered only when their Host header
+// names this computer; and only this computer, or in LAN mode a paired
+// device, gets more than the app's pages and pairing.
 
 const SecurityHeaders = {
   "x-content-type-options": "nosniff",
@@ -27,11 +18,6 @@ const SecurityHeaders = {
   "content-security-policy":
     "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'"
 } as const
-
-const refused = HttpServerResponse.text(
-  "GMAT prep answers only to this computer. Open it at http://127.0.0.1 or http://localhost.",
-  { status: 403 }
-)
 
 // Writes come only from the app's own pages. SameSite cookies stop other sites
 // from using an unlock, but not pages on other ports of this computer, and not
@@ -104,23 +90,56 @@ const logServerFailure = (request: HttpServerRequest.HttpServerRequest, cause: C
     )
   )
 
-// Refuses other hosts and cross-site writes, adds the security headers to
-// every response, error responses included, and logs server failures. Ordinary requests are not
-// logged, to keep the terminal quiet.
+// The app reads why from the header, to ask for pairing.
+const refusal = (verdict: Refused) =>
+  HttpServerResponse.text(RefusalTexts[verdict.reason](verdict.lan), {
+    status: 403,
+    headers: { [RefusedHeader]: verdict.reason }
+  })
+
+// A stream to another device, such as its event stream, ends part way when
+// its access does; Bun goes on sending any other response until the listener
+// holding it closes (src/server/http/listeners.ts). The stream fails rather
+// than ends, so the device cannot take it for whole, and with no error, as
+// Bun prints any other.
+const stopsWhenAccessEnds = (response: HttpServerResponse.HttpServerResponse, ended: Effect.Effect<Refused>) => {
+  const body = response.body
+  if (body._tag !== "Stream") return response
+  const stopped = body.stream.pipe(Stream.interruptWhen(Effect.andThen(ended, Effect.fail(undefined))))
+  return HttpServerResponse.setBody(response, HttpBody.stream(stopped, body.contentType, body.contentLength))
+}
+
+// Refuses other hosts, devices not let in, and cross-site writes, adds the
+// security headers to every response, error responses included, and logs
+// server failures. Ordinary requests are not logged, to keep the terminal
+// quiet.
 export const GuardLive = HttpRouter.middleware(
-  (httpEffect) =>
-    Effect.gen(function*() {
-      const request = yield* HttpServerRequest.HttpServerRequest
-      yield* HttpEffect.appendPreResponseHandler(addSecurityHeaders)
-      const host = hostName(request.headers["host"])
-      if (host === undefined || !ThisComputer.has(host)) {
-        return refused
-      }
-      const refusedWrite = writeRefusal(request, request.headers["host"] ?? "")
-      if (refusedWrite !== undefined) {
-        return refusedWrite
-      }
-      return yield* httpEffect.pipe(Effect.tapCause((cause) => logServerFailure(request, cause)))
-    }),
+  Effect.gen(function*() {
+    const access = yield* LanAccess
+    return (httpEffect) =>
+      Effect.gen(function*() {
+        const request = yield* HttpServerRequest.HttpServerRequest
+        yield* HttpEffect.appendPreResponseHandler(addSecurityHeaders)
+        const verdict = yield* access.judge(request)
+        if (verdict._tag === "refuse") return refusal(verdict)
+        const refusedWrite = writeRefusal(request, request.headers["host"] ?? "")
+        if (refusedWrite !== undefined) {
+          return refusedWrite
+        }
+        const logged = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          effect.pipe(Effect.tapCause((cause) => logServerFailure(request, cause)))
+        if (verdict.fromHost) return yield* logged(httpEffect)
+        // Another device's access can end while its request runs (decisions
+        // 120 and 123): the request then stops where it is, so a write not
+        // yet committed rolls back, and the device is refused. As without
+        // the race, only the route's handler can be interrupted, and a device
+        // that goes away still ends its request.
+        const ended = access.accessEnds(request)
+        const response = yield* logged(
+          Effect.raceFirst(Effect.uninterruptible(httpEffect), Effect.map(ended, refusal)).pipe(Effect.interruptible)
+        )
+        return stopsWhenAccessEnds(response, ended)
+      })
+  }),
   { global: true }
 )

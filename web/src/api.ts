@@ -2,6 +2,7 @@ import { Effect, Result } from "effect"
 import { FetchHttpClient, HttpClient, type HttpClientError, HttpClientRequest } from "effect/http"
 import { HttpApiClient } from "effect/http-api"
 import { Api } from "../../src/api/Api.ts"
+import { RefusedHeader } from "../../src/api/Lan.ts"
 import { BackgroundHeader } from "../../src/api/Profiles.ts"
 
 // The typed client derived from the same API definition the server uses. The
@@ -81,9 +82,29 @@ export type Client = Effect.Success<ReturnType<typeof makeClient>>
 
 const clients = new Map<boolean, Promise<Client>>()
 
+// Why the server refused this device, from another device on the network:
+// not paired yet, or LAN mode is off. The app then asks for pairing.
+export type Refusal = "not-paired" | "lan-off"
+
+export const refusalOf = (error: { readonly _tag: string }): Refusal | undefined => {
+  if (error._tag !== "HttpClientError") return undefined
+  const reason = (error as HttpClientError.HttpClientError).reason
+  if (!("response" in reason) || reason.response === undefined || reason.response.status !== 403) return undefined
+  const refused = reason.response.headers[RefusedHeader]
+  return refused === "not-paired" || refused === "lan-off" ? refused : undefined
+}
+
+const refusalListeners = new Set<(refusal: Refusal) => void>()
+
+export const onRefused = (listener: (refusal: Refusal) => void): (() => void) => {
+  refusalListeners.add(listener)
+  return () => void refusalListeners.delete(listener)
+}
+
 // Runs one API call. Failures the API declares come back as values, so each
 // screen can say what happened. A call the page makes on its own, with no
-// one asking, is made in the background.
+// one asking, is made in the background. A refusal of this device is told to
+// the app as well, wherever it happens.
 export const call = async <A, E>(
   request: (client: Client) => Effect.Effect<A, E>,
   options: { readonly background?: boolean } = {}
@@ -94,7 +115,12 @@ export const call = async <A, E>(
     client = deviceChecked.then(() => Effect.runPromise(makeClient(background)))
     clients.set(background, client)
   }
-  return Effect.runPromise(Effect.result(request(await client)))
+  const result = await Effect.runPromise(Effect.result(request(await client)))
+  if (result._tag === "Failure") {
+    const refusal = refusalOf(result.failure as { readonly _tag: string })
+    if (refusal !== undefined) for (const listener of refusalListeners) listener(refusal)
+  }
+  return result
 }
 
 // What went wrong with a call, for failures no screen handles itself:

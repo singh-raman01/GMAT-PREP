@@ -10,6 +10,7 @@ import { CuratorBooks } from "./CuratorBooks.tsx"
 import { CuratorJobs } from "./CuratorJobs.tsx"
 import { CuratorSettings } from "./CuratorSettings.tsx"
 import { DataPage } from "./DataPage.tsx"
+import { DevicesPage } from "./DevicesPage.tsx"
 import { Generation } from "./Generation.tsx"
 import { GoldenSet } from "./GoldenSet.tsx"
 import { OverviewPage } from "./OverviewPage.tsx"
@@ -90,6 +91,8 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
         ? "books"
         : path.startsWith("/curator/data")
         ? "data"
+        : path.startsWith("/curator/devices")
+        ? "devices"
         : "overview"
       const bookId = /^\/curator\/books\/([^/]+)/.exec(path)?.[1]
       const lessonId = /^\/curator\/lessons\/([^/]+)/.exec(path)?.[1]
@@ -134,6 +137,9 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
               <a {...linkProps("/curator/data")} aria-current={section === "data" ? "page" : undefined}>
                 <span className={section === "data" ? "mark" : undefined}>Data</span>
               </a>
+              <a {...linkProps("/curator/devices")} aria-current={section === "devices" ? "page" : undefined}>
+                <span className={section === "devices" ? "mark" : undefined}>Devices</span>
+              </a>
               <a {...linkProps("/curator/settings")} aria-current={section === "settings" ? "page" : undefined}>
                 <span className={section === "settings" ? "mark" : undefined}>Settings</span>
               </a>
@@ -165,6 +171,8 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
               ? <OverviewPage key="overview" onLocked={locked} onStopped={onStopped} />
               : section === "data"
               ? <DataPage key="data" onLocked={locked} onStopped={onStopped} />
+              : section === "devices"
+              ? <DevicesPage key="devices" onLocked={locked} onStopped={onStopped} />
               : bookId !== undefined
               ? (
                 <BookPage

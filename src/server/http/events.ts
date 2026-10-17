@@ -40,7 +40,8 @@ const serveEvents = Effect.gen(function*() {
     revisionOf(new URL(request.url, "http://localhost").searchParams.get("since"))
   // Keep-alive comments hold the connection open. Each one also checks the
   // unlock without counting as use, so an open stream neither keeps the
-  // Curator unlocked nor outlives a lock.
+  // Curator unlocked nor outlives a lock. A stream to another device ends at
+  // once when its access does, as every response to one does (guard.ts).
   const keepAlive = Stream.tick(KeepAliveEvery).pipe(
     Stream.mapEffect(() =>
       curator.stillUnlocked(token).pipe(

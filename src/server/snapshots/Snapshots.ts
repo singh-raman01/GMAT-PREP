@@ -37,9 +37,18 @@ const IntegrityEveryMs = 7 * DayMs
 const IntegrityFile = "integrity-check.json"
 
 // Tables a restore leaves as they are: the migration log and the snapshots,
-// which describe this database and its folder, and who is signed in now and
-// with which passphrase.
-const KeptOnRestore = new Set(["__drizzle_migrations", "snapshots", "profile_unlocks", "curator_unlocks", "curator_access"])
+// which describe this database and its folder, who is signed in now and with
+// which passphrase, and who may reach this computer (LAN mode and the paired
+// devices, so a restore never brings back a revoked one).
+const KeptOnRestore = new Set([
+  "__drizzle_migrations",
+  "snapshots",
+  "profile_unlocks",
+  "curator_unlocks",
+  "curator_access",
+  "lan_mode",
+  "devices"
+])
 
 // The working copy a restore makes of the snapshot it restores.
 const restoreCopyName = (id: string) => `restore-${id}.sqlite`

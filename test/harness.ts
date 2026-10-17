@@ -1,6 +1,6 @@
 import { BunHttpServer } from "@effect/platform-bun"
-import { Context, type Duration, Effect, type Fiber, Layer, Ref } from "effect"
-import { Cookies, HttpClient, HttpClientRequest, HttpRouter, type HttpServer } from "effect/http"
+import { Context, type Duration, Effect, type Fiber, Layer, Option, Ref } from "effect"
+import { Cookies, HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/http"
 import type { SqlClient } from "effect/sql"
 import { HttpApiClient } from "effect/http-api"
 import { TestClock } from "effect/testing"
@@ -8,6 +8,8 @@ import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Api } from "../src/api/Api.ts"
+import { Network } from "../src/server/access/Network.ts"
+import type { NetworkAddress } from "../src/server/access/reach.ts"
 import { AppConfig } from "../src/server/AppConfig.ts"
 import { AppRoutes, AppServices, makeAppServices } from "../src/server/app.ts"
 import type { Db } from "../src/server/db/Database.ts"
@@ -23,6 +25,7 @@ import type { Settings } from "../src/server/settings/Settings.ts"
 import { workerServices } from "../src/server/worker/services.ts"
 import { WorkerSupervisor } from "../src/server/worker/WorkerSupervisor.ts"
 import { FigureFiles } from "../src/server/books/FigureFiles.ts"
+import { lanListeners } from "../src/server/http/listeners.ts"
 import { ErrorLog } from "../src/server/learning/ErrorLog.ts"
 
 export const tempDataDir = () => mkdtempSync(join(tmpdir(), "gmat-prep-test-"))
@@ -49,6 +52,32 @@ export const getWithCookie = (path: string, cookie: string) =>
     return response.status
   })
 
+// This computer's network as a test sets it: no address on a network until
+// the test gives one, and a request from the address its X-Test-Remote
+// header names, so a test can be another device on the network.
+export const TestRemoteHeader = "x-test-remote"
+
+export class TestNetwork extends Context.Service<TestNetwork, {
+  setAddresses(addresses: ReadonlyArray<NetworkAddress>): Effect.Effect<void>
+}>()("gmat-prep/test/TestNetwork") {}
+
+export const NetworkTest = Layer.unwrap(
+  Effect.sync(() => {
+    let addresses: ReadonlyArray<NetworkAddress> = [{ address: "127.0.0.1", family: "IPv4", internal: true }]
+    return Layer.mergeAll(
+      Layer.succeed(
+        Network,
+        Network.of({
+          addresses: () => addresses,
+          hostname: () => "study-pc",
+          remoteOf: (request) => request.headers[TestRemoteHeader] ?? Option.getOrUndefined(request.remoteAddress)
+        })
+      ),
+      Layer.succeed(TestNetwork, TestNetwork.of({ setAddresses: (next) => Effect.sync(() => void (addresses = next)) }))
+    )
+  })
+)
+
 // The real routes and services on an ephemeral port, with a fake clock and no
 // worker process.
 export const appLayer = (dataDir: string) =>
@@ -58,6 +87,7 @@ export const appLayer = (dataDir: string) =>
     Layer.provide(AppConfig.layer({ dataDir, preferredPort: 0 })),
     Layer.provide(LlmTransportFake),
     Layer.provide(SnapshotCopierTest),
+    Layer.provide(NetworkTest),
     Layer.provideMerge(BunHttpServer.layerTest),
     Layer.provideMerge(TestClock.layer())
   )
@@ -157,17 +187,38 @@ export type WorkerTestServices =
   | CopierFaults
   | FigureFiles
   | ErrorLog
+  | TestNetwork
   | SqlClient.SqlClient
 
 // Sets the fake clock before the app starts, as a start later in the day.
 const clockStartsAt = (millis: number | undefined) =>
   millis === undefined ? Layer.empty : Layer.effectDiscard(TestClock.setTime(millis))
 
-export const appWithWorkersLayer = (dataDir: string, kinds: ReadonlyArray<AnyJobKind>, startAt?: number) => {
-  const server = HttpRouter.serve(AppRoutes, { disableListenLog: true, disableLogger: true }).pipe(
+// The app on 127.0.0.1 only, as tests mostly need it.
+const ServedOnLoopback = HttpRouter.serve(AppRoutes, { disableListenLog: true, disableLogger: true })
+
+// The app as main.ts serves it: also, in LAN mode, on each network address
+// the test gives, at the same port.
+const ServedWithLanListeners = Layer.effectDiscard(
+  Effect.gen(function*() {
+    const app = yield* HttpRouter.toHttpEffect(AppRoutes)
+    const server = yield* HttpServer.HttpServer
+    yield* server.serve(app)
+    const port = server.address._tag === "UnixPathAddress" ? 0 : server.address.port
+    yield* lanListeners(app, { port, maxRequestBodySize: 64 * 1024 * 1024 })
+  })
+)
+
+const appLayerServed = (served: typeof ServedOnLoopback | typeof ServedWithLanListeners) => (
+  dataDir: string,
+  kinds: ReadonlyArray<AnyJobKind>,
+  startAt?: number
+) => {
+  const server = served.pipe(
     Layer.provideMerge(makeAppServices(JobKinds.layer(kinds))),
     Layer.provide(WorkerSupervisor.layerIdle),
     Layer.provideMerge(SnapshotCopierTest),
+    Layer.provideMerge(NetworkTest),
     Layer.provideMerge(AppConfig.layer({ dataDir, preferredPort: 0 })),
     Layer.provideMerge(BunHttpServer.layerTest),
     Layer.provideMerge(clockStartsAt(startAt)),
@@ -175,6 +226,8 @@ export const appWithWorkersLayer = (dataDir: string, kinds: ReadonlyArray<AnyJob
   )
   return testWorkersLayer(kinds).pipe(Layer.provideMerge(server), Layer.provideMerge(LlmTransportFake))
 }
+
+export const appWithWorkersLayer = appLayerServed(ServedOnLoopback)
 
 // The app with no worker running; the test starts workers when it wants them.
 // startAt sets the fake clock before the app starts.
@@ -184,6 +237,11 @@ export const runWithWorkers = <A, E>(
   dataDir: string = tempDataDir(),
   startAt?: number
 ): Promise<A> => Effect.runPromise(effect.pipe(Effect.provide(appWithWorkersLayer(dataDir, kinds, startAt))))
+
+// The app with LAN mode's listeners, which another device reaches at the
+// network addresses the test gives, with no worker running.
+export const runWithLanListeners = <A, E>(effect: Effect.Effect<A, E, WorkerTestServices>, dataDir: string = tempDataDir()): Promise<A> =>
+  Effect.runPromise(effect.pipe(Effect.provide(appLayerServed(ServedWithLanListeners)(dataDir, [ConnectionTest]))))
 
 // The app with one worker already running.
 export const runWithWorker = <A, E>(

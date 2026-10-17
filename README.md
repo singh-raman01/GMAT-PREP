@@ -20,7 +20,7 @@ bun run build       # one executable for this computer, in dist/
 bun run build:all   # Linux, macOS and Windows, x64 and arm64 where Bun supports them
 ```
 
-Each executable holds the web app, the migrations and the Taxonomy. Run it and open the address it prints, normally http://127.0.0.1:4747. It accepts connections from this computer only.
+Each executable holds the web app, the migrations and the Taxonomy. Run it and open the address it prints, normally http://127.0.0.1:4747. It accepts connections from this computer only, unless you turn on LAN mode (see "Use it on a tablet or phone").
 
 | Setting | Default |
 |---|---|
@@ -136,6 +136,12 @@ Scores shows each Section's Score Estimate, and the Total once all three have on
 The app takes a snapshot of its database each day, keeping the last 7 days and one from each of the 4 weeks before them, and before each risky change: an update, a new Taxonomy, a changed key that judges past answers again (a Key Override, a merge or a fixed Book Map), deleting a Profile and a restore. Snapshots are copied in a process of their own, so the app keeps answering while one is taken, and a copy takes its name only once it is whole and checked. The Curator's Data page lists them, takes one by hand, and restores one with the Curator passphrase entered again: the database goes back to how it was then, and the one it replaces is kept as a snapshot too. A restore waits while a job runs or waits to run, or a Learner is in a Mock, Sectional or timed set, paused or not, and says who. While it swaps the data, for a few seconds, Learners' requests wait rather than get lost. A timed set the snapshot held comes back paused; a Mock or Sectional it held goes on from where it was, the time between not counted. A copy you put in the snapshots folder yourself, named as the app names them, is listed too, and the app never deletes it. A full check of the database runs each week and after each restore, and a failed snapshot, a check that could not run or a damaged database shows on the Curator's Overview; if the check after a restore still finds damage, the Data page says how to put a snapshot file in place of the database.
 
 From your name at the top, your profile page downloads everything your profile holds as one JSON file, and deletes the profile, with your PIN if it has one; copies of it stay in the snapshots until the app deletes them, and in the install's last archive. The Curator's Data page sets a new PIN for a Learner who forgot theirs, deletes a Profile with the Curator passphrase entered again, and makes one archive of the whole install: the database, the Books and their page images. To move the install to another computer, unpack that archive into an empty data folder there before starting the app, and enter the LLM key again. If the Curator passphrase is lost, run `gmat-prep reset-passphrase` on the computer the app runs on.
+
+## Use it on a tablet or phone
+
+LAN mode lets other devices on your network use the app running on this computer. In Curator tools, open Devices and turn on LAN mode; the page lists the addresses to open on the other device, such as http://192.168.1.20:4747. Open one there, and the app asks for a pairing code: on this computer choose Show a pairing code, and enter the 6 digits on the other device with a name for it, such as "Asha's tablet". A code works once, within 5 minutes. Each device then opens Profiles as usual, and a Profile with a PIN still asks for it.
+
+The Devices page lists paired devices with when each was last seen; Revoke shuts one out at once, even part way through a download, and it needs a new code to come back; it also cuts off any download another device has under way, which can be started again. Turning LAN mode off shuts out every other device the same way. Only this computer can turn LAN mode on or off, show codes and revoke devices. LAN traffic is plain HTTP, which others on the same network could read, so use LAN mode on a network you trust, such as your home Wi-Fi, never on public Wi-Fi. A device pairs for the address it opened, so pair it from the address you will use. On macOS, allow incoming connections for the app if the firewall asks.
 
 ## Check it
 
