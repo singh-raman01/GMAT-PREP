@@ -1,7 +1,9 @@
 import { useCallback, useState } from "react"
 import type { WeakAreaView } from "../../../src/api/Analytics.ts"
 import { call } from "../api.ts"
-import { navigate } from "../router.ts"
+import { useLessonOn } from "../lessons/available.ts"
+import { lessonPath } from "../lessons/paths.ts"
+import { linkProps, navigate } from "../router.ts"
 import { levelText, paceText, plural, useReading } from "./reading.ts"
 
 // Weak Areas: the Skills and Question Types that cost the most points, the
@@ -19,6 +21,22 @@ const shareText = (frequency: number) =>
     : frequency < 0.005
     ? "It carries under 1% of the exam's weight."
     : `It carries about ${Math.round(frequency * 100)}% of the exam's weight, a secondary Skill counting half.`
+
+// The part of the Weak Area's Lesson that comes before its set, once the
+// Lesson is approved: the whole of it for a Concept gap, its ways to solve
+// for a Wrong approach.
+const LessonLink = ({ area }: { readonly area: WeakAreaView }) => {
+  const lesson = useLessonOn(area.lesson === null ? undefined : area.ability.scope.id)
+  if (lesson === undefined || area.lesson === null) return null
+  return (
+    <a className="button button-quiet" {...linkProps(lessonPath(lesson.subject.id, area.lesson))}>
+      {area.lesson === "methods" ? "Read the ways to solve it" : "Read the Lesson"}
+      <span className="visually-hidden">
+        {area.lesson === "methods" ? `, from the Lesson on ${lesson.subject.name}` : ` on ${lesson.subject.name}`}
+      </span>
+    </a>
+  )
+}
 
 export const WeakAreas = ({ onFailure }: { readonly onFailure: (failure: { readonly _tag: string }) => void }) => {
   const read = useCallback(() => call((client) => client.analytics.weakAreas()), [])
@@ -79,6 +97,7 @@ export const WeakAreas = ({ onFailure }: { readonly onFailure: (failure: { reado
                   {area.ability.slow && area.ability.pace !== null ? ` Slow: your right answers take ${paceText(area.ability.pace)}.` : ""}
                   {mixText(area)}
                 </span>
+                <LessonLink area={area} />
                 <button
                   type="button"
                   className="button button-quiet"

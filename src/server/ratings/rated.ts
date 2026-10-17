@@ -2,7 +2,7 @@ import { and, eq, inArray, isNotNull, sql } from "drizzle-orm"
 import { Effect } from "effect"
 import { Db } from "../db/Database.ts"
 import { questions, responses, servedQuestions, sessions } from "../db/schema.ts"
-import { mergeTargets, paperSeenBy } from "../practice/history.ts"
+import { mergeTargets, seenWithoutSessionsBy } from "../practice/history.ts"
 
 // Rated Responses: a Profile's final Response to a Question in the Session
 // where the Question was first Seen, when that Session was timed and the
@@ -44,8 +44,8 @@ export const firstSeenOf = (seen: ReadonlyArray<SeenEvent>): ReadonlyMap<string,
   return firstSeen
 }
 
-// A Paper Mark's sightings, which no Session served.
-export const paperEvents = (paperSeen: ReadonlyMap<string, number>): Array<SeenEvent> =>
+// Sightings no Session served: Paper Marks and Lessons.
+export const unservedEvents = (paperSeen: ReadonlyMap<string, number>): Array<SeenEvent> =>
   [...paperSeen].map(([questionId, at]) => ({ questionId, sessionId: null, timed: false, at }))
 
 // One Profile's Rated Responses, by id.
@@ -89,7 +89,7 @@ export const ratedAmong = (profileId: string, questionIds: ReadonlyArray<string>
       .innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
       .where(and(eq(sessions.profileId, profileId), inArray(servedQuestions.questionId, ids))))
       .map((event): SeenEvent => ({ ...event, questionId: resolve(event.questionId) }))
-      .concat(paperEvents(yield* paperSeenBy(profileId)))
+      .concat(unservedEvents(yield* seenWithoutSessionsBy(profileId)))
     const facts = (yield* db.select({
       id: responses.id,
       sessionId: responses.sessionId,

@@ -39,6 +39,7 @@ const inputs = (overrides: Partial<PlanInputs["settings"]> = {}, state: Partial<
     diagnostic: "done",
     taken: [],
     todayWork: [],
+    lessons: [],
     ...state,
     start: state.start ?? state.today ?? Monday,
     // A pending Diagnostic has every Section still to take unless said.
@@ -60,6 +61,7 @@ const doneItem = (day: string, fields: Partial<PlannedItem> = {}): PlannedItem =
   practice: { section: "quant", timed: true, size: 10, near: 0 },
   weakArea: null,
   remedy: null,
+  lesson: null,
   minutes: 26,
   ...fields
 })
@@ -478,6 +480,56 @@ describe("Plan size", () => {
   })
 })
 
+describe("Lessons in the plan", () => {
+  const lesson = (subject: string, done = { done: false, methodsDone: false }) => ({
+    subject,
+    lessonId: `lesson-${subject}`,
+    minutes: 25,
+    methodsMinutes: 6,
+    ...done
+  })
+  const weakAreas = (topMistake: string) => [
+    { kind: "skill" as const, id: "quant.percents", name: "Percents", section: "quant", priority: 0.3, ability: -0.2, slow: false, topMistake, topTrap: null }
+  ]
+  const lessonsIn = (plan: ReturnType<typeof buildPlan>) => plan.days.flatMap((day) => day.items.filter((item) => item.kind === "lesson"))
+
+  test("a Concept gap gets the whole Lesson once, before the Weak Area's set that day", () => {
+    const plan = buildPlan(inputs({}, { weakAreas: weakAreas("concept-gap"), lessons: [lesson("quant.percents")] }))
+    const planned = lessonsIn(plan)
+    expect(planned.map((item) => [item.day, item.lesson, item.minutes])).toEqual([
+      [Monday, { id: "lesson-quant.percents", subject: "quant.percents", part: "whole" }, 25]
+    ])
+    const monday = itemsOn(plan, Monday)
+    const at = monday.findIndex((item) => item.kind === "lesson")
+    expect(monday[at + 1]).toMatchObject({ kind: "practice", weakArea: { id: "quant.percents" } })
+  })
+
+  test("a Wrong approach gets the Lesson's methods; a Lesson done, or a Weak Area with another Mistake Type, gets none", () => {
+    const methods = buildPlan(inputs({}, { weakAreas: weakAreas("wrong-approach"), lessons: [lesson("quant.percents")] }))
+    expect(lessonsIn(methods).map((item) => [item.lesson!.part, item.minutes])).toEqual([["methods", 6]])
+    const read = buildPlan(
+      inputs({}, { weakAreas: weakAreas("wrong-approach"), lessons: [lesson("quant.percents", { done: false, methodsDone: true })] })
+    )
+    expect(lessonsIn(read)).toEqual([])
+    const done = buildPlan(
+      inputs({}, { weakAreas: weakAreas("concept-gap"), lessons: [lesson("quant.percents", { done: true, methodsDone: true })] })
+    )
+    expect(lessonsIn(done)).toEqual([])
+    const trap = buildPlan(inputs({}, { weakAreas: weakAreas("calculation-slip"), lessons: [lesson("quant.percents")] }))
+    expect(lessonsIn(trap)).toEqual([])
+    const none = buildPlan(inputs({}, { weakAreas: weakAreas("concept-gap"), lessons: [] }))
+    expect(lessonsIn(none)).toEqual([])
+  })
+
+  test("a Lesson no study day has room for is dropped with the reason", () => {
+    const plan = buildPlan(inputs({}, { weakAreas: weakAreas("concept-gap"), lessons: [{ ...lesson("quant.percents"), minutes: 400 }] }))
+    expect(lessonsIn(plan)).toEqual([])
+    expect(plan.dropped.filter((item) => item.kind === "lesson").map((item) => item.reason)).toEqual([
+      "No study day up to Sunday, Nov 15 has room for its 400 minutes."
+    ])
+  })
+})
+
 describe("Study Plan properties", () => {
   const settingsArb = fc.record({
     testDate: fc.option(fc.integer({ min: -3, max: 120 }).map((days) => plus(Monday, days)), { nil: null }),
@@ -501,7 +553,9 @@ describe("Study Plan properties", () => {
     taken: fc.array(
       fc.record({ back: fc.integer({ min: 0, max: 6 }), mock: fc.boolean(), section: fc.constantFrom("quant", "verbal", "di"), fromPlan: fc.boolean() }),
       { maxLength: 3 }
-    )
+    ),
+    // A Lesson on the Concept gap Weak Area, Percents, of any length.
+    lessonMinutes: fc.option(fc.integer({ min: 1, max: 300 }), { nil: null })
   })
   interface StateSample {
     readonly ability: number | null
@@ -512,6 +566,7 @@ describe("Study Plan properties", () => {
     readonly startBack: number
     readonly work: ReadonlyArray<{ readonly kind: "practice" | "retries" | "sectional"; readonly minutes: number; readonly area: string | null }>
     readonly taken: ReadonlyArray<{ readonly back: number; readonly mock: boolean; readonly section: string; readonly fromPlan: boolean }>
+    readonly lessonMinutes: number | null
   }
   const toInputs = (settings: PlanInputs["settings"], state: StateSample) => {
     const work = state.work.map((each) =>
@@ -537,7 +592,10 @@ describe("Study Plan properties", () => {
       allowed: { quant: state.allowed, verbal: state.allowed, di: state.allowed },
       retries: state.retries.map((retry) => ({ day: plus(Monday, retry.offset), timed: retry.offset % 2 === 0, minutes: retry.minutes, priority: retry.priority })),
       todayWork: work,
-      taken
+      taken,
+      lessons: state.lessonMinutes === null
+        ? []
+        : [{ subject: "quant.percents", lessonId: "lesson-1", minutes: state.lessonMinutes, methodsMinutes: 5, done: false, methodsDone: false }]
     })
   }
 

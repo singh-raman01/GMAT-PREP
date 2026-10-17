@@ -12,6 +12,8 @@ import { readingOutputs } from "../src/server/books/readings.ts"
 import { ColumnsTranslation, GeneratorOutputs, StatementTranslation } from "../src/server/generation/prompts.ts"
 import { surveyReply } from "../src/server/books/survey.ts"
 import { ConnectionTestReply } from "../src/server/jobs/kinds/connectionTest.ts"
+import { lessonOutput } from "../src/server/lessons/content.ts"
+import { lessonSubjects, strategiesOf, trapPatternsOf } from "../src/server/lessons/subjects.ts"
 import { strictJsonSchema } from "../src/server/llm/jsonSchema.ts"
 import { parseTaxonomy } from "../src/server/taxonomy/Taxonomy.ts"
 
@@ -120,7 +122,12 @@ describe("Strict JSON Schema", () => {
       approachesPartsOutput(taxonomy, statements),
       ...Object.values(GeneratorOutputs),
       StatementTranslation,
-      ColumnsTranslation
+      ColumnsTranslation,
+      // A Lesson for every subject, with and without Strategies to name.
+      ...lessonSubjects(taxonomy).map((subject) =>
+        lessonOutput(strategiesOf(taxonomy, subject).map((entry) => entry.id), trapPatternsOf(taxonomy, subject).map((entry) => entry.id), 3)
+      ),
+      lessonOutput([], [], 1)
     ]
     for (const output of outputs) {
       expect(() => strictJsonSchema(output as Schema.Codec<unknown, unknown>)).not.toThrow()

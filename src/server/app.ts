@@ -8,6 +8,7 @@ import { Generation } from "./generation/Generation.ts"
 import { JobFeed } from "./events/JobFeed.ts"
 import { ErrorLog } from "./learning/ErrorLog.ts"
 import { Plans } from "./plans/Plans.ts"
+import { Lessons } from "./lessons/Lessons.ts"
 import { Retries } from "./learning/Retries.ts"
 import { Analytics } from "./analytics/Analytics.ts"
 import { SiblingsReport } from "./learning/SiblingsReport.ts"
@@ -61,6 +62,7 @@ export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Plans.layer.pip
     Retries.layer,
     Scores.layer,
     PaperMarks.layer,
+    Lessons.layer,
     RemoveUploadLeftovers
   )),
   // The analytics, which Retries order their steps by.

@@ -108,7 +108,8 @@ export const simulate = (settings: SimSettings, options: SimOptions): SimResult 
           diagnostic,
           diagnosticSections: [...diagnosticSections],
           taken: taken.filter((event) => dayNumber(event.day) >= day - 6),
-          todayWork: [...todayWork]
+          todayWork: [...todayWork],
+          lessons: []
         }
       })
       plans.push({ day: today, plan, takenCount: taken.length })

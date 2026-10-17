@@ -13,6 +13,8 @@ import { SectionalScreen } from "./sectionals/SectionalScreen.tsx"
 import { SectionalsHome } from "./sectionals/SectionalsHome.tsx"
 import { ProfilePicker } from "./ProfilePicker.tsx"
 import { PlanPage } from "./plan/PlanPage.tsx"
+import { LessonPage, LessonsIndex } from "./lessons/LessonPage.tsx"
+import { lessonOfPath } from "./lessons/paths.ts"
 import { ProgressPage } from "./progress/ProgressPage.tsx"
 import { linkProps, usePath } from "./router.ts"
 import { TaxonomyBrowser } from "./TaxonomyBrowser.tsx"
@@ -160,6 +162,7 @@ const LearnerArea = ({ path, onSessionLost, onStopped }: {
   if (mockId !== undefined) {
     return <MockScreen key={mockId} id={mockId} onSessionLost={onSessionLost} onStopped={onStopped} />
   }
+  const lesson = lessonOfPath(path)
   const page = path === "/taxonomy"
     ? "taxonomy"
     : path === "/sectionals"
@@ -174,6 +177,8 @@ const LearnerArea = ({ path, onSessionLost, onStopped }: {
     ? "progress"
     : path === "/plan" || path.startsWith("/plan/")
     ? "plan"
+    : path === "/lessons" || path.startsWith("/lessons/")
+    ? "lessons"
     : "practice"
   const link = (to: string, name: typeof page, label: string) => (
     <a {...linkProps(to)} aria-current={page === name ? "page" : undefined}>
@@ -185,6 +190,7 @@ const LearnerArea = ({ path, onSessionLost, onStopped }: {
       <nav className="subnav" aria-label="Learner pages">
         {link("/", "practice", "Practice")}
         {link("/plan", "plan", "Plan")}
+        {link("/lessons", "lessons", "Lessons")}
         {link("/sectionals", "sectionals", "Sectionals")}
         {link("/mocks", "mocks", "Mocks")}
         {link("/progress", "progress", "Progress")}
@@ -206,6 +212,18 @@ const LearnerArea = ({ path, onSessionLost, onStopped }: {
         ? <ProgressPage path={path} onSessionLost={onSessionLost} onStopped={onStopped} />
         : page === "plan"
         ? <PlanPage path={path} onSessionLost={onSessionLost} onStopped={onStopped} />
+        : page === "lessons"
+        ? lesson === undefined
+          ? <LessonsIndex onSessionLost={onSessionLost} onStopped={onStopped} />
+          : (
+            <LessonPage
+              key={path}
+              subject={lesson.subjectId}
+              part={lesson.part}
+              onSessionLost={onSessionLost}
+              onStopped={onStopped}
+            />
+          )
         : <PracticeHome onSessionLost={onSessionLost} onStopped={onStopped} />}
     </>
   )
