@@ -30,6 +30,8 @@ export const warningFor = (limitMs: number) => Math.min(5 * 60 * 1000, limitMs /
 
 // The timer, which the Learner can hide, and a warning once the time left
 // reaches warningMs, shown and announced whether the timer is shown or not.
+// The warning says the time left when it showed: 5 minutes as the count
+// passes them, or less when the screen opens later than that.
 export const Timer = (
   { remainingMs, warningMs, hidden, onToggle }: {
     readonly remainingMs: number
@@ -39,9 +41,9 @@ export const Timer = (
   }
 ) => {
   const low = remainingMs <= warningMs
-  const [warned, setWarned] = useState(false)
+  const [warnedAt, setWarnedAt] = useState<number>()
   const [dismissed, setDismissed] = useState(false)
-  if (low && remainingMs > 0 && !warned) setWarned(true)
+  if (low && remainingMs > 0 && warnedAt === undefined) setWarnedAt(remainingMs)
   return (
     <div className="timer">
       {!hidden && (
@@ -52,9 +54,9 @@ export const Timer = (
       <button type="button" className="link-button" onClick={onToggle}>
         {hidden ? "Show the timer" : "Hide the timer"}
       </button>
-      {warned && !dismissed && (
+      {warnedAt !== undefined && !dismissed && (
         <p className="timer-warning" role="alert">
-          {spokenDuration(warningMs)} left.
+          {spokenDuration(warnedAt)} left.
           <button type="button" className="link-button" onClick={() => setDismissed(true)}>OK</button>
         </p>
       )}
