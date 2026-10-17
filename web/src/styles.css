@@ -1940,8 +1940,10 @@ input.number-input {
   margin-top: 0.6rem;
 }
 
-/* A table scrolls sideways in its own box when it is wider than the pane. */
+/* A table scrolls sideways in its own box when it is wider than the pane.
+   Positioned, so text hidden for screen readers inside stays in the box. */
 .data-table-wrap {
+  position: relative;
   overflow-x: auto;
 }
 
@@ -2905,4 +2907,356 @@ input[type="date"] {
 .retry-list .swatch,
 .sibling-list .swatch {
   margin-right: -0.5rem;
+}
+
+/* Charts: SVG in the app's own colours, so they follow dark mode. A line
+   takes its Section's colour, or the ink of the page; a guide is dashed. */
+
+.tone-quant {
+  --tone: var(--quant);
+}
+
+.tone-verbal {
+  --tone: var(--verbal);
+}
+
+.tone-di {
+  --tone: var(--di);
+}
+
+.tone-ink {
+  --tone: var(--graphite);
+}
+
+.tone-guide {
+  --tone: var(--pencil);
+}
+
+.figure {
+  max-width: 44rem;
+  margin: 0 0 2.5rem;
+}
+
+.figure-title {
+  margin-bottom: 0.5rem;
+  font-weight: 700;
+}
+
+.chart {
+  display: block;
+  width: 100%;
+  max-width: 40rem;
+  height: auto;
+  overflow: visible;
+}
+
+.chart-grid line {
+  stroke: var(--rule);
+  stroke-width: 1;
+}
+
+.chart-grid text,
+.chart-axis {
+  fill: var(--pencil);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-line polyline {
+  fill: none;
+  stroke: var(--tone);
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.chart-line.dashed polyline {
+  stroke-width: 1.5;
+  stroke-dasharray: 6 5;
+}
+
+.chart-line circle {
+  fill: var(--paper);
+  stroke: var(--tone);
+  stroke-width: 2;
+}
+
+.chart-band {
+  fill: var(--tone);
+  opacity: 0.14;
+}
+
+/* An Official Score: the highlighter, ringed in ink. */
+.chart-marker circle {
+  fill: var(--highlight);
+  stroke: var(--graphite);
+  stroke-width: 2;
+}
+
+.chart-column {
+  fill: var(--graphite);
+}
+
+.chart-column-now {
+  fill: var(--highlight);
+  stroke: var(--graphite);
+  stroke-width: 1.5;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.25rem;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+.chart-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.chart-legend svg {
+  width: 1.5rem;
+  height: 0.5rem;
+}
+
+.figure-numbers {
+  margin-top: 0.75rem;
+  font-size: var(--step-0);
+}
+
+.figure-numbers summary {
+  color: var(--pencil);
+  cursor: pointer;
+}
+
+.figure-numbers .data-table {
+  margin-top: 0.5rem;
+}
+
+/* A value as a bar beside its words, with a tick where the reference falls. */
+.bar {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 9rem;
+  height: 0.6rem;
+  border-radius: 2px;
+  background: var(--hover);
+  vertical-align: middle;
+}
+
+.bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 2px;
+  background: var(--tone);
+}
+
+.bar-reference {
+  position: absolute;
+  top: -0.25rem;
+  bottom: -0.25rem;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--graphite);
+}
+
+/* Progress: the views, each a quieter tab under the page's heading. */
+
+.viewnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1.5rem;
+  margin: 0 0 2rem;
+  font-size: var(--step-0);
+}
+
+.viewnav a {
+  padding: 0.35rem 0;
+  color: var(--pencil);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.viewnav a[aria-current="page"] {
+  color: var(--graphite);
+}
+
+.viewnav a:hover span {
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.3em;
+}
+
+.weak-list li > .button {
+  flex: none;
+}
+
+.weak-list .problem,
+.pace-list .problem {
+  flex: 1 1 100%;
+}
+
+.pace-list li,
+.spark-list li {
+  align-items: center;
+}
+
+.pace-list .set-name,
+.spark-list .set-name {
+  flex: 0 1 14rem;
+}
+
+.spark {
+  flex: none;
+  width: 7.5rem;
+  height: 1.75rem;
+}
+
+.spark polyline {
+  stroke-width: 2;
+}
+
+/* The Skill map: each row's gap is a bar from the middle, left for below the
+   Section's level. */
+
+.map-section h2 {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.map-topic {
+  margin: 1.5rem 0 0.5rem;
+  font-size: var(--step-1);
+}
+
+.map-list {
+  display: grid;
+  max-width: 52rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rule);
+}
+
+.map-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 1rem;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.map-name {
+  flex: 0 1 16rem;
+  font-weight: 700;
+}
+
+.map-row-quiet .map-name {
+  color: var(--pencil);
+  font-weight: 400;
+}
+
+.map-facts {
+  flex: 1 1 16rem;
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+.map-unanswered {
+  max-width: 52rem;
+  margin: 0.5rem 0 0;
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+.map-list + .map-unanswered {
+  margin-top: 0.6rem;
+}
+
+.gap-bar {
+  position: relative;
+  flex: none;
+  width: 9rem;
+  height: 0.6rem;
+  border-radius: 2px;
+  background: var(--hover);
+}
+
+.gap-bar-empty {
+  background: none;
+}
+
+.gap-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--section, var(--graphite));
+}
+
+.gap-middle {
+  position: absolute;
+  top: -0.25rem;
+  bottom: -0.25rem;
+  left: 50%;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--graphite);
+}
+
+.mock-pacing + .mock-pacing {
+  margin-top: 2rem;
+}
+
+/* The Curator's Overview */
+
+.overview-facts {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0 0 2.5rem;
+  padding: 0;
+  list-style: none;
+}
+
+/* Fixed columns, so the three Sections' tables line up. On a phone the bar
+   gives way to the numbers. */
+.coverage-table {
+  width: 100%;
+  max-width: 44rem;
+  table-layout: fixed;
+}
+
+.coverage-table .number {
+  width: 4.75rem;
+}
+
+.coverage-table .coverage-bar {
+  width: 10.5rem;
+}
+
+@media (max-width: 34rem) {
+  .coverage-table .number {
+    width: 4rem;
+  }
+
+  .coverage-table .coverage-bar {
+    display: none;
+  }
+}
+
+.measure {
+  max-width: 62ch;
+}
+
+.coverage-none th,
+.coverage-none td {
+  color: var(--pencil);
 }
