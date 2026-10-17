@@ -59,7 +59,7 @@ If a reply was unusable, "Check again" asks once more for the tags, solves, Appr
 
 Under Golden set, approve the first book's questions with their Skills, up to a hundred. Checking the golden set reads their pages again and tags them again with the current models. It passes when text, answer choices and keys are all exact and the Skills match yours on 90% or more. Run it after changing a model or prompt.
 
-The Curator area opens on an Overview: published questions by Skill and difficulty band, how many Mocks the Mock Reserve still covers, the Skills running out of questions or Siblings, what waits in the Review Queue, and this month's jobs and LLM spend.
+The Curator area opens on an Overview: published questions by Skill and difficulty band, how many Mocks the Mock Reserve still covers, the Skills running out of questions or Siblings, what waits in the Review Queue, the Learners' Problem Reports waiting for you, and this month's jobs and LLM spend.
 
 ## Generate Data Insights questions
 
@@ -119,7 +119,7 @@ Learners find the approved Lessons under Lessons, and a Debrief links to the Les
 
 ## Tutor Chat and reports
 
-Under any Debrief, Ask the tutor opens a chat about that question: ask why your answer went wrong or how to see it faster. The tutor sees the question, its key, the ways to solve it and your own answers and misses on its Skill, and takes the key as correct. Asking the same thing again shows the earlier reply at no cost. If you believe a question is wrong, Report a problem sends your words to the Curator's Review Queue; the question stays as it is until the Curator keeps it, changes its key or withdraws it, and your reports are listed at the bottom of the Error Log with the decision. Tutor Chat calls the model as you ask, so the Curator sets a monthly cap under Settings, 5 dollars until changed.
+Under the Debrief of any question you answered, Ask the tutor opens a chat about it: ask why your answer went wrong or how to see it faster. The tutor sees the question, its key, the ways to solve it and your own answers and misses on its Skill, and takes the key as correct. Asking the same thing again shows the earlier reply at no cost, unless the Curator has changed the key since; a reply written for an earlier key says so. If you close or reload the page while the tutor answers, the reply is kept and shows next time. If you believe a question is wrong, Report a problem sends your words to the Curator's Review Queue, and reporting it again before the Curator decides replaces them. The question stays as it is until the Curator keeps it, changes its key or withdraws it, and your reports are listed at the bottom of the Error Log with each question and the decision. A question the Curator has withdrawn takes no more messages or reports. Tutor Chat calls the model as you ask, so the Curator sets a monthly cap under Settings, 5 dollars until changed. Settings also shows when the model's API refused a Tutor Chat call, and what it said.
 
 ## Study Plan
 
