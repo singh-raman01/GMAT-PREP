@@ -1,8 +1,11 @@
-import { type Ref, useId } from "react"
+import { type Ref, useEffect, useId, useRef, useState } from "react"
 import { bandNames } from "../../../src/api/difficulty.ts"
-import type { Debrief, PracticePart, ResponseView, TrapNoteView } from "../../../src/api/Practice.ts"
+import type { ErrorLogEntry } from "../../../src/api/ErrorLog.ts"
+import type { Debrief, MissedPartView, MistakesView, PracticePart, ResponseView, TrapNoteView } from "../../../src/api/Practice.ts"
+import { call } from "../api.ts"
 import { spokenDuration } from "../format.ts"
 import { RichText } from "../RichText.tsx"
+import { reportUnsaved } from "../unsaved.ts"
 
 // What a Learner reads after a Question: whether the answer was right, why
 // a wrong option tempted, and the stored ways to solve it, fastest first.
@@ -54,7 +57,7 @@ const unratedText = (response: ResponseView, timed: boolean) =>
     : " You had seen this Question before, so this answer does not change your scores."
 
 export const DebriefPanel = (
-  { debrief, response, timed, headingRef, parts }: {
+  { debrief, response, timed, headingRef, parts, mistakes, onMistakeChanged, onFailure }: {
     readonly debrief: Debrief
     readonly response: ResponseView | null
     // Whether the set was timed.
@@ -62,6 +65,11 @@ export const DebriefPanel = (
     readonly headingRef?: Ref<HTMLHeadingElement>
     // The Question's Parts, to name the options of several.
     readonly parts?: ReadonlyArray<PracticePart>
+    // A wrong answer's Mistake Types, which the Learner can change.
+    readonly mistakes?: MistakesView | null
+    // Told the entry as saved after a change, and a failure the page handles.
+    readonly onMistakeChanged?: (entry: ErrorLogEntry) => void
+    readonly onFailure?: (failure: { readonly _tag: string }) => void
   }
 ) => {
   const titleId = useId()
@@ -95,12 +103,24 @@ export const DebriefPanel = (
         <aside key={`${note.part}-${note.label}`} className="trap-note" aria-label={trapTitle(note, parts)}>
           <h3>{trapTitle(note, parts)}</h3>
           <p>{note.note}</p>
-          <p className="trap-kind">
-            {note.mistakeType.name}
-            {note.trapPattern === null ? "" : `: ${note.trapPattern.name}`}
-          </p>
+          {
+            // Where the Learner sets the Mistake Type below, the note names
+            // only its Trap Pattern, so one Part never shows two.
+            mistakes != null && mistakes.parts.length > 0
+              ? note.trapPattern !== null && <p className="trap-kind">{note.trapPattern.name}</p>
+              : (
+                <p className="trap-kind">
+                  {note.mistakeType.name}
+                  {note.trapPattern === null ? "" : `: ${note.trapPattern.name}`}
+                </p>
+              )
+          }
         </aside>
       ))}
+
+      {mistakes != null && mistakes.parts.length > 0 && (
+        <MistakeControls mistakes={mistakes} parts={parts} onChanged={onMistakeChanged} onFailure={onFailure} />
+      )}
 
       {debrief.approaches.length === 0
         ? <p className="quiet">No worked solution reaches this answer yet.</p>
@@ -124,4 +144,138 @@ export const DebriefPanel = (
         )}
     </section>
   )
+}
+
+type Basis = MissedPartView["basis"]
+
+const basisHint: Record<Basis, string> = {
+  learner: "You chose this. Your Error Log keeps it.",
+  timing: "The app chose this from your timing. Pick another if it fits better.",
+  option: "The app chose this from the option you picked. Pick another if it fits better.",
+  none: "Pick what went wrong, for your Error Log."
+}
+
+// What went wrong in each wrong Part, as the Error Log keeps it: the app's
+// choice until the Learner picks another, with one tap. A Part sends one
+// save at a time: picks made while one is on its way wait, and only the
+// latest is sent next, so arrowing through the choices stores where the
+// Learner stops, in order. Every save that lands is recorded and passed on,
+// so a failed one puts back what was saved last, unless a newer pick is on
+// its way. A save that fails after the control has closed is reported by
+// the app.
+const MistakeControls = (
+  { mistakes, parts, onChanged, onFailure }: {
+    readonly mistakes: MistakesView
+    readonly parts: ReadonlyArray<PracticePart> | undefined
+    readonly onChanged: ((entry: ErrorLogEntry) => void) | undefined
+    readonly onFailure: ((failure: { readonly _tag: string }) => void) | undefined
+  }
+) => {
+  type Choice = { readonly id: string | null; readonly basis: Basis }
+  const [chosen, setChosen] = useState<ReadonlyMap<number, Choice>>(
+    () => new Map(mistakes.parts.map((part) => [part.part, { id: part.mistakeType?.id ?? null, basis: part.basis }]))
+  )
+  const [problems, setProblems] = useState<ReadonlyMap<number, string>>(new Map())
+  const saved = useRef(new Map(chosen))
+  const queue = useRef(new Map<number, { sending: boolean; next: string | undefined }>())
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+  const name = useId()
+  const several = (parts?.length ?? 1) > 1
+
+  const send = async (part: number) => {
+    const slot = queue.current.get(part)
+    if (slot === undefined || slot.sending || slot.next === undefined) return
+    const mistakeType = slot.next
+    slot.next = undefined
+    slot.sending = true
+    const result = await call((client) =>
+      client.errorLog.setMistakeType({
+        params: { questionId: mistakes.questionId },
+        payload: { responseId: mistakes.responseId, part, mistakeType }
+      })
+    )
+    slot.sending = false
+    if (result._tag === "Success") {
+      saved.current.set(part, { id: mistakeType, basis: "learner" })
+      onChanged?.(result.success)
+    }
+    // A newer pick waits: its reply decides what shows.
+    if (slot.next !== undefined) return void send(part)
+    if (result._tag === "Success") return
+    if (result.failure._tag === "NotUnlocked") return onFailure?.(result.failure)
+    if (!mounted.current) {
+      return reportUnsaved("A Mistake Type you picked was not saved. Open the Question in your Error Log to set it again.")
+    }
+    const before = saved.current.get(part)
+    if (before !== undefined) setChosen((current) => new Map(current).set(part, before))
+    setProblems((current) =>
+      new Map(current).set(
+        part,
+        several ? `The change for ${partName(part, parts)} was not saved. Try again.` : "That change was not saved. Try again."
+      )
+    )
+  }
+
+  const choose = (part: number, mistakeType: string) => {
+    setChosen((current) => new Map(current).set(part, { id: mistakeType, basis: "learner" }))
+    setProblems((current) => {
+      const next = new Map(current)
+      next.delete(part)
+      return next
+    })
+    const slot = queue.current.get(part) ?? { sending: false, next: undefined }
+    slot.next = mistakeType
+    queue.current.set(part, slot)
+    void send(part)
+  }
+
+  return (
+    <div className="mistakes">
+      {mistakes.parts.map((part) => {
+        const current = chosen.get(part.part)
+        const label = several ? partName(part.part, parts) : undefined
+        const problem = problems.get(part.part)
+        return (
+          <fieldset key={part.part} className="mistake-choice">
+            <legend>Mistake Type{label === undefined ? "" : ` in ${label}`}</legend>
+            <div className="mistake-options">
+              {mistakes.choices.map((choice) => (
+                <label key={choice.id} className="mistake-option">
+                  <input
+                    type="radio"
+                    name={`${name}-${part.part}`}
+                    checked={current?.id === choice.id}
+                    onChange={() => choose(part.part, choice.id)}
+                  />
+                  {choice.name}
+                </label>
+              ))}
+            </div>
+            <p className="hint">{basisHint[current?.id == null ? "none" : current.basis]}</p>
+            {problem !== undefined && <p className="problem" role="alert">{problem}</p>}
+          </fieldset>
+        )
+      })}
+    </div>
+  )
+}
+
+const partName = (position: number, parts: ReadonlyArray<PracticePart> | undefined) => {
+  const part = parts?.find((each) => each.position === position)
+  switch (part?.kind) {
+    case "two-choice":
+      return `statement ${position + 1}`
+    case "dropdown":
+      return `blank ${position + 1}`
+    case "column-choice":
+      return part.prompt ?? `column ${position + 1}`
+    default:
+      return `part ${position + 1}`
+  }
 }

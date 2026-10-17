@@ -678,7 +678,7 @@ const Report = ({ view, onFailure }: { readonly view: SectionalView; readonly on
       }`
       : undefined,
     report.rescored
-      ? "An answer key changed after the Section closed, so these results and the score follow the new key."
+      ? "An answer key changed after the Section closed, so these results and the score follow the current keys."
       : undefined
   ].filter((note) => note !== undefined)
   return (
@@ -778,7 +778,14 @@ const ResultRow = (
             <RichText source={served.question.stem} />
             <AnsweredOptions served={served} />
             {served.debrief !== null && (
-              <DebriefPanel debrief={served.debrief} response={served.response} timed parts={served.question.parts} />
+              <DebriefPanel
+                debrief={served.debrief}
+                response={served.response}
+                timed
+                parts={served.question.parts}
+                mistakes={served.mistakes}
+                onFailure={onFailure}
+              />
             )}
           </>
         )}

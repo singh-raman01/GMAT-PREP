@@ -50,6 +50,7 @@ import {
   readSelection
 } from "../practice/history.ts"
 import { scoreLinesOf } from "../ratings/OfficialScores.ts"
+import { sessionMistakes } from "../learning/facts.ts"
 import { ratedAmong } from "../ratings/rated.ts"
 import { rateSession } from "../ratings/rateSession.ts"
 import { type ScoreLine, UncalibratedLine } from "../ratings/scale.ts"
@@ -128,6 +129,7 @@ export class Sectionals extends Context.Service<Sectionals, {
       const settings = yield* Settings
       const taxonomy = (yield* Taxonomy).view
       const names = namesOf(taxonomy)
+      const mistakeChoices = taxonomy.mistakeTypes.map((each) => names.named(each.id))
       // Requests and the clock's ticks take turns.
       const oneAtATime = (yield* Semaphore.make(1)).withPermits(1)
       const run = <A, E>(effect: Effect.Effect<A, E, Db>) => effect.pipe(Effect.provideService(Db, db), Effect.orDie)
@@ -498,19 +500,35 @@ export class Sectionals extends Context.Service<Sectionals, {
           readonly marked: ReadonlySet<string>
           readonly resolve: (id: string) => string
           readonly revealed: boolean
+          // The time the first answer took; a change in Review & Edit takes none.
+          readonly firstTimeMs?: number | undefined
         },
         final: ResponseRow | undefined
       ) =>
         Effect.gen(function*() {
-          const stored = (yield* run(storedQuestions([row.questionId]))).get(row.questionId)
+          // A Question since merged shows as served, judged by the one it
+          // became, as the Error Log judges it.
+          const target = context.resolve(row.questionId)
+          const read = yield* run(storedQuestions([...new Set([row.questionId, target])]))
+          const stored = read.get(row.questionId)
           if (stored === undefined) return yield* Effect.die(new Error(`Served Question ${row.questionId} is missing`))
+          const judged = read.get(target) ?? stored
           const over = context.revealed
           const question = practiceQuestion(stored, names, null)
           const selection = final === undefined ? [] : readSelection(final.selection)
-          const keys = stored.parts.map((part) => ({ position: part.position, key: part.key }))
+          const keys = judged.parts.map((part) => ({ position: part.position, key: part.key }))
           const rated = over && final !== undefined
             ? (yield* run(ratedAmong(session.profileId, [row.questionId]))).has(final.id)
             : false
+          const wrong = final !== undefined && (final.kind === "time-out" || !isCorrect(selection, keys))
+          const mistakes = over && wrong
+            ? yield* run(sessionMistakes(session, row.questionId, {
+              overrides: yield* settings.targetTimes,
+              names,
+              choices: mistakeChoices,
+              resolve: context.resolve
+            }))
+            : null
           return new ServedView({
             position: row.position,
             question: over ? question : new PracticeQuestion({ ...question, source: null }),
@@ -518,12 +536,13 @@ export class Sectionals extends Context.Service<Sectionals, {
             response: !over || final === undefined ? null : new ResponseView({
               selection,
               guessed: false,
-              timeSpentMs: final.timeSpentMs,
+              timeSpentMs: context.firstTimeMs ?? final.timeSpentMs,
               correct: final.kind !== "time-out" && isCorrect(selection, keys),
               rated,
               timedOut: final.kind === "time-out"
             }),
-            debrief: over ? debriefOf(stored, selection, names) : null
+            debrief: over ? debriefOf(judged, selection, names) : null,
+            mistakes
           })
         })
 
@@ -810,11 +829,12 @@ export class Sectionals extends Context.Service<Sectionals, {
           const served = yield* servedOf(id)
           const row = served.find((each) => each.position === position)
           if (row === undefined) return yield* outOfStep(session, caller.device, "not-current")
-          const final = (yield* responsesOf(id)).findLast((each) => each.questionId === row.questionId)
+          const given = (yield* responsesOf(id)).filter((each) => each.questionId === row.questionId)
+          const final = given.at(-1)
           const marked = yield* run(bookmarkedBy(session.profileId))
           const resolve = yield* run(mergeTargets)
           return new SectionalQuestion({
-            served: yield* servedView(session, row, { marked, resolve, revealed: shown }, final),
+            served: yield* servedView(session, row, { marked, resolve, revealed: shown, firstTimeMs: given[0]?.timeSpentMs }, final),
             selection: final === undefined || final.kind === "time-out" ? null : readSelection(final.selection)
           })
         })

@@ -41,6 +41,7 @@ import {
   sessions,
   sources
 } from "../db/schema.ts"
+import { sessionMistakes } from "../learning/facts.ts"
 import { scoreEstimatesOf, scoreEstimateView } from "../ratings/estimates.ts"
 import { rateSession } from "../ratings/rateSession.ts"
 import { ratedAmong } from "../ratings/rated.ts"
@@ -199,6 +200,7 @@ export class Practice extends Context.Service<Practice, {
       const settings = yield* Settings
       const taxonomy = (yield* Taxonomy).view
       const names = namesOf(taxonomy)
+      const mistakeChoices = taxonomy.mistakeTypes.map((each) => names.named(each.id))
       // Requests and the clock's ticks take turns.
       const oneAtATime = (yield* Semaphore.make(1)).withPermits(1)
       // Reads shared with other modules; a failed query is a defect.
@@ -454,16 +456,30 @@ export class Practice extends Context.Service<Practice, {
         }
       ) =>
         Effect.gen(function*() {
-          const stored = (yield* run(storedQuestions([row.questionId]))).get(row.questionId)
+          // A Question since merged shows as served, judged by the one it
+          // became, as the Error Log judges it.
+          const target = context.resolve(row.questionId)
+          const read = yield* run(storedQuestions([...new Set([row.questionId, target])]))
+          const stored = read.get(row.questionId)
           if (stored === undefined) return yield* Effect.die(new Error(`Served Question ${row.questionId} is missing`))
+          const judged = read.get(target) ?? stored
           const response = finalFor(context.answers, row.questionId)
           const selection = response === undefined ? [] : readSelection(response.selection)
-          const keys = stored.parts.map((part) => ({ position: part.position, key: part.key }))
+          const keys = judged.parts.map((part) => ({ position: part.position, key: part.key }))
           // A timed set keeps its Debriefs, and whether answers were right,
           // for the end.
           const over = session.status === "finished"
           const shown = over || (!session.timed && response !== undefined)
           const place = config.places?.find((each) => each.questionId === row.questionId)
+          const wrong = response !== undefined && (response.kind === "time-out" || !isCorrect(selection, keys))
+          const mistakes = shown && wrong
+            ? yield* run(sessionMistakes(session, row.questionId, {
+              overrides: yield* settings.targetTimes,
+              names,
+              choices: mistakeChoices,
+              resolve: context.resolve
+            }))
+            : null
           return new ServedView({
             position: row.position,
             question: practiceQuestion(stored, names, config.bookId, place),
@@ -476,7 +492,8 @@ export class Practice extends Context.Service<Practice, {
               rated: context.rated.has(response.id),
               timedOut: response.kind === "time-out"
             }),
-            debrief: shown ? debriefOf(stored, selection, names) : null
+            debrief: shown ? debriefOf(judged, selection, names) : null,
+            mistakes
           })
         })
 

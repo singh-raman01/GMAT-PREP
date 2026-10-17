@@ -8,6 +8,7 @@ import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { WorkerSupervisor } from "../worker/WorkerSupervisor.ts"
 import { BankHandlers, BooksHandlers, GenerationHandlers, GoldenHandlers, ReviewHandlers } from "./books.ts"
 import { CuratorHandlers, CuratorSessionLive } from "./curatorHandlers.ts"
+import { ErrorLogHandlers } from "./errorLog.ts"
 import { MocksHandlers } from "./mocks.ts"
 import { PaperMarksHandlers } from "./paperMarks.ts"
 import { PracticeHandlers } from "./practice.ts"
@@ -123,6 +124,7 @@ export const ApiRoutes = HttpApiBuilder.layer(Api).pipe(
     MocksHandlers,
     ScoresHandlers,
     PaperMarksHandlers,
+    ErrorLogHandlers,
     CuratorHandlers,
     BooksHandlers,
     ReviewHandlers,

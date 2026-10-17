@@ -1,0 +1,1 @@
+CREATE INDEX `mistake_labels_response` ON `mistake_labels` (`response_id`,`part`);

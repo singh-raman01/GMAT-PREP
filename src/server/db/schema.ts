@@ -669,6 +669,22 @@ export const responses = sqliteTable(
   ]
 )
 
+// The Learner's own Mistake Type for a wrong Part of a Response, in place of
+// the one the app fills in. Facts: the latest for a Response and Part stands,
+// and a rebuild keeps them.
+export const mistakeLabels = sqliteTable(
+  "mistake_labels",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    responseId: text("response_id").notNull().references(() => responses.id, { onDelete: "cascade" }),
+    part: integer("part").notNull(),
+    mistakeType: text("mistake_type").notNull(),
+    createdAt: integer("created_at").notNull()
+  },
+  (t) => [index("mistake_labels_profile").on(t.profileId), index("mistake_labels_response").on(t.responseId, t.part)]
+)
+
 // A Profile's Bookmarks: one per Question, whichever set marked it, so a
 // Bookmark can be cleared from any set that shows the Question.
 export const bookmarks = sqliteTable(

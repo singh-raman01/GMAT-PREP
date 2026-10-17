@@ -154,13 +154,39 @@ export class ResponseView extends Schema.Class<ResponseView>("gmat-prep/api/Resp
   timedOut: Schema.Boolean
 }) {}
 
+// A wrong Part of an answer in the Error Log, with its Mistake Type.
+export class MissedPartView extends Schema.Class<MissedPartView>("gmat-prep/api/MissedPartView")({
+  part: Schema.Int,
+  // The Part's statement or heading, for a Question of several Parts.
+  prompt: Schema.NullOr(Schema.String),
+  // The option picked; null when none was, as when time ran out.
+  picked: Schema.NullOr(Schema.String),
+  mistakeType: Schema.NullOr(Named),
+  // Where the Mistake Type came from: the Learner, who set it in place of the
+  // app's; the answer's timing; the picked option's note; or nowhere yet.
+  basis: Schema.Literals(["learner", "timing", "option", "none"]),
+  trapPattern: Schema.NullOr(Named)
+}) {}
+
+// A wrong answer's Mistake Types, which the Learner can change: the Error
+// Log entry and Response they belong to, each wrong Part, and the Mistake
+// Types to choose from.
+export class MistakesView extends Schema.Class<MistakesView>("gmat-prep/api/MistakesView")({
+  questionId: QuestionId,
+  responseId: Schema.String,
+  parts: Schema.Array(MissedPartView),
+  choices: Schema.Array(Named)
+}) {}
+
 export class ServedView extends Schema.Class<ServedView>("gmat-prep/api/ServedView")({
   position: Schema.Int,
   question: PracticeQuestion,
   bookmarked: Schema.Boolean,
   response: Schema.NullOr(ResponseView),
   // Once the Question is answered, or the set is over.
-  debrief: Schema.NullOr(Debrief)
+  debrief: Schema.NullOr(Debrief),
+  // With the Debrief of a wrong answer.
+  mistakes: Schema.NullOr(MistakesView)
 }) {}
 
 export class PracticeResult extends Schema.Class<PracticeResult>("gmat-prep/api/PracticeResult")({

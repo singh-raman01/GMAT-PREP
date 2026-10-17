@@ -88,6 +88,10 @@ Choose Mocks for the whole exam: the three Sections in the order you pick, each 
 
 Under Done on paper, mark the Books, or the pages of them, you worked through on paper. Pages are counted as the PDF counts them, from its first page. Their Questions count as seen: Mocks and Sectionals use them only when unseen ones run out, Practice Sets can use them, and answers to them never move your Score Estimates.
 
+## Error Log
+
+Every Question you answer wrong, or right but slowly in a timed set, or by a guess, goes into your Error Log, one entry each with every answer you gave it. A wrong answer's Debrief says what went wrong in each wrong part, as a Mistake Type the app picks from your answer and its timing; one tap changes it, and your choice is kept. An answer you fixed in Review & Edit stays out, and a Sectional's or Mock's answers come in only once their results show. Filter the log by Section, Question Type, Skill, Mistake Type (Not yet labelled finds the ones to label), Trap Pattern, Difficulty, Book, status or date, and open an entry to see the Question and its Debrief again. While a Sectional or Mock runs, the entries for its Questions wait until it ends.
+
 ## Scores
 
 Scores shows each Section's Score Estimate, and the Total once all three have one. Enter an Official Score from an official practice exam or the GMAT itself to calibrate them: each one is matched with your estimates as they stood that day, so it calibrates only the Sections you had an estimate for by then. One shifts each Section's scale to match it, and two or more fit it, as long as your estimates on those days were far enough apart to say how the scale runs.

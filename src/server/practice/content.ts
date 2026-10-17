@@ -92,6 +92,12 @@ export const storedQuestions = (ids: ReadonlyArray<string>) =>
     }).from(sources).innerJoin(books, eq(books.id, sources.bookId))
       .where(inArray(sources.questionId, wanted))
       .orderBy(asc(sources.createdAt))
+    // Grouped once, so many Questions cost no more than their rows.
+    const partsOf = Map.groupBy(partRows, (part) => part.questionId)
+    const optionsOf = Map.groupBy(optionRows, (option) => option.partId)
+    const notesOf = Map.groupBy(noteRows, (note) => note.partId)
+    const approachesOf = Map.groupBy(approachRows, (approach) => approach.questionId)
+    const sourcesOf = Map.groupBy(sourceRows, (source) => source.questionId)
     for (const { question, difficulty: value } of rows) {
       found.set(question.id, {
         id: question.id,
@@ -102,19 +108,16 @@ export const storedQuestions = (ids: ReadonlyArray<string>) =>
         primarySkill: question.primarySkill,
         difficulty: Number(value),
         enrichment: question.enrichment,
-        parts: partRows.filter((part) => part.questionId === question.id).map((part) => ({
+        parts: (partsOf.get(question.id) ?? []).map((part) => ({
           position: part.position,
           kind: part.kind as PartKind,
           prompt: part.prompt,
           key: part.key,
-          options: optionRows.filter((option) => option.partId === part.id).map((option) => ({
-            label: option.label,
-            text: option.text
-          })),
-          notes: new Map(noteRows.filter((note) => note.partId === part.id).map((note) => [note.position, note] as const))
+          options: (optionsOf.get(part.id) ?? []).map((option) => ({ label: option.label, text: option.text })),
+          notes: new Map((notesOf.get(part.id) ?? []).map((note) => [note.position, note] as const))
         })),
-        approaches: approachRows.filter((approach) => approach.questionId === question.id),
-        sources: sourceRows.filter((source) => source.questionId === question.id)
+        approaches: approachesOf.get(question.id) ?? [],
+        sources: sourcesOf.get(question.id) ?? []
       })
     }
     return found

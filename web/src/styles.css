@@ -191,6 +191,10 @@ mark {
   background: var(--hover);
 }
 
+.unsaved p {
+  margin: 0 0 0.5rem;
+}
+
 .topbar {
   display: flex;
   flex-wrap: wrap;
@@ -2726,4 +2730,173 @@ input[type="date"] {
 
 .group .set-list + .practice-fields {
   margin-top: 1.25rem;
+}
+
+/* The Error Log: filters over the list, then one entry per Question, which
+   opens to the Question, its Debrief and every answer given to it. */
+
+.error-filters {
+  margin: 1.5rem 0 0;
+  max-width: 64rem;
+}
+
+.error-filters summary {
+  min-height: 2.75rem;
+  padding: 0.6rem 0;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  gap: 0.75rem 1.25rem;
+  margin-top: 0.5rem;
+}
+
+.filter-grid select {
+  width: 100%;
+}
+
+/* A date field needs more room than a column gives it, once two fit. */
+@media (min-width: 23rem) {
+  .filter-grid .field-date {
+    grid-column: span 2;
+  }
+}
+
+.filter-grid input[type="date"] {
+  max-width: 100%;
+}
+
+.filter-count {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 1rem;
+  margin: 0.75rem 0 1rem;
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+.filter-count p {
+  margin: 0;
+}
+
+.error-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rule);
+  max-width: 52rem;
+}
+
+.error-entry {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.9rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.error-entry[data-status="withdrawn"] .error-about,
+.error-entry[data-status="withdrawn"] .error-stem {
+  color: var(--pencil);
+}
+
+.error-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+}
+
+.error-about {
+  flex: 1 1 14rem;
+  font-weight: 700;
+}
+
+.error-stem {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  max-width: 68ch;
+}
+
+.error-stem > * {
+  margin: 0;
+}
+
+.error-detail {
+  display: grid;
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+
+.history-title {
+  margin: 0.5rem 0 0;
+  font-size: var(--step-1);
+}
+
+.error-history {
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: var(--step-0);
+}
+
+/* A wrong Part's Mistake Type, in a Debrief: one tap picks it. */
+
+.mistakes {
+  display: grid;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+.mistake-choice {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.mistake-choice legend {
+  padding: 0;
+  font-weight: 700;
+}
+
+.mistake-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.5rem 0 0.25rem;
+}
+
+.mistake-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 2.75rem;
+  padding: 0 0.85rem;
+  border: 2px solid var(--field);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: var(--step-0);
+}
+
+.mistake-option:has(input:checked) {
+  border-color: var(--graphite);
+  font-weight: 700;
+}
+
+.mistake-option:has(input:focus-visible) {
+  outline: 3px solid var(--graphite);
+  outline-offset: 3px;
+}
+
+.mistake-option input {
+  width: 1.05rem;
+  height: 1.05rem;
+  margin: 0;
+  accent-color: var(--graphite);
 }
