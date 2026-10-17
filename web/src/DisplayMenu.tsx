@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from "react"
 import {
   changeDisplay,
   currentDisplay,
+  holdDisplayPanelOpen,
   onDisplayChanged,
   TextSizeNames,
   TextSizes,
@@ -9,8 +10,9 @@ import {
   Themes
 } from "./display.ts"
 
-// The top bar's Display button: this browser's colours and text size, on
-// every screen, the exam screen included (decision 126).
+// The Display button: this browser's colours and text size, at the top of
+// every screen, the exam screen and the screens before a Profile opens
+// included (decision 126).
 // The panel keeps this far from the screen's edges.
 const EdgeMargin = 16
 
@@ -21,7 +23,12 @@ export const DisplayMenu = () => {
   const menu = useRef<HTMLDivElement>(null)
   const button = useRef<HTMLButtonElement>(null)
   const panel = useRef<HTMLDivElement>(null)
+  const close = () => {
+    setOpen(false)
+    button.current?.focus()
+  }
   useEffect(() => onDisplayChanged(setDisplay), [])
+  useEffect(() => (open ? holdDisplayPanelOpen() : undefined), [open])
   // The panel lines up with the button's right edge, as the button sits at
   // the right of a wide top bar; on a phone the top bar wraps and the button
   // can sit at the left, so the panel lines up with its left edge instead,
@@ -51,24 +58,29 @@ export const DisplayMenu = () => {
   useEffect(() => {
     if (open) panel.current?.querySelector<HTMLInputElement>("input:checked")?.focus()
   }, [open])
-  // A click or focus outside closes it.
+  // A click or focus outside closes it, and so does Escape, wherever focus
+  // is, its button included.
   useEffect(() => {
     if (!open) return
     const outside = (event: Event) => {
       const target = event.target
       if (target instanceof Node && !panel.current?.contains(target) && !button.current?.contains(target)) setOpen(false)
     }
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return
+      event.preventDefault()
+      setOpen(false)
+      button.current?.focus()
+    }
     document.addEventListener("pointerdown", outside)
     document.addEventListener("focusin", outside)
+    document.addEventListener("keydown", escape)
     return () => {
       document.removeEventListener("pointerdown", outside)
       document.removeEventListener("focusin", outside)
+      document.removeEventListener("keydown", escape)
     }
   }, [open])
-  const close = () => {
-    setOpen(false)
-    button.current?.focus()
-  }
   return (
     <div ref={menu} className="display-menu">
       <button
@@ -82,19 +94,8 @@ export const DisplayMenu = () => {
         Display
       </button>
       {open && (
-        <div
-          ref={panel}
-          id={`${id}-panel`}
-          className="display-panel"
-          role="group"
-          aria-label="Display"
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault()
-              close()
-            }
-          }}
-        >
+        // Focusable, so a click on its background keeps focus in it.
+        <div ref={panel} id={`${id}-panel`} className="display-panel" role="group" aria-label="Display" tabIndex={-1}>
           <fieldset>
             <legend>Colours</legend>
             {Themes.map((theme) => (
@@ -103,7 +104,7 @@ export const DisplayMenu = () => {
                   type="radio"
                   name={`${id}-theme`}
                   checked={display.theme === theme}
-                  onChange={() => changeDisplay({ ...display, theme })}
+                  onChange={() => changeDisplay({ theme })}
                 />
                 {ThemeNames[theme]}
               </label>
@@ -117,7 +118,7 @@ export const DisplayMenu = () => {
                   type="radio"
                   name={`${id}-size`}
                   checked={display.textSize === textSize}
-                  onChange={() => changeDisplay({ ...display, textSize })}
+                  onChange={() => changeDisplay({ textSize })}
                 />
                 {TextSizeNames[textSize]}
               </label>
@@ -129,3 +130,12 @@ export const DisplayMenu = () => {
     </div>
   )
 }
+
+// The top of a screen with no top bar, such as the Profile picker: the
+// wordmark, and the Display button beside it.
+export const PlainHead = () => (
+  <div className="plain-head">
+    <p className="wordmark">GMAT prep</p>
+    <DisplayMenu />
+  </div>
+)

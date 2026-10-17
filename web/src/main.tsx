@@ -33,7 +33,8 @@ class CrashScreen extends Component<{ readonly children: ReactNode }, { readonly
   }
 }
 
-// This browser's colours and text size, before anything is drawn.
+// This browser's colours and text size, as display-boot.js set them before
+// the first paint, then as other tabs change them.
 startDisplay()
 
 const root = document.getElementById("root")

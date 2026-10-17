@@ -19,8 +19,10 @@ import { StimulusDetails, StimulusPane } from "../stimulus/StimulusPane.tsx"
 import { Calculator } from "../practice/Calculator.tsx"
 import { DebriefPanel } from "../practice/DebriefPanel.tsx"
 import { AnswerParts, type Picks } from "../practice/Parts.tsx"
-import { AnsweredOptions, isTyping } from "../practice/PracticeSet.tsx"
+import { examKey, keyPressOf } from "../practice/examKeys.ts"
+import { AnsweredOptions } from "../practice/PracticeSet.tsx"
 import { type ClockReading, Timer, useRemaining, warningFor } from "../practice/Timer.tsx"
+import { useTimerChoice } from "../practice/timerChoices.ts"
 
 // A Sectional on screen: one Question at a time with the clock running, then
 // Review & Edit while time is left, then the report.
@@ -171,7 +173,9 @@ const Running = (
   }
 ) => {
   const actions = useActions(onView, onFailure)
-  const [timerHidden, setTimerHidden] = useState(false)
+  // Hidden for the whole Mock, and dismissed for this Section's clock.
+  const [timerHidden, setTimerHidden] = useTimerChoice("hidden", view.mock?.id ?? view.id)
+  const [warningDismissed, setWarningDismissed] = useTimerChoice("dismissed", view.id)
   const [calculating, setCalculating] = useState(false)
   const [ending, setEnding] = useState(false)
   const calculatorToggle = useRef<HTMLButtonElement>(null)
@@ -179,17 +183,6 @@ const Running = (
   const dataInsights = view.section.id === "di"
   const remaining = useRemaining(reading)
   const warningMs = warningFor(view.clock.limitMs)
-
-  // The time left turns to a warning near the end, said once then.
-  const [announcement, setAnnouncement] = useState("")
-  const aboveWarning = useRef(remaining === undefined || remaining > warningMs)
-  useEffect(() => {
-    if (remaining === undefined) return
-    if (aboveWarning.current && remaining <= warningMs && remaining > 0) {
-      setAnnouncement(`${Math.ceil(remaining / 60_000)} minutes left.`)
-    }
-    aboveWarning.current = remaining > warningMs
-  }, [remaining, warningMs])
 
   // When the time shown runs out, the server ends the Section within a
   // second or two; read it then.
@@ -216,7 +209,9 @@ const Running = (
               remainingMs={remaining}
               warningMs={warningMs}
               hidden={timerHidden}
-              onToggle={() => setTimerHidden((hidden) => !hidden)}
+              onToggle={() => setTimerHidden(!timerHidden)}
+              dismissed={warningDismissed}
+              onDismiss={() => setWarningDismissed(true)}
             />
           )}
           {dataInsights && (
@@ -261,7 +256,6 @@ const Running = (
           }}
         />
       )}
-      <p className="visually-hidden" role="status">{announcement}</p>
       {view.clock.interrupted && (
         <p className="clock-note">The clock did not count time while the app was stopped or the computer slept.</p>
       )}
@@ -359,18 +353,12 @@ const QuestionStage = (
   // A to E pick an option and Enter goes on.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (locked || event.altKey || event.ctrlKey || event.metaKey || isTyping(event.target)) return
-      if (event.target instanceof Element && event.target.closest(".calculator, .display-menu") !== null) return
-      const label = event.key.toUpperCase()
-      if (lettered !== undefined && label.length === 1 && lettered.options.some((option) => option.label === label)) {
-        event.preventDefault()
-        pick(lettered.position, label)
-        return
-      }
-      if (event.key !== "Enter") return
-      if (event.target instanceof HTMLButtonElement || event.target instanceof HTMLAnchorElement) return
+      if (locked) return
+      const action = examKey(keyPressOf(event), lettered?.options.map((option) => option.label) ?? [])
+      if (action === undefined) return
       event.preventDefault()
-      submit()
+      if (action._tag === "Pick") pick(lettered!.position, action.label)
+      else submit()
     }
     document.addEventListener("keydown", onKey)
     return () => document.removeEventListener("keydown", onKey)

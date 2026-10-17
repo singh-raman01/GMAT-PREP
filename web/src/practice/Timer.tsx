@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react"
-import { minutesAndSeconds, spokenDuration } from "../format.ts"
+import { useEffect, useRef, useState } from "react"
+import { minutesAndSeconds } from "../format.ts"
 
 // The time left in a timed set. The server owns the clock: this counts down
 // from the time it last sent, and the set screen reads it again on every
@@ -28,21 +28,33 @@ export const useRemaining = (reading: ClockReading | undefined): number | undefi
 // of a set shorter than that allows.
 export const warningFor = (limitMs: number) => Math.min(5 * 60 * 1000, limitMs / 5)
 
+// What the warning says, from the time left when it showed, rounded up so
+// that it stays true while it shows: to whole minutes, or to tens of seconds
+// from 50 seconds down.
+export const warningText = (remainingMs: number) => {
+  if (remainingMs > 50_000) {
+    const minutes = Math.ceil(remainingMs / 60_000)
+    return `Under ${minutes} ${minutes === 1 ? "minute" : "minutes"} left.`
+  }
+  return `Under ${Math.max(1, Math.ceil(remainingMs / 10_000)) * 10} seconds left.`
+}
+
 // The timer, which the Learner can hide, and a warning once the time left
-// reaches warningMs, shown and announced whether the timer is shown or not.
-// The warning says the time left when it showed: 5 minutes as the count
-// passes them, or less when the screen opens later than that.
+// reaches warningMs, shown and announced whether the timer is shown or not,
+// until dismissed. The screen keeps both choices (timerChoices.ts).
 export const Timer = (
-  { remainingMs, warningMs, hidden, onToggle }: {
+  { remainingMs, warningMs, hidden, onToggle, dismissed, onDismiss }: {
     readonly remainingMs: number
     readonly warningMs: number
     readonly hidden: boolean
     readonly onToggle: () => void
+    readonly dismissed: boolean
+    readonly onDismiss: () => void
   }
 ) => {
   const low = remainingMs <= warningMs
   const [warnedAt, setWarnedAt] = useState<number>()
-  const [dismissed, setDismissed] = useState(false)
+  const toggle = useRef<HTMLButtonElement>(null)
   if (low && remainingMs > 0 && warnedAt === undefined) setWarnedAt(remainingMs)
   return (
     <div className="timer">
@@ -51,14 +63,24 @@ export const Timer = (
           <span className="visually-hidden">Time left:</span> {minutesAndSeconds(remainingMs)}
         </span>
       )}
-      <button type="button" className="link-button" onClick={onToggle}>
+      <button ref={toggle} type="button" className="link-button" onClick={onToggle}>
         {hidden ? "Show the timer" : "Hide the timer"}
       </button>
       {warnedAt !== undefined && !dismissed && (
-        <p className="timer-warning" role="alert">
-          {spokenDuration(warnedAt)} left.
-          <button type="button" className="link-button" onClick={() => setDismissed(true)}>OK</button>
-        </p>
+        <div className="timer-warning">
+          <p role="alert">{warningText(warnedAt)}</p>
+          <button
+            type="button"
+            className="link-button"
+            onClick={() => {
+              onDismiss()
+              // The button goes with the warning; focus stays by the timer.
+              toggle.current?.focus()
+            }}
+          >
+            Dismiss<span className="visually-hidden"> the time warning</span>
+          </button>
+        </div>
       )}
     </div>
   )

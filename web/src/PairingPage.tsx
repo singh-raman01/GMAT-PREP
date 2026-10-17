@@ -1,6 +1,7 @@
 import { type FormEvent, useId, useRef, useState } from "react"
 import { MaxDeviceName, PairingCodeLength } from "../../src/api/Lan.ts"
 import { call, type Refusal } from "./api.ts"
+import { PlainHead } from "./DisplayMenu.tsx"
 import { useFocusOnMount } from "./focus.ts"
 
 // What another device on the network sees until it is paired (decision
@@ -32,7 +33,7 @@ export const PairingPage = ({ refusal, onPaired, onStopped }: Props) => {
   if (refusal === "lan-off") {
     return (
       <main className="page page-narrow">
-        <p className="wordmark">GMAT prep</p>
+        <PlainHead />
         <h1 ref={heading} tabIndex={-1}>GMAT prep is not open to other devices</h1>
         <p className="lede">
           To use it here, turn on LAN mode on the computer GMAT prep runs on: open Curator tools there, then Devices.
@@ -73,7 +74,7 @@ export const PairingPage = ({ refusal, onPaired, onStopped }: Props) => {
 
   return (
     <main className="page page-narrow">
-      <p className="wordmark">GMAT prep</p>
+      <PlainHead />
       <h1 ref={heading} tabIndex={-1}>Pair this device</h1>
       <p className="lede">
         GMAT prep runs on another computer on this network. To use it here, open Curator tools on that computer, go

@@ -1,4 +1,5 @@
 import { type ReactNode, useId, useLayoutEffect, useRef, useState } from "react"
+import { onDisplayChanged } from "../display.ts"
 import { labelledColumns, QuestionSteps, ticksAcross } from "./ticks.ts"
 
 // The analytics' charts (docs/design.md, decision 78): drawn as SVG with the
@@ -34,16 +35,24 @@ export interface Guide {
   readonly label: string
 }
 
-// A chart is drawn at the width it is shown, up to MaxWidth, so its text is
-// the page's size on a phone as on a desktop rather than scaled down.
+// A chart is drawn as wide as it is shown, up to MaxWidth (the 40rem of
+// .chart), in units that are a pixel at the standard text size and grow
+// with a larger one. Its text, margins and label room grow with them, so
+// they keep to the page's text on a phone as on a desktop.
 const MaxWidth = 640
-const MinWidth = 280
+const MinWidth = 200
 const Height = 260
 const Margin = { top: 14, right: 16, bottom: 30, left: 44 }
+const StandardRem = 16
 
 // The room an axis label takes along the x axis, with space either side.
 const LabelRoom = 90
 const ColumnLabelRoom = 70
+
+// A chart's width in its own units, for the width of its box and the root
+// font size, both in CSS pixels.
+export const chartWidth = (boxPx: number, remPx: number) =>
+  Math.round(Math.min(MaxWidth, Math.max(MinWidth, (boxPx * StandardRem) / (remPx > 0 ? remPx : StandardRem))))
 
 const useWidth = () => {
   const ref = useRef<SVGSVGElement>(null)
@@ -51,11 +60,16 @@ const useWidth = () => {
   useLayoutEffect(() => {
     const box = ref.current?.parentElement
     if (box === null || box === undefined) return
-    const measure = () => setWidth(Math.round(Math.min(MaxWidth, Math.max(MinWidth, box.clientWidth))))
+    const measure = () =>
+      setWidth(chartWidth(box.clientWidth, parseFloat(getComputedStyle(document.documentElement).fontSize)))
     measure()
     const observer = new ResizeObserver(measure)
     observer.observe(box)
-    return () => observer.disconnect()
+    const stopFollowing = onDisplayChanged(measure)
+    return () => {
+      observer.disconnect()
+      stopFollowing()
+    }
   }, [])
   return [ref, width] as const
 }
