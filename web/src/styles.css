@@ -1360,6 +1360,27 @@ input[type="file"]::file-selector-button {
   list-style: none;
 }
 
+/* A Question with several Parts, as the Curator checks it: each Part's
+   number and words above its options. */
+.part-list {
+  display: grid;
+  gap: 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.part-item {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.part-number {
+  color: var(--pencil);
+  font-size: var(--step--1);
+  font-weight: 700;
+}
+
 .choice {
   display: grid;
   grid-template-columns: 2rem minmax(0, 1fr);
@@ -1824,51 +1845,63 @@ input.number-input {
   font-size: var(--step-0);
 }
 
-/* A passage beside its Question on a wide screen, above it on a narrow one.
-   On a wide screen it scrolls in its own pane, so the choices stay in view. */
-.with-passage {
+/* What a Question asks about, beside it on a wide screen and above it on a
+   narrow one. On a wide screen it scrolls in its own pane, so the choices
+   stay in view. */
+.with-stimulus {
   display: grid;
   gap: 1.5rem 2.5rem;
 }
 
-.with-passage > * {
+.with-stimulus > * {
   min-width: 0;
 }
 
-.passage {
+.stimulus {
+  display: grid;
+  gap: 0.75rem;
+  align-content: start;
   max-width: 68ch;
   padding: 1rem 1.25rem;
   border: 1px solid var(--rule);
   border-radius: var(--radius);
 }
 
-.passage-title {
-  margin-bottom: 0.6rem;
+.stimulus > *,
+.tab-panel > *,
+.stimulus-details > * {
+  min-width: 0;
+}
+
+.stimulus-title {
   color: var(--pencil);
   font-size: var(--step-0);
 }
 
-/* On a narrow screen the passage folds, under a title that opens it. */
-.passage summary {
+/* On a narrow screen the pane folds, under a title that opens it. */
+.stimulus > details > summary {
   cursor: pointer;
 }
 
-.passage summary .passage-title {
+.stimulus > details > summary .stimulus-title {
   display: inline;
-  margin: 0;
 }
 
-.passage details[open] summary {
-  margin-bottom: 0.6rem;
+.stimulus > details[open] > summary {
+  margin-bottom: 0.75rem;
+}
+
+.stimulus > details > :not(summary) + :not(summary) {
+  margin-top: 0.75rem;
 }
 
 @media (min-width: 64rem) {
-  .with-passage {
+  .with-stimulus {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     align-items: start;
   }
 
-  .passage {
+  .stimulus {
     position: sticky;
     top: 1rem;
     max-height: calc(100vh - 2rem);
@@ -1876,14 +1909,269 @@ input.number-input {
   }
 }
 
-.review-passage summary {
+/* Charts and figures are images on a white ground, in light and dark mode
+   alike, since a page or a chart is drawn on white. */
+.stimulus-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  padding: 0.5rem;
+  background: #fff;
+  border-radius: var(--radius);
+}
+
+.stimulus-details summary,
+.chart-data summary {
   cursor: pointer;
   font-weight: 700;
 }
 
-.review-passage .rich-text {
-  max-width: 68ch;
+.stimulus-details > :not(summary) {
   margin-top: 0.6rem;
+}
+
+/* A table scrolls sideways in its own box when it is wider than the pane. */
+.data-table-wrap {
+  overflow-x: auto;
+}
+
+.data-table {
+  border-collapse: collapse;
+  font-size: var(--step-0);
+  font-variant-numeric: tabular-nums;
+}
+
+.data-table caption {
+  text-align: left;
+}
+
+.data-table th,
+.data-table td {
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--rule);
+  text-align: left;
+  vertical-align: top;
+}
+
+.data-table thead th {
+  border-bottom-width: 2px;
+  font-weight: 700;
+}
+
+.data-table tbody th {
+  font-weight: 400;
+}
+
+.data-table .number {
+  text-align: right;
+}
+
+.sort-button {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.column-unit {
+  color: var(--pencil);
+  font-weight: 400;
+}
+
+.sort-mark {
+  color: var(--pencil);
+  font-size: 0.8em;
+}
+
+.tab-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.tab {
+  padding: 0.5rem 0.9rem;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: none;
+  color: var(--pencil);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tab[aria-selected="true"] {
+  border-color: var(--rule);
+  background: var(--paper);
+  color: var(--graphite);
+  margin-bottom: -1px;
+}
+
+.tab-panel {
+  display: grid;
+  gap: 0.75rem;
+  padding-top: 0.9rem;
+}
+
+/* The calculator: a display over a grid of keys, in the flow of the page so
+   it never covers the Question. */
+.calculator {
+  display: grid;
+  gap: 0.6rem;
+  width: min(100%, 18rem);
+  margin: 0.75rem 0;
+  padding: 0.9rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper);
+}
+
+.calculator-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.calculator-title {
+  font-size: var(--step-0);
+}
+
+.calculator-display {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  min-height: 2.5rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  font-size: var(--step-2);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.calculator-memory {
+  margin-right: auto;
+  color: var(--pencil);
+  font-size: var(--step-0);
+  font-weight: 700;
+}
+
+.calculator-keys {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+
+.calculator-key {
+  min-height: 2.6rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: none;
+  color: var(--graphite);
+  font: inherit;
+  font-size: var(--step-1);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.calculator-key.memory {
+  font-size: var(--step-0);
+}
+
+.calculator-key.operator,
+.calculator-key.equals {
+  font-weight: 700;
+}
+
+.calculator-key.wide {
+  grid-column: 1 / -1;
+}
+
+/* Statement rows and the two-column grid: a choice in each cell, the
+   words after. */
+.statement-rows,
+.column-grid {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.statement-rows th,
+.statement-rows td,
+.column-grid th,
+.column-grid td {
+  padding: 0.55rem 0.6rem;
+  border-bottom: 1px solid var(--rule);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.choice-head {
+  width: 1%;
+  white-space: nowrap;
+  font-size: var(--step-0);
+}
+
+.statement-head {
+  color: var(--pencil);
+  font-size: var(--step-0);
+  font-weight: 400;
+}
+
+.statement {
+  font-weight: 400;
+}
+
+.choice-cell {
+  width: 1%;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.choice-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  cursor: pointer;
+}
+
+.choice-label.with-text {
+  gap: 0.4rem;
+  justify-content: flex-start;
+}
+
+.statement-rows tr[data-right] .statement,
+.statement-rows tr[data-wrong] .statement {
+  font-weight: 700;
+}
+
+.blanks {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.blank-sentence {
+  line-height: 2.2;
+}
+
+.blank-sentence select {
+  max-width: 100%;
+}
+
+.part-prompt {
+  margin-bottom: 0.4rem;
+  font-weight: 700;
 }
 
 .practice-set h1.question-count {

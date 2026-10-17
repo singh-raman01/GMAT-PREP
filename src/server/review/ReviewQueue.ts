@@ -55,6 +55,7 @@ import { runGate } from "./gate.ts"
 import { QuestionRefresh, RefreshCap } from "./refreshJob.ts"
 import { assignUndecided, releaseUnfitting } from "./reserve.ts"
 import { drafts } from "./stranded.ts"
+import { stimulusViews } from "../stimuli/stimuli.ts"
 
 // The Curator's decisions on held Questions and unread pages. A Question the
 // Publish Gate is still checking (a draft) is not in the queue.
@@ -125,13 +126,8 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
         Effect.gen(function*() {
           if (ids.length === 0) return new Map<string, QuestionView>()
           const rows = yield* db.select().from(questions).where(inArray(questions.id, [...ids]))
-          const stimulusIds = rows.flatMap((row) => (row.stimulusId === null ? [] : [row.stimulusId]))
-          const passages = new Map(
-            (stimulusIds.length === 0
-              ? []
-              : yield* db.select({ id: stimuli.id, body: stimuli.body }).from(stimuli).where(inArray(stimuli.id, stimulusIds)))
-              .map((stimulus) => [stimulus.id, stimulus.body] as const)
-          )
+          const shown = yield* stimulusViews(rows.flatMap((row) => (row.stimulusId === null ? [] : [row.stimulusId])))
+            .pipe(Effect.provideService(Db, db))
           const partRows = yield* db.select().from(parts).where(and(inArray(parts.questionId, [...ids]), eq(parts.position, 0)))
           const partIds = partRows.map((part) => part.id)
           const optionRows = partIds.length === 0
@@ -175,7 +171,7 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
               id: QuestionId.make(row.id),
               section: row.section,
               questionType: row.questionType,
-              passage: row.stimulusId === null ? null : passages.get(row.stimulusId) ?? null,
+              stimulus: row.stimulusId === null ? null : shown.get(row.stimulusId) ?? null,
               stem: row.stem,
               options: choices.map((option) => ({ label: option.label, text: option.text })),
               key: part?.key ?? null,

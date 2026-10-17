@@ -20,6 +20,7 @@ import { useFocusOnMount } from "../focus.ts"
 import { linkProps } from "../router.ts"
 import { RichInline, RichText } from "../RichText.tsx"
 import { afterStreamClosed, useJobEvents } from "./jobEvents.ts"
+import { StimulusDetails } from "../stimulus/StimulusPane.tsx"
 
 interface Props {
   readonly onLocked: () => void
@@ -338,12 +339,7 @@ const OptionNote = ({ note, names }: { readonly note: OptionNoteView; readonly n
 
 const QuestionBody = ({ question, names }: { readonly question: QuestionView; readonly names: Names }) => (
   <div className="question-body">
-    {question.passage !== null && (
-      <details className="explanation">
-        <summary>The passage</summary>
-        <RichText source={question.passage} />
-      </details>
-    )}
+    {question.stimulus !== null && <StimulusDetails stimulus={question.stimulus} />}
     <RichText source={question.stem} />
     <ol className="choices">
       {question.options.map((option) => {
@@ -559,8 +555,8 @@ const ReviewItem = (
   const canPublish = item.reasons.every((reason) => PublishableReasons.has(reason.code))
   const repeats = item.related !== null && item.reasons.some((reason) => RepeatCodes.has(reason.code))
   // Two passages that differ only a little are one passage printed twice.
-  const otherPassage = repeats && question.passage !== null && item.related?.passage != null &&
-    item.related.passage !== question.passage
+  const otherPassage = repeats && question.stimulus?.kind === "passage" && item.related?.stimulus?.kind === "passage" &&
+    item.related.stimulus.body !== question.stimulus.body
   const override = question.keyOverrides.at(-1)
   return (
     <li className="review-item">

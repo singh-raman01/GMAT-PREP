@@ -64,10 +64,10 @@ export const TypeGroupLabels: Record<TypeGroup, string> = {
   mixed: "Mixed"
 }
 
-// The groups whose questions extraction reads so far. Sentence Correction is
-// a Retired item, so its questions are only counted; the other Data Insights
-// groups wait for a later version, and so do mixed pages of questions.
-export const ExtractedGroups: ReadonlySet<TypeGroup> = new Set(["ps", "cr", "rc", "ds"])
+// The groups whose questions extraction reads. Sentence Correction is a
+// Retired item, so its questions are only counted; mixed pages of questions
+// wait for a later version.
+export const ExtractedGroups: ReadonlySet<TypeGroup> = new Set(["ps", "cr", "rc", "ds", "ta", "gi", "tpa", "msr", "ir"])
 
 export const TypeGroupSections: Record<TypeGroup, "quant" | "verbal" | "di" | null> = {
   ps: "quant",

@@ -8,6 +8,15 @@ import { JobStepFailed } from "../jobs/JobKind.ts"
 import { LlmAdapter } from "../llm/LlmAdapter.ts"
 import { quoteData } from "../llm/quoting.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
+import {
+  diPrompts,
+  type GiReading,
+  type IrReading,
+  type MsrReading,
+  type PartsAnswersReading,
+  type TaReading,
+  type TpaReading
+} from "./diReadings.ts"
 
 // Extraction reads a page in the role the Book Map gives it: the questions
 // that start on it, the answers on an answer key page, the explanations that
@@ -89,9 +98,18 @@ export type PageReading =
   | { readonly role: "questions"; readonly group: "rc"; readonly value: RcReading }
   | { readonly role: "questions"; readonly group: "ds"; readonly value: typeof DsReading.Type }
   | { readonly role: "questions"; readonly group: "sc"; readonly value: typeof NumbersReading.Type }
-  | { readonly role: "answer-key"; readonly value: typeof AnswersReading.Type }
+  | { readonly role: "questions"; readonly group: "ta"; readonly value: typeof TaReading.Type }
+  | { readonly role: "questions"; readonly group: "gi"; readonly value: typeof GiReading.Type }
+  | { readonly role: "questions"; readonly group: "tpa"; readonly value: typeof TpaReading.Type }
+  | { readonly role: "questions"; readonly group: "msr"; readonly value: MsrReading }
+  | { readonly role: "questions"; readonly group: "ir"; readonly value: IrReading }
+  | { readonly role: "answer-key"; readonly value: typeof AnswersReading.Type | PartsAnswersReading }
   | { readonly role: "explanations"; readonly value: typeof ExplanationsReading.Type }
   | { readonly role: "difficulty-labels"; readonly value: typeof LabelsReading.Type }
+
+// Groups whose questions may have several parts, so their answer keys give
+// an answer for each part.
+export const PartsGroups: ReadonlySet<TypeGroup> = new Set(["ta", "gi", "tpa", "msr", "ir"])
 
 // The pages extraction reads: those of the groups it extracts, and Sentence
 // Correction's question numbers, to count them. Answer keys, explanations
@@ -272,6 +290,16 @@ Give every question number on the page with its label: "easy", "medium" or "hard
   } satisfies Prompt<typeof LabelsReading.Type>
 }
 
+const dataInsights = diPrompts(continuing, writing)
+const diQuestionPrompts = {
+  ta: { ...dataInsights.ta, needsNextPage: true },
+  gi: { ...dataInsights.gi, needsNextPage: true },
+  tpa: { ...dataInsights.tpa, needsNextPage: true },
+  msr: { ...dataInsights.msr, needsNextPage: true },
+  ir: { ...dataInsights.ir, needsNextPage: true },
+  partsAnswers: { ...dataInsights.partsAnswers, needsNextPage: false }
+}
+
 // The prompt for a page's role and group. The verbal ones list the
 // Taxonomy's Question Types.
 const promptFor = (role: MapRole, group: TypeGroup, taxonomy: TaxonomyView): Prompt<unknown> => {
@@ -285,9 +313,11 @@ const promptFor = (role: MapRole, group: TypeGroup, taxonomy: TaxonomyView): Pro
         ? verbalPrompts(taxonomy).rcPage
         : group === "ds"
         ? prompts.dsQuestions
+        : group === "ta" || group === "gi" || group === "tpa" || group === "msr" || group === "ir"
+        ? diQuestionPrompts[group]
         : prompts.psQuestions) as Prompt<unknown>
     case "answer-key":
-      return prompts.answers as Prompt<unknown>
+      return (PartsGroups.has(group) ? diQuestionPrompts.partsAnswers : prompts.answers) as Prompt<unknown>
     case "explanations":
       return prompts.explanations as Prompt<unknown>
     case "difficulty-labels":
@@ -297,7 +327,7 @@ const promptFor = (role: MapRole, group: TypeGroup, taxonomy: TaxonomyView): Pro
 
 // Every output schema extraction sends, for the strict-schema test.
 export const readingOutputs = (taxonomy: TaxonomyView): ReadonlyArray<Schema.Codec<unknown, unknown>> =>
-  [...Object.values(prompts), ...Object.values(verbalPrompts(taxonomy))].map((prompt) =>
+  [...Object.values(prompts), ...Object.values(verbalPrompts(taxonomy)), ...Object.values(diQuestionPrompts)].map((prompt) =>
     prompt.output as Schema.Codec<unknown, unknown>
   )
 

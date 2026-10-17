@@ -8,6 +8,7 @@ import {
   type LinkedItem,
   NearMatch,
   nearText,
+  optionNamed,
   settledType,
   similarity,
   trigrams
@@ -150,10 +151,11 @@ describe("Verbal and Data Sufficiency questions", () => {
       labels: []
     })
     const [first, second, fourth] = candidates(linked)
-    expect(first).toMatchObject({ section: "verbal", questionType: "verbal.rc-main-idea", passage: "The council met twice." })
-    expect(second).toMatchObject({ page: 6, questionType: "verbal.rc-application", passage: "The council met twice." })
+    const passage = { kind: "passage", body: "The council met twice." }
+    expect(first).toMatchObject({ section: "verbal", questionType: "verbal.rc-main-idea", stimulus: passage })
+    expect(second).toMatchObject({ page: 6, questionType: "verbal.rc-application", stimulus: passage })
     // No passage names the fourth, so it waits in the Review Queue.
-    expect(fourth?.passage).toBeNull()
+    expect(fourth?.stimulus).toBeNull()
     expect(candidateProblems(fourth!)).toEqual([
       { code: "structure", detail: "The readings do not say which passage it asks about." }
     ])
@@ -191,10 +193,37 @@ describe("Verbal and Data Sufficiency questions", () => {
       section: "di",
       questionType: "di.ds",
       stem: "Is n even?\n\n(1) n + 1 is odd.\n\n(2) 3n is even.",
-      options: DsOptions,
+      parts: [{ kind: "single-choice", prompt: null, options: DsOptions, key: "D" }],
       key: "D"
     })
     expect(linked[1]).toMatchObject({ _tag: "Skip", reason: "geometry" })
+  })
+})
+
+describe("A printed answer", () => {
+  const lettered = (texts: ReadonlyArray<string>) => texts.map((text, index) => ({ label: "ABCDE"[index]!, text }))
+
+  test("names the option with its letter, even when another option's words start with that letter", () => {
+    const cafe = lettered([
+      "Many commuters pass the cafe.",
+      "No other cafe opens early.",
+      "Most commuters buy coffee at the station.",
+      "Commuters have asked the cafe to open earlier.",
+      "The cafe's coffee is cheaper."
+    ])
+    expect(optionNamed(cafe, "C")).toBe("C")
+    expect(optionNamed(cafe, "(D)")).toBe("D")
+  })
+
+  test("names an option by its words, or by the start of exactly one option's words", () => {
+    const pair = lettered(["Yes", "No"])
+    expect(["Yes", "no", "Y", "N"].map((printed) => optionNamed(pair, printed))).toEqual(["A", "B", "A", "B"])
+    const menu = lettered(["less than", "about as much as", "more than"])
+    expect(optionNamed(menu, "more than")).toBe("C")
+    expect(optionNamed(menu, "B")).toBe("B")
+    expect(optionNamed(menu, "m")).toBe("C")
+    expect(optionNamed(lettered(["more than", "most"]), "mo")).toBeUndefined()
+    expect(optionNamed(menu, "twice")).toBeUndefined()
   })
 })
 
@@ -306,7 +335,10 @@ describe("Linking passages", () => {
         labels: []
       })
       expect(linked.filter((item) => item.page === 11).map((item) => [item._tag, item.number])).toEqual([["Skip", 1], ["Skip", 2]])
-      expect(candidates(linked).map((item) => item.passage)).toEqual(["Passage one about bees.", "Passage one about bees."])
+      expect(candidates(linked).map((item) => item.stimulus)).toEqual([
+        { kind: "passage", body: "Passage one about bees." },
+        { kind: "passage", body: "Passage one about bees." }
+      ])
     }
   })
 
@@ -333,7 +365,7 @@ describe("Linking passages", () => {
       labels: []
     })
     const [seven, eight] = candidates(linked)
-    expect(seven).toMatchObject({ passage: "First passage, which the book says serves 5 to 8.", rivalPassage: null })
+    expect(seven).toMatchObject({ stimulus: { kind: "passage", body: "First passage, which the book says serves 5 to 8." }, rival: null })
     expect(candidateProblems(seven!)).toEqual([])
     expect(candidateProblems(eight!)).toEqual([{
       code: "structure",
@@ -354,7 +386,7 @@ describe("Linking passages", () => {
       labels: []
     })
     const [only] = candidates(linked)
-    expect(only?.passage).toBeNull()
+    expect(only?.stimulus).toBeNull()
     expect(candidateProblems(only!)).toEqual([{ code: "structure", detail: "The readings do not say which passage it asks about." }])
   })
 })
@@ -367,13 +399,13 @@ describe("Data Sufficiency near matches", () => {
     ]
     for (const [q1, s1, q2, s2] of pairs) {
       const near = (question: string, statements: ReadonlyArray<string>) =>
-        trigrams(nearText("di.ds", dsStem(question, statements), DsOptions))
+        trigrams(nearText("di.ds", dsStem(question, statements), [{ prompt: null, options: DsOptions }]))
       expect(similarity(near(q1, s1), near(q2, s2))).toBeLessThan(NearMatch)
     }
     // A copy with other numbers still is one.
     const copy = similarity(
-      trigrams(nearText("di.ds", dsStem("What is the value of x?", ["2x + 3 = 11", "x^2 = 16"]), DsOptions)),
-      trigrams(nearText("di.ds", dsStem("What is the value of x?", ["3x + 2 = 14", "x^2 = 25"]), DsOptions))
+      trigrams(nearText("di.ds", dsStem("What is the value of x?", ["2x + 3 = 11", "x^2 = 16"]), [{ prompt: null, options: DsOptions }])),
+      trigrams(nearText("di.ds", dsStem("What is the value of x?", ["3x + 2 = 14", "x^2 = 25"]), [{ prompt: null, options: DsOptions }]))
     )
     expect(copy).toBeGreaterThanOrEqual(NearMatch)
   })

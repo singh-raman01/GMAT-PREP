@@ -11,6 +11,8 @@ import { bookMaps, books, goldenQuestions, goldenRunReadings, goldenRuns, golden
 import type { JobKind } from "../jobs/JobKind.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { type GoldenEntry, type GoldenItem, goldenReport, type GoldenTags } from "./goldenReport.ts"
+import { PartKind } from "../../api/Practice.ts"
+import { draftText } from "../stimuli/stimulusText.ts"
 
 // Checks the golden set against the current prompts and models: the pages
 // its Questions came from are read again, one a step, with their set's answer
@@ -30,16 +32,35 @@ const Checkpoint = Schema.Struct({
   index: Schema.Int
 })
 
+const Option_ = Schema.Struct({ label: Schema.String, text: Schema.String })
+
 export const GoldenExpected = Schema.Struct({
   questionType: Schema.String,
-  // The passage, for a Reading Comprehension Question.
+  // What it asks about, written out under its label; see stimulusText.ts.
+  stimulus: Schema.optional(Schema.NullOr(Schema.String)),
+  // An approval from before Stimuli of other kinds: an RC passage alone.
   passage: Schema.optional(Schema.NullOr(Schema.String)),
   stem: Schema.String,
-  options: Schema.Array(Schema.Struct({ label: Schema.String, text: Schema.String })),
+  // The first Part's options; parts gives every Part.
+  options: Schema.Array(Option_),
+  parts: Schema.optional(Schema.Array(Schema.Struct({
+    kind: PartKind,
+    prompt: Schema.NullOr(Schema.String),
+    options: Schema.Array(Option_)
+  }))),
+  // Each Part's key, joined.
   key: Schema.NullOr(Schema.String),
   primarySkill: Schema.String,
   secondarySkills: Schema.Array(Schema.String)
 })
+type GoldenExpected = typeof GoldenExpected.Type
+
+// What an approval expects, however old it is.
+const expectedStimulus = (expected: GoldenExpected) =>
+  expected.stimulus ?? (expected.passage === undefined || expected.passage === null ? null : `The passage:\n${expected.passage}`)
+
+const expectedParts = (expected: GoldenExpected) =>
+  expected.parts ?? [{ kind: "single-choice" as const, prompt: null, options: expected.options }]
 const decodeExpected = Schema.decodeUnknownSync(Schema.fromJsonString(GoldenExpected))
 const decodeRanges = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(MapRange)))
 export const encodeReport = Schema.encodeSync(Schema.fromJsonString(GoldenReport))
@@ -93,14 +114,28 @@ const latestRanges = (bookId: string) =>
     return { ranges: map === undefined ? [] : decodeRanges(map.ranges), pageCount: book?.pageCount ?? 0 }
   })
 
-// How many pages before its question a passage may start, when the Book's
-// own readings do not say.
+// How many pages before its question a passage or an MSR set may start,
+// when the Book's own readings do not say.
 const PassageReach = 3
 
-// The page a golden RC Question's passage starts on, as the Book's own
-// readings give it: the nearest page at or before the Question's, in its
-// set's ranges, whose reading has a passage naming it.
-const passagePage = (
+// Whether a page's reading names the question in a passage or an MSR set's
+// source.
+const names = (reading: PageReading, number: number) =>
+  reading.role !== "questions"
+    ? false
+    : reading.group === "rc"
+    ? reading.value.passages.some((passage) => passage.text.trim() !== "" && passage.questions.includes(number))
+    : reading.group === "msr"
+    ? reading.value.sources.some((source) => source.questions.includes(number))
+    : reading.group === "ir"
+    ? reading.value.msr.sources.some((source) => source.questions.includes(number))
+    : false
+
+// The page where what a golden Question asks about starts, as the Book's own
+// readings give it: an RC passage, or the first of an MSR set's sources.
+// Going back from the Question's page within its set's ranges, it is the
+// first of the nearest run of pages that name the Question.
+const stimulusPage = (
   bookId: string,
   row: { readonly page: number; readonly number: number },
   ranges: ReadonlyArray<MapRange>
@@ -112,21 +147,18 @@ const passagePage = (
         group: range.group
       }))
     ).toSorted((a, b) => b.page - a.page)
+    let start: number | undefined
     for (const { page, group } of pages) {
-      if (group !== "rc") continue
       const reading = yield* storedReading(bookId, page, "questions", group)
-      if (
-        Option.isSome(reading) && reading.value.role === "questions" && reading.value.group === "rc" &&
-        reading.value.value.passages.some((passage) => passage.text.trim() !== "" && passage.questions.includes(row.number))
-      ) {
-        return page
-      }
+      const naming = Option.isSome(reading) && names(reading.value, row.number)
+      if (naming) start = page
+      else if (start !== undefined) break
     }
-    return undefined
+    return start
   })
 
 // The pages to read again: each golden Question's own page, the pages from
-// where its passage starts, and every page of its set's answer key and
+// where its passage or sources start, and every page of its set's answer key and
 // explanations. Only its own set's pages are read, so another set's
 // numbers never mix in; questionPages holds each set's question pages.
 const plan = (questionIds: ReadonlyArray<string> | undefined) => Effect.gen(function*() {
@@ -154,9 +186,10 @@ const plan = (questionIds: ReadonlyArray<string> | undefined) => Effect.gen(func
       pages.set(page, range.group)
     }
     question(row.page)
-    // A passage starts on its question's page or before it.
-    if (own.group === "rc") {
-      const from = (yield* passagePage(bookId, row, asked)) ?? row.page - PassageReach
+    // A passage or an MSR set's sources start on its question's page or
+    // before it.
+    if (own.group === "rc" || own.group === "msr" || own.group === "ir") {
+      const from = (yield* stimulusPage(bookId, row, asked)) ?? row.page - PassageReach
       for (let page = Math.max(1, from); page < row.page; page++) question(page)
     }
     for (const range of mine.filter((each) => each.role === "answer-key" || each.role === "explanations")) {
@@ -210,9 +243,16 @@ const tagStep = (jobId: string, params: typeof Params.Type, index: number) =>
     const taxonomy = (yield* Taxonomy).view
     // Tagged with the input production tagging has, the Book's explanation
     // included.
+    const stimulus = expectedStimulus(row.expected)
+    const split = stimulus?.indexOf(":\n") ?? -1
     const tagged = yield* tagQuestion(jobId, taxonomy, {
-      ...row.expected,
-      stimulus: row.expected.passage ?? null,
+      questionType: row.expected.questionType,
+      stimulus: stimulus === null
+        ? null
+        : { label: stimulus.slice(0, Math.max(0, split)), text: stimulus.slice(split + 2) },
+      stem: row.expected.stem,
+      parts: expectedParts(row.expected),
+      key: row.expected.key,
       explanation: row.explanation
     }).pipe(
       Effect.catchTag("LlmInvalidReply", () => Effect.succeed(undefined))
@@ -267,9 +307,15 @@ const reportStep = (params: typeof Params.Type) =>
     const entries = planned.rows.map((row): GoldenEntry => {
       const found = linked.get(setKey(row.set))?.find((item) => item.number === row.number && item.page === row.page)
       const tagged = tags.find((each) => each.questionId === row.questionId)
+      const quoted = found?.stimulus === null || found === undefined ? null : draftText(found.stimulus)
       const item: GoldenItem | null = found === undefined
         ? null
-        : { passage: found.passage, stem: found.stem, options: found.options, key: found.key }
+        : {
+          stimulus: quoted === null ? null : `${quoted.label}:\n${quoted.text}`,
+          stem: found.stem,
+          parts: found.parts.map((part) => ({ prompt: part.prompt, options: part.options })),
+          key: found.key
+        }
       const again: GoldenTags | null = tagged === undefined || tagged.primarySkill === null
         ? null
         : {
@@ -283,7 +329,11 @@ const reportStep = (params: typeof Params.Type) =>
         questionId: row.questionId,
         set: row.set,
         number: row.number,
-        expected: { ...row.expected, passage: row.expected.passage ?? null },
+        expected: {
+          ...row.expected,
+          stimulus: expectedStimulus(row.expected),
+          parts: expectedParts(row.expected).map((part) => ({ prompt: part.prompt, options: part.options }))
+        },
         item,
         tags: again
       }

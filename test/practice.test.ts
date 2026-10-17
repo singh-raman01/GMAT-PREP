@@ -305,13 +305,13 @@ describe("Reading Comprehension passages", () => {
         const passages = yield* Effect.forEach(
           view.results,
           (result) => asha.api.practice.review({ params: { id: view.id, position: result.position } })
-        ).pipe(Effect.map((reviews) => reviews.map((each) => each.question.stimulus)))
+        ).pipe(Effect.map((reviews) => reviews.map((each) => each.question.stimulus?.body ?? null)))
         // Each passage's Questions sit together, whatever comes between.
         const runs = passages.filter((text, index) => text !== null && passages[index - 1] !== text)
         expect(new Set(runs).size).toBe(runs.length)
       }
       const started = yield* asha.api.practice.start({ payload: { choice: filters({ section: "verbal", size: 3 }) } })
-      expect(started.current?.question.stimulus).toMatch(/^Passage \d/)
+      expect(started.current?.question.stimulus).toMatchObject({ kind: "passage", body: expect.stringMatching(/^Passage \d/) })
     })))
 
   test("Practise 3 similar serves the Questions it picks about one passage one after another", () =>

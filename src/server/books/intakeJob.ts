@@ -9,6 +9,7 @@ import { ApiKeyStore } from "../settings/ApiKeyStore.ts"
 import { missingSettings, Settings, taskReadsImages } from "../settings/Settings.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { BookFiles } from "./BookFiles.ts"
+import { draftText } from "../stimuli/stimulusText.ts"
 import { linkSet } from "./linking.ts"
 import { readPdfPages, unreadableNote } from "./pdf.ts"
 import { type PageReading, readPage, readsGroup } from "./readings.ts"
@@ -191,11 +192,12 @@ const sampleStep = (jobId: string, bookId: string, at: typeof Checkpoint.Type) =
     })
     // The sample's Questions, linked a question set at a time, as the survey
     // gives them: the pages of one chapter and group together, so a passage
-    // on an earlier sample page is found and a set that numbers from 1 again
-    // keeps its own. Every one counts toward the projection, as does a number
-    // a set repeats, which is a second Question once the Book Map gives it a
-    // set of its own. One whose passage starts before the sample is not
-    // enriched, since without the passage it would cost less than the run will.
+    // or an MSR set's sources on an earlier sample page are found and a set
+    // that numbers from 1 again keeps its own. Every one counts toward the
+    // projection, as does a number a set repeats, which is a second Question
+    // once the Book Map gives it a set of its own. One whose passage or
+    // sources start before the sample is not enriched, since without them it
+    // would cost less than the run will.
     const sampledQuestions: Array<QuestionText> = []
     let sampledCount = 0
     const bySet = new Map<string, Array<{ readonly page: number; readonly reading: PageReading }>>()
@@ -212,12 +214,13 @@ const sampleStep = (jobId: string, bookId: string, at: typeof Checkpoint.Type) =
           continue
         }
         sampledCount += 1
-        if (item.questionType.startsWith("verbal.rc-") && item.passage === null) continue
+        const needsStimulus = item.questionType.startsWith("verbal.rc-") || item.questionType === "di.msr"
+        if (needsStimulus && item.stimulus === null) continue
         sampledQuestions.push({
           questionType: item.questionType,
-          stimulus: item.passage,
+          stimulus: item.stimulus === null ? null : draftText(item.stimulus),
           stem: item.stem,
-          options: item.options,
+          parts: item.parts.map(({ kind, prompt, options }) => ({ kind, prompt, options })),
           key: null,
           explanation: null
         })
@@ -330,9 +333,12 @@ const enrichSample = (jobId: string, question: QuestionText) =>
     const answers: Array<string> = []
     for (let run = 1; run <= SolverRuns; run++) {
       const solve = yield* unlessInvalid(solveQuestion(jobId, question, run))
-      if (solve !== undefined) answers.push(solve.value.answer)
+      if (solve !== undefined) answers.push(solve.answer)
     }
-    yield* unlessInvalid(writeApproaches(jobId, taxonomy, { ...question, key: answers[0] ?? "A" }, undefined))
+    // Written against the first solve's answer, or the first options, to
+    // cost the call.
+    const key = answers[0] ?? question.parts.map((part) => part.options[0]?.label ?? "A").join(",")
+    yield* unlessInvalid(writeApproaches(jobId, taxonomy, { ...question, key }, undefined))
   })
 
 export const BookIntake: JobKind<typeof Params.Type, typeof Checkpoint.Type> = {

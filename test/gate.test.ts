@@ -149,7 +149,7 @@ describe("An Approaches reply", () => {
     questionType: "quant.ps",
     stimulus: null,
     stem: "If \\(3x + 1 = 13\\), what is the value of x?",
-    options: ["A", "B", "C", "D", "E"].map((label) => ({ label, text: label })),
+    parts: [{ kind: "single-choice", prompt: null, options: ["A", "B", "C", "D", "E"].map((label) => ({ label, text: label })) }],
     key: "C",
     explanation: "Subtract 1 and divide by 3."
   }
@@ -158,6 +158,7 @@ describe("An Approaches reply", () => {
       approaches: [{ strategy: "quant.strategy.solve-directly", steps: "1. Solve.", expectedSeconds: 60, validWhen: "Always.", answer: "C" }],
       bookApproach,
       wrongOptions: ["A", "B", "D", "E"].map((label) => ({
+        part: 0,
         label,
         trapNote: `${label} comes from a slip.`,
         mistakeType: "calculation-slip",

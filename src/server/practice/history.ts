@@ -99,8 +99,7 @@ export const historyOf = (profileId: string) =>
 // Every published Question as Practice Sets choose among them, in the order
 // its own Book prints it: by Book, as the Bank took them in, then page and
 // number. So a passage's Questions keep the Book's order, even when a Book
-// Map fix brought in an earlier page later. The set screen shows one Part,
-// so a Question with several Parts waits for a later version.
+// Map fix brought in an earlier page later.
 export const publishedPool = Effect.gen(function*() {
   const db = yield* Db
   const found = yield* db.select({
@@ -117,7 +116,7 @@ export const publishedPool = Effect.gen(function*() {
     .leftJoin(difficulty, eq(difficulty.questionId, questions.id))
     .leftJoin(sources, and(eq(sources.questionId, questions.id), eq(sources.merged, false)))
     .leftJoin(books, eq(books.id, sources.bookId))
-    .where(and(eq(questions.status, "published"), singlePart))
+    .where(eq(questions.status, "published"))
     .orderBy(
       asc(books.createdAt),
       asc(sources.page),
@@ -139,9 +138,6 @@ export const publishedPool = Effect.gen(function*() {
     stimulusId: row.stimulusId
   }))
 })
-
-// A Question with exactly one Part.
-export const singlePart = sql`(select count(*) from ${parts} where ${parts.questionId} = ${questions.id}) = 1`
 
 // One Question's current Difficulty.
 export const difficultyOf = (questionId: string) =>

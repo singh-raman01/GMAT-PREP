@@ -2,9 +2,13 @@ import { and, asc, eq, isNotNull, isNull, lt, max, ne, sql } from "drizzle-orm"
 import { Clock, Effect, Option, Schema } from "effect"
 import { sha256 } from "../access/tokens.ts"
 import { Db } from "../db/Database.ts"
+import { parseCell } from "../../api/dataset.ts"
+import { joinedKey } from "../../api/keys.ts"
+import { normalizeText, renderProblem } from "../../api/richText.ts"
 import {
   books,
   bookSkips,
+  datasets,
   goldenQuestions,
   options,
   parts,
@@ -15,11 +19,12 @@ import {
   stimuli,
   taxonomyVersions
 } from "../db/schema.ts"
-import { normalizeText, renderProblem } from "../../api/richText.ts"
+import { encodeColumns, encodeFigure, encodeRows, type FigureSource } from "../stimuli/stimuli.ts"
 import {
   type Candidate,
   candidateProblems,
   comparableText,
+  type ContentDraft,
   isPassageRender,
   NearMatch,
   nearText,
@@ -27,6 +32,8 @@ import {
   type ReasonCode,
   similarity,
   type Skip,
+  type StimulusDraft,
+  type TableDraft,
   trigrams
 } from "./linking.ts"
 
@@ -59,19 +66,105 @@ export const loadBank = (section: string) =>
       questionType: questions.questionType,
       stem: questions.stem,
       text: questions.normalizedText,
-      key: parts.key,
       stimulusId: questions.stimulusId
     }).from(questions)
-      .leftJoin(parts, and(eq(parts.questionId, questions.id), eq(parts.position, 0)))
       .where(and(eq(questions.section, section), ne(questions.status, "withdrawn")))
       .pipe(Effect.orDie)
+    const keyRows = yield* db.select({ questionId: parts.questionId, key: parts.key }).from(parts)
+      .innerJoin(questions, eq(questions.id, parts.questionId))
+      .where(and(eq(questions.section, section), ne(questions.status, "withdrawn")))
+      .orderBy(asc(parts.position))
+      .pipe(Effect.orDie)
+    const keys = Map.groupBy(keyRows, (row) => row.questionId)
     return rows.map((row): BankEntry => ({
       id: row.id,
       hash: row.hash,
       trigrams: trigrams(row.questionType === "di.ds" ? nearText(row.questionType, row.stem, []) : row.text),
-      key: row.key,
+      key: joinedKey((keys.get(row.id) ?? []).map((part) => part.key)),
       stimulusId: row.stimulusId
     }))
+  })
+
+// A Question's Parts, with its key as Sources give one.
+export const keyOf = (questionId: string) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const rows = yield* db.select().from(parts).where(eq(parts.questionId, questionId)).orderBy(asc(parts.position))
+    return {
+      parts: rows,
+      key: joinedKey(rows.map((part) => part.key)),
+      // The Curator overrode a Part's key, which settles every question
+      // about the key.
+      overridden: rows.some((part) => part.keyBasis === "override")
+    }
+  })
+
+const tableText = (table: TableDraft) =>
+  [table.columns.map((column) => `${column.name} ${column.type} ${column.unit}`).join(" | "), ...table.rows.map((row) =>
+    row.join(" | ")
+  )].join("\n")
+
+// What a Stimulus is compared by, so the same passage, table or chart from
+// two Books is one Stimulus. A figure kept as an image is its own.
+const contentHash = (content: ContentDraft, figure: FigureSource | undefined): string => {
+  switch (content.kind) {
+    case "passage":
+      return sha256(normalizeText(content.body))
+    case "table":
+      return sha256(`table|${normalizeText(content.body)}|${tableText(content.table)}`)
+    case "chart":
+      return sha256(`chart|${normalizeText(content.body)}|${tableText(content.table)}|${JSON.stringify(content.spec)}`)
+    case "figure":
+      return sha256(`figure|${figure?.bookId}|${figure?.page}|${figure?.top}|${figure?.bottom}|${figure?.file}`)
+  }
+}
+
+const stimulusHash = (draft: StimulusDraft, figure: FigureSource | undefined) =>
+  draft.kind === "tabs"
+    ? sha256(`tabs|${draft.tabs.map((tab) => `${normalizeText(tab.title)}:${contentHash(tab, figure)}`).join("|")}`)
+    : contentHash(draft, figure)
+
+const insertContent = (
+  content: ContentDraft,
+  hash: string,
+  now: number,
+  figure: FigureSource | undefined,
+  tab?: { readonly parentId: string; readonly position: number; readonly title: string }
+) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    let datasetId: string | null = null
+    if (content.kind === "table" || content.kind === "chart") {
+      datasetId = crypto.randomUUID()
+      const types = content.table.columns.map((column) => column.type)
+      yield* db.insert(datasets).values({
+        id: datasetId,
+        columns: encodeColumns(content.table.columns),
+        rows: encodeRows(content.table.rows.map((row) =>
+          row.map((text, index) => {
+            const parsed = parseCell(types[index] ?? "text", text)
+            return { text, value: "value" in parsed ? parsed.value : null }
+          })
+        )),
+        origin: "book",
+        createdAt: now
+      })
+    }
+    const id = crypto.randomUUID()
+    yield* db.insert(stimuli).values({
+      id,
+      kind: content.kind,
+      body: content.body,
+      normalizedHash: hash,
+      datasetId,
+      chartSpec: content.kind === "chart" ? JSON.stringify(content.spec) : null,
+      figure: content.kind === "figure" && figure !== undefined ? encodeFigure(figure) : null,
+      parentId: tab?.parentId ?? null,
+      position: tab?.position ?? null,
+      title: tab?.title ?? null,
+      createdAt: now
+    })
+    return id
   })
 
 // A stored passage as compared with a new one.
@@ -80,33 +173,49 @@ export interface PassageEntry {
   readonly trigrams: ReadonlySet<string>
 }
 
-// Every stored passage, for finding one a new passage nearly copies.
+// Every stored passage, other than an MSR set's tabs, for finding one a new
+// passage nearly copies.
 export const loadPassages = Effect.gen(function*() {
   const db = yield* Db
-  const rows = yield* db.select({ id: stimuli.id, body: stimuli.body }).from(stimuli).where(eq(stimuli.kind, "passage"))
+  const rows = yield* db.select({ id: stimuli.id, body: stimuli.body }).from(stimuli)
+    .where(and(eq(stimuli.kind, "passage"), isNull(stimuli.parentId)))
     .pipe(Effect.orDie)
   return rows.map((row): PassageEntry => ({ id: row.id, trigrams: trigrams(normalizeText(row.body)) }))
 })
 
-// The stored passage with this text, or a new one. Passages compare by their
-// normalized text, so the same passage from two Books is one Stimulus. The
-// text shown is one that renders: a stored passage that does not takes this
-// reading's text when it does, and repaired says so.
-const stimulusFor = (passage: string, now: number, passages: Array<PassageEntry>) =>
+// The stored Stimulus with this content, or a new one. The same passage from
+// two Books compares by its normalized text, and the text shown is one that
+// renders: a stored passage that does not takes this reading's text when it
+// does. shown is the Stimulus as Learners will see it, and repaired says the
+// stored text was replaced.
+const stimulusFor = (
+  draft: StimulusDraft,
+  now: number,
+  figure: FigureSource | undefined,
+  passages: Array<PassageEntry>
+) =>
   Effect.gen(function*() {
     const db = yield* Db
-    const hash = sha256(normalizeText(passage))
+    const hash = stimulusHash(draft, figure)
     const [found] = yield* db.select({ id: stimuli.id, body: stimuli.body }).from(stimuli)
-      .where(eq(stimuli.normalizedHash, hash)).limit(1)
+      .where(and(eq(stimuli.normalizedHash, hash), isNull(stimuli.parentId))).limit(1)
     if (found !== undefined) {
-      const repaired = renderProblem(found.body) !== undefined && renderProblem(passage) === undefined
-      if (repaired) yield* db.update(stimuli).set({ body: passage }).where(eq(stimuli.id, found.id))
-      return { id: found.id, hash, body: repaired ? passage : found.body, repaired }
+      if (draft.kind !== "passage") return { id: found.id, hash, shown: draft, repaired: false }
+      const repaired = renderProblem(found.body) !== undefined && renderProblem(draft.body) === undefined
+      if (repaired) yield* db.update(stimuli).set({ body: draft.body }).where(eq(stimuli.id, found.id))
+      return { id: found.id, hash, shown: { ...draft, body: repaired ? draft.body : found.body }, repaired }
+    }
+    if (draft.kind !== "tabs") {
+      const id = yield* insertContent(draft, hash, now, figure)
+      if (draft.kind === "passage") passages.push({ id, trigrams: trigrams(normalizeText(draft.body)) })
+      return { id, hash, shown: draft, repaired: false }
     }
     const id = crypto.randomUUID()
-    yield* db.insert(stimuli).values({ id, kind: "passage", body: passage, normalizedHash: hash, createdAt: now })
-    passages.push({ id, trigrams: trigrams(normalizeText(passage)) })
-    return { id, hash, body: passage, repaired: false }
+    yield* db.insert(stimuli).values({ id, kind: "tabs", body: "", normalizedHash: hash, createdAt: now })
+    for (const [position, tab] of draft.tabs.entries()) {
+      yield* insertContent(tab, contentHash(tab, figure), now, figure, { parentId: id, position, title: tab.title })
+    }
+    return { id, hash, shown: draft, repaired: false }
   })
 
 // Stored passages a passage nearly copies, the closest first, as another
@@ -189,9 +298,9 @@ export const holdForReview = (questionId: string, reasons: ReadonlyArray<Reason>
 const sourceKeyReasons = (questionId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
-    const [part] = yield* db.select({ key: parts.key, keyBasis: parts.keyBasis }).from(parts)
-      .where(and(eq(parts.questionId, questionId), eq(parts.position, 0)))
-    if (part === undefined || part.keyBasis === "override") return []
+    const own = yield* keyOf(questionId)
+    if (own.parts.length === 0 || own.overridden) return []
+    const part = { key: own.key }
     const given = yield* db.select({
       title: books.title,
       set: sources.set,
@@ -380,6 +489,8 @@ export const linkCandidate = (
     readonly mapVersion: number
     readonly candidate: Candidate
     readonly origin: QuestionOrigin
+    // For an item that needs a figure: the band of its page, kept as an image.
+    readonly figure?: FigureSource
   },
   bank: Array<BankEntry>,
   passages: Array<PassageEntry>
@@ -390,11 +501,15 @@ export const linkCandidate = (
     const now = yield* Clock.currentTimeMillis
     return yield* db.transaction(() =>
       Effect.gen(function*() {
-        // The passage it asks about, as Learners will see it.
-        const stimulus = candidate.passage === null ? null : yield* stimulusFor(candidate.passage, now, passages)
+        // What it asks about, as Learners will see it. A Question about a
+        // passage, table or chart is the same Question only about the same
+        // one.
+        const stimulus = candidate.stimulus === null
+          ? null
+          : yield* stimulusFor(candidate.stimulus, now, input.figure, passages)
         const repaired = stimulus?.repaired === true ? yield* passageRepaired(stimulus.id, bookId) : []
-        const problems = candidateProblems(candidate, { passage: stimulus?.body ?? null })
-        const text = comparableText(candidate.stem, candidate.options)
+        const problems = candidateProblems(candidate, stimulus?.shown ?? null)
+        const text = comparableText(candidate.stem, candidate.parts)
         const hash = sha256(stimulus === null ? text : `${stimulus.hash}|${text}`)
 
         const [found] = yield* db.select().from(sources)
@@ -402,16 +517,16 @@ export const linkCandidate = (
         const sentBack = [...repaired]
         const done = (linked: Linked): LinkOutcome => ({ linked, sentBack })
         // Whether the item's reading takes a Question it already has to
-        // another passage. A reading that nearly copies the Question's
+        // another Stimulus. A passage that nearly copies the Question's
         // passage leaves it there: the same passage printed again, as the
         // Curator says when using the other passage.
         const movesFrom = (current: string | null) =>
           current !== (stimulus?.id ?? null) &&
-          !(current !== null && stimulus !== null &&
-            nearPassages(stimulus.id, stimulus.body, passages).some((each) => each.id === current))
-        // A Book Map fix can find another passage for the Question's own
+          !(current !== null && stimulus !== null && stimulus.shown.kind === "passage" &&
+            nearPassages(stimulus.id, stimulus.shown.body, passages).some((each) => each.id === current))
+        // A Book Map fix can find another Stimulus for the Question's own
         // item. Other items that share the Question keep it about its
-        // passage, and this one becomes a Question of its own.
+        // Stimulus, and this one becomes a Question of its own.
         let source = found
         if (found !== undefined && !found.merged) {
           const [question] = yield* db.select({ stimulusId: questions.stimulusId }).from(questions)
@@ -433,10 +548,12 @@ export const linkCandidate = (
             linkReasons: questions.linkReasons,
             related: questions.relatedQuestionId
           }).from(questions).where(eq(questions.id, source.questionId))
-          const passageChanged = !source.merged && question !== undefined && movesFrom(question.stimulusId)
+          // A Book Map fix can find what the Question's own item asks about,
+          // or another one.
+          const stimulusChanged = !source.merged && question !== undefined && movesFrom(question.stimulusId)
           const changed = source.bookKey !== candidate.key || source.explanation !== candidate.explanation ||
             source.explanationAnswer !== candidate.explanationAnswer || source.bookLabel !== candidate.label ||
-            passageChanged
+            stimulusChanged
           const explainedBefore = changed ? yield* explanationOf(source.questionId) : undefined
           yield* db.update(sources)
             .set({
@@ -466,17 +583,17 @@ export const linkCandidate = (
             return done("relinked")
           }
           // The Question's own item: its key and label follow the Book,
-          // unless the Curator overrode the key, its passage follows the
-          // readings, and its reasons are worked out again, keeping the
+          // unless the Curator overrode the key, what it asks about follows
+          // the readings, and its reasons are worked out again, keeping the
           // repeats the Curator has not settled. A Question moved to another
-          // passage is compared with that passage's Questions instead.
+          // Stimulus is compared with that one's Questions instead.
           yield* db.update(questions).set({ bookLabel: candidate.label, updatedAt: now })
             .where(eq(questions.id, source.questionId))
           let repeats = readLinkReasons(question?.linkReasons ?? "[]").filter((reason) => RepeatCodes.has(reason.code))
           let related = question?.related ?? null
-          if (passageChanged) {
+          if (stimulusChanged) {
             const moved = (yield* moveQuestion(source.questionId, stimulus))!
-            const pieces = trigrams(nearText(candidate.questionType, candidate.stem, candidate.options))
+            const pieces = trigrams(nearText(candidate.questionType, candidate.stem, candidate.parts))
             const entry = bank.find((each) => each.id === source.questionId)
             if (entry !== undefined) {
               bank.splice(bank.indexOf(entry), 1, { ...entry, hash: moved, trigrams: pieces, stimulusId: stimulus?.id ?? null })
@@ -485,30 +602,30 @@ export const linkCandidate = (
             repeats = repeat === undefined ? [] : [repeat.reason]
             related = repeat?.related ?? null
           }
-          const [part] = yield* db.select().from(parts)
-            .where(and(eq(parts.questionId, source.questionId), eq(parts.position, 0)))
-          const keyChanged = part !== undefined && part.keyBasis !== "override" && part.key !== candidate.key
-          if (keyChanged) {
-            yield* db.update(parts).set({ key: candidate.key, keyBasis: candidate.key === null ? null : "book" })
-              .where(eq(parts.id, part.id))
+          const own = yield* keyOf(source.questionId)
+          let keyChanged = false
+          for (const part of own.parts) {
+            const key = candidate.parts[part.position]?.key ?? null
+            if (part.keyBasis === "override" || part.key === key) continue
+            keyChanged = true
+            yield* db.update(parts).set({ key, keyBasis: key === null ? null : "book" }).where(eq(parts.id, part.id))
           }
           // A key the Curator overrode settles every question about the key.
-          const kept = problems.filter((reason) => part?.keyBasis !== "override" || !KeyCodes.has(reason.code))
+          const kept = problems.filter((reason) => !own.overridden || !KeyCodes.has(reason.code))
           yield* settle(
             source.questionId,
             [...kept, ...repeats, ...yield* sourceKeyReasons(source.questionId)],
             related,
             {
-              // The Approaches quote the passage.
-              content: keyChanged || explanationChanged || passageChanged,
-              regate: source.bookLabel !== candidate.label || passageChanged
+              // The Approaches quote what it asks about.
+              content: keyChanged || explanationChanged || stimulusChanged,
+              regate: source.bookLabel !== candidate.label || stimulusChanged
             }
           )
           return done("relinked")
         }
 
-        // A passage's Question is the same Question only on the same passage.
-        const pieces = trigrams(nearText(candidate.questionType, candidate.stem, candidate.options))
+        const pieces = trigrams(nearText(candidate.questionType, candidate.stem, candidate.parts))
         // An item whose text may be wrong, or that needs a figure, is never
         // joined to another unseen: junk transcriptions look alike, and the
         // same words can ask about a different figure.
@@ -554,9 +671,10 @@ export const linkCandidate = (
         // goes back through the Publish Gate.
         if (exact !== undefined && !unsure && exact.key === null) {
           yield* addSource(exact.id, true)
-          const [part] = yield* db.select().from(parts).where(and(eq(parts.questionId, exact.id), eq(parts.position, 0)))
-          if (part !== undefined && part.keyBasis !== "override") {
-            yield* db.update(parts).set({ key: candidate.key, keyBasis: "book" }).where(eq(parts.id, part.id))
+          for (const part of (yield* keyOf(exact.id)).parts) {
+            if (part.keyBasis === "override") continue
+            const key = candidate.parts[part.position]?.key ?? null
+            yield* db.update(parts).set({ key, keyBasis: key === null ? null : "book" }).where(eq(parts.id, part.id))
           }
           const [question] = yield* db.select({ linkReasons: questions.linkReasons, related: questions.relatedQuestionId })
             .from(questions).where(eq(questions.id, exact.id))
@@ -585,10 +703,15 @@ export const linkCandidate = (
           )
           related = exact.id
         } else {
-          // Questions about the same passage, or about a stored passage this
+          // Questions about the same Stimulus, or about a stored passage this
           // one nearly copies, each with how alike the passages are.
-          const near = stimulus === null ? [] : nearPassages(stimulus.id, stimulus.body, passages)
-          const about = new Map<string | null, number>([[stimulus?.id ?? null, 1], ...near.map((each) => [each.id, each.score] as const)])
+          const near = stimulus === null || stimulus.shown.kind !== "passage"
+            ? []
+            : nearPassages(stimulus.id, stimulus.shown.body, passages)
+          const about = new Map<string | null, number>([
+            [stimulus?.id ?? null, 1],
+            ...near.map((each) => [each.id, each.score] as const)
+          ])
           let best: { readonly id: string; readonly score: number; readonly passage: number } | undefined
           for (const entry of bank) {
             const passage = about.get(entry.stimulusId)
@@ -628,7 +751,6 @@ export const linkCandidate = (
 
         const [taxonomy] = yield* db.select({ version: max(taxonomyVersions.version) }).from(taxonomyVersions)
         const questionId = crypto.randomUUID()
-        const partId = crypto.randomUUID()
         yield* db.insert(questions).values({
           id: questionId,
           section: candidate.section,
@@ -648,22 +770,25 @@ export const linkCandidate = (
           createdAt: now,
           updatedAt: now
         })
-        yield* db.insert(parts).values({
-          id: partId,
-          questionId,
-          position: 0,
-          kind: "single-choice",
-          prompt: null,
-          key: candidate.key,
-          keyBasis: candidate.key === null ? null : "book"
-        })
-        if (candidate.options.length > 0) {
-          yield* db.insert(options).values(candidate.options.map((option, position) => ({
-            partId,
+        for (const [position, part] of candidate.parts.entries()) {
+          const partId = crypto.randomUUID()
+          yield* db.insert(parts).values({
+            id: partId,
+            questionId,
             position,
-            label: option.label,
-            text: option.text
-          })))
+            kind: part.kind,
+            prompt: part.prompt,
+            key: part.key,
+            keyBasis: part.key === null ? null : "book"
+          })
+          if (part.options.length > 0) {
+            yield* db.insert(options).values(part.options.map((option, at) => ({
+              partId,
+              position: at,
+              label: option.label,
+              text: option.text
+            })))
+          }
         }
         yield* addSource(questionId, false)
         bank.push({ id: questionId, hash, trigrams: pieces, key: candidate.key, stimulusId: stimulus?.id ?? null })

@@ -5,7 +5,7 @@ import type { BookId } from "../src/api/Books.ts"
 import { normalizeText, renderProblem } from "../src/api/richText.ts"
 import { sha256 } from "../src/server/access/tokens.ts"
 import { linkCandidate, loadBank, loadPassages } from "../src/server/books/bankWrites.ts"
-import type { Candidate, Letter } from "../src/server/books/linking.ts"
+import type { Candidate } from "../src/server/books/linking.ts"
 import { Db } from "../src/server/db/Database.ts"
 import { options, parts, questions, sessions, sources, stimuli } from "../src/server/db/schema.ts"
 import { AllJobKinds } from "../src/server/jobs/kinds/index.ts"
@@ -194,8 +194,8 @@ describe("A passage another edition prints with a word changed", () => {
             code: "near-match",
             detail: expect.stringMatching(/^It is worded like another Question, whose passage is 9\d% like its own/)
           }])
-          expect(item.related?.passage).toContain("within one decade")
-          expect(item.question?.passage).toContain("within a decade")
+          expect(item.related?.stimulus?.body).toContain("within one decade")
+          expect(item.question?.stimulus?.body).toContain("within a decade")
           expect(earlier.map((row) => row.id)).toContain(item.related!.id)
           yield* curator.api.review.merge({ params: { id: item.id } })
         }
@@ -465,16 +465,22 @@ describe("A Book Map fix that moves a Question to another passage", () => {
         page: 12,
         section: "verbal",
         questionType: "verbal.rc-detail",
-        passage: passageA,
-        rivalPassage: null,
+        stimulus: { kind: "passage", body: passageA },
+        rival: null,
         stem: question!.stem,
-        options: choices.map((choice) => ({ label: choice.label as Letter, text: choice.text })),
+        parts: [{
+          kind: "single-choice",
+          prompt: null,
+          options: choices.map((choice) => ({ label: choice.label, text: choice.text })),
+          key: "C"
+        }],
         figure: false,
         answerKey: "C",
         explanationAnswer: "C",
         key: "C",
         keyAnswers: [],
         explanationAnswers: [],
+        unmatched: [],
         explanation: "Route 1.",
         label: null
       }
