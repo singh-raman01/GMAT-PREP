@@ -13,11 +13,14 @@ SCRIPT_VERSION="1.0.0"
 MIN_BUN_VERSION="1.4.2"
 
 # The model names the server's llama-swap config uses, and the tasks each
-# one serves. Generation, approaches and lessons stay on the cloud model.
+# one serves. Everything a book run does goes to the 35B-A3B, so a run never
+# swaps models (each swap reloads up to 17 GB); the 4B serves Tutor Chat, or
+# every local task when the server has the minimal profile. Generation,
+# approaches and lessons stay on the cloud model.
 MODEL_FAST="qwen3.5-4b"
 MODEL_REASON="qwen3.6-35b-a3b"
-FAST_TASKS="tagging statement-translation tutor-chat"
-REASON_TASKS="solving book-map extraction"
+FAST_TASKS="tutor-chat"
+REASON_TASKS="tagging statement-translation solving book-map extraction"
 CLOUD_TASKS="generation approaches lessons"
 
 CONFIG_DIR="$HOME/.config/gmat-prep"
@@ -220,8 +223,9 @@ the tunnel. The first run pairs the Mac with the server.
 
 Options:
   --configure-only [URL]  only set the LLM settings of the app running at URL
-                          (default: the running app's address); no tunnel or
-                          app is started
+                          (default: the running app's address); no app is
+                          started, and the tunnel only when none is open
+                          (it asks, and keeps it open until Ctrl+C)
   --stop                  stop the app and tunnel an earlier run started
   --server NAME           the server's host name (asked on the first run)
   --address IP            the server's address, if it cannot be found
@@ -463,9 +467,11 @@ prepare_app() {
 # Step 2: old tunnels and forwarding on this Mac
 # ---------------------------------------------------------------------------
 
-# Ports local LLM stacks use by default (Ollama, llama.cpp, LM Studio, vLLM,
-# Open WebUI, LiteLLM, text-generation-webui, KoboldCpp, SGLang, Jan).
-LLM_PORTS="11434 9931 8080 8000 8001 8081 1234 3000 4000 5000 5001 7860 7861 30000 39281"
+# Ports only LLM software uses by default: Ollama 11434, llama-server 9931
+# (releases after b11400; b11400 itself uses 8080), LM Studio 1234, Jan 1337,
+# SGLang 30000, Cortex 39281. Ports web frameworks share, such as 3000, 5000
+# or 8080, do not count, so ordinary development tunnels are left alone.
+LLM_PORTS="11434 9931 1234 1337 30000 39281"
 
 forward_has_llm_port() {
   local text=$1 port="" p=""
@@ -529,8 +535,8 @@ is_own_tunnel() {
 }
 
 stop_old_tunnel_processes() {
-  local line="" pid="" user="" cmd="" prog="" opts="" default="" found=0
-  while read -r pid user cmd; do
+  local pid="" user="" tty="" cmd="" prog="" opts="" found=0
+  while read -r pid user tty cmd; do
     [ -n "$pid" ] || continue
     prog=$(basename "$(printf '%s' "$cmd" | awk '{print $1}')")
     case "$prog" in ssh | autossh) ;; *) continue ;; esac
@@ -538,15 +544,22 @@ stop_old_tunnel_processes() {
     opts=$(forward_options "$cmd")
     [ -n "$opts" ] || continue
     found=1
-    if forward_has_llm_port "$opts"; then default=y; else default=n; fi
     say "SSH tunnel process $pid ($user): $cmd"
-    if [ "$default" = y ]; then
-      if confirm "It forwards a port local LLM tools use. Stop it?" y; then stop_process "$pid" "the old tunnel"; fi
+    case "$tty" in
+      "?" | "??" | "") ;;
+      *)
+        # Someone is typing in this ssh; it only happens to forward a port.
+        if confirm "It is an interactive SSH session on $tty. Stop it anyway?" n; then stop_process "$pid" "the SSH session"; fi
+        continue
+        ;;
+    esac
+    if forward_has_llm_port "$opts"; then
+      if confirm "It forwards a port only LLM tools use. Stop it?" y; then stop_process "$pid" "the old tunnel"; fi
     else
       if confirm "It is not identified as an LLM tunnel. Stop it anyway?" n; then stop_process "$pid" "the old tunnel"; fi
     fi
   done <<EOF
-$(ps -axo pid=,user=,command= 2>/dev/null || true)
+$(ps -axo pid=,user=,tty=,command= 2>/dev/null || true)
 EOF
   if [ "$found" = 0 ]; then info "No SSH tunnel processes."; fi
 }
@@ -587,10 +600,12 @@ show_lines() {
 }
 
 # Comments out LocalForward, RemoteForward and DynamicForward lines in the
-# SSH client config. Lines that forward a port LLM tools use are commented
-# out after asking (default yes); other lines only if you say so.
+# SSH client config. Lines that forward a port only LLM tools use are
+# commented out after asking (default yes); other lines only if you say so.
+# The copy goes to ~/.config/gmat-prep/backup/ssh, never next to the file,
+# where an "Include config.d/*" line would read it and keep the forwarding.
 comment_out_forward_lines() {
-  local cfg="" listing="" num="" text="" llm_nums="" other_nums="" chosen="" backup="" found=0
+  local cfg="" listing="" num="" text="" llm_nums="" other_nums="" chosen="" backup="" found=0 rel=""
   for cfg in "$HOME/.ssh/config" "$HOME"/.ssh/config.d/*; do
     [ -f "$cfg" ] || continue
     case "$cfg" in *.backup-*) continue ;; esac
@@ -607,7 +622,7 @@ comment_out_forward_lines() {
 $listing
 EOF
     if [ -n "$llm_nums" ]; then
-      say "Forwarding lines in $cfg that use ports local LLM tools use:"
+      say "Forwarding lines in $cfg on ports only LLM tools use:"
       show_lines "$cfg" "$llm_nums"
       if confirm "Comment these lines out (the file is backed up first)?" y; then chosen="$chosen$llm_nums"; fi
     fi
@@ -617,7 +632,10 @@ EOF
       if confirm "They are not identified as LLM forwarding. Comment them out as well?" n; then chosen="$chosen$other_nums"; fi
     fi
     [ -n "$chosen" ] || continue
-    backup="$cfg.backup-$(date +%Y%m%d-%H%M%S)"
+    rel=${cfg#"$HOME"/}
+    backup="$CONFIG_DIR/backup/ssh/$(date +%Y%m%d-%H%M%S)/$rel"
+    mkdir -p "$(dirname "$backup")"
+    chmod 700 "$CONFIG_DIR/backup" "$CONFIG_DIR/backup/ssh" 2>/dev/null || true
     cp -p "$cfg" "$backup"
     awk -v nums="$chosen" '
       BEGIN { n = split(nums, list, " "); for (i = 1; i <= n; i++) pick[list[i]] = 1 }
@@ -668,9 +686,10 @@ pinned_key() {
 }
 
 # The ED25519 host key an address offers on the SSH port, or nothing.
+# Call before_connect first, in the main shell: this runs in a command
+# substitution, where a change to CONNECT_TIMES would be lost.
 host_key_of() {
   local address=$1
-  before_connect
   ssh-keyscan -T 3 -p "$SSH_PORT" -t ed25519 "$address" 2>/dev/null | awk '$2 == "ssh-ed25519" {print $3; exit}' || true
 }
 
@@ -735,9 +754,13 @@ port_answers() {
   fi
 }
 
-# Addresses on this Mac's network with the SSH port open.
+# Addresses on this Mac's network with the SSH port open, into
+# $WORK_DIR/scan. Runs in the main shell, so the probe of the server counts
+# against the SSH rate limit.
 scan_network() {
   local net="" addr="" prefix="" ip=0 mask=0 first=0 last=0 n=0 count=0 own="" results=""
+  results="$WORK_DIR/scan"
+  : >"$results"
   net=$(local_network || true)
   [ -n "$net" ] || return 0
   addr=${net% *}
@@ -749,8 +772,6 @@ scan_network() {
   first=$(((ip & mask) + 1))
   last=$(((ip & mask) + (1 << (32 - prefix)) - 2))
   own=$addr
-  results="$WORK_DIR/scan"
-  : >"$results"
   info "Scanning $(int_to_ip $((ip & mask)))/$prefix for SSH on port $SSH_PORT."
   n=$first
   while [ "$n" -le "$last" ]; do
@@ -765,17 +786,20 @@ scan_network() {
     n=$((n + 1))
   done
   wait
-  sort -t. -k4,4n "$results"
+  # Each address was probed once; the server saw one connection.
+  CONNECT_TIMES="$CONNECT_TIMES $(date +%s)"
+  sort -t. -k4,4n "$results" -o "$results"
 }
 
 # Finds the server's address by its pinned host key: the last address, then
 # NAME.local, then a scan of this network. Sets SERVER_ADDRESS, or returns 1.
 locate_server() {
-  local pinned="" key="" candidate=""
+  local pinned="" key="" candidate="" scanned=""
   pinned=$(pinned_key)
   [ -n "$pinned" ] || return 1
   for candidate in "$SERVER_ADDRESS" "${SERVER_NAME:+$SERVER_NAME.local}"; do
     [ -n "$candidate" ] || continue
+    before_connect
     key=$(host_key_of "$candidate")
     if [ -n "$key" ] && [ "$key" = "$pinned" ]; then
       SERVER_ADDRESS=$candidate
@@ -785,7 +809,10 @@ locate_server() {
     if [ -n "$key" ]; then warn "$candidate answers with a different host key; skipping it."; fi
   done
   say "Looking for the server on this network."
-  for candidate in $(scan_network); do
+  scan_network
+  scanned=$(cat "$WORK_DIR/scan")
+  for candidate in $scanned; do
+    before_connect
     key=$(host_key_of "$candidate")
     if [ -n "$key" ] && [ "$key" = "$pinned" ]; then
       SERVER_ADDRESS=$candidate
@@ -804,13 +831,14 @@ find_server() {
 # First pairing: finds candidate servers, shows their host keys, and pins the
 # one the owner confirms.
 pin_host_key() {
-  local candidates="" candidate="" key="" fp="" chosen="" chosen_key=""
+  local candidates="" candidate="" key="" fp="" chosen="" chosen_key="" scanned=""
   if [ -z "$SERVER_NAME" ] && [ -z "$SERVER_ADDRESS" ]; then
     ask SERVER_NAME "The server's host name (setup printed it, as in NAME.local):"
     case "$SERVER_NAME" in *.local) SERVER_NAME=${SERVER_NAME%.local} ;; esac
   fi
   for candidate in "$SERVER_ADDRESS" "${SERVER_NAME:+$SERVER_NAME.local}"; do
     [ -n "$candidate" ] || continue
+    before_connect
     key=$(host_key_of "$candidate")
     if [ -n "$key" ]; then
       candidates="$candidates $candidate=$key"
@@ -819,7 +847,10 @@ pin_host_key() {
   done
   if [ -z "$candidates" ]; then
     say "$SERVER_NAME.local did not answer; looking for SSH servers on this network."
-    for candidate in $(scan_network); do
+    scan_network
+    scanned=$(cat "$WORK_DIR/scan")
+    for candidate in $scanned; do
+      before_connect
       key=$(host_key_of "$candidate")
       [ -n "$key" ] && candidates="$candidates $candidate=$key"
     done
@@ -1018,7 +1049,8 @@ read_server_models() {
   local out=""
   load_api_key
   [ -n "$API_KEY" ] || return 1
-  out=$(curl --noproxy '*' -s --max-time 10 -H "Authorization: Bearer $API_KEY" "http://127.0.0.1:$LOCAL_PORT/v1/models" 2>/dev/null) || return 1
+  # The key reaches curl on standard input, so ps never shows it.
+  out=$(printf 'header = "Authorization: Bearer %s"\n' "$API_KEY" | curl --noproxy '*' -s --max-time 10 -K - "http://127.0.0.1:$LOCAL_PORT/v1/models" 2>/dev/null) || return 1
   SERVER_MODELS=$(printf '%s' "$out" | json_eval 'const j = JSON.parse(input); if (!Array.isArray(j.data)) process.exit(1); print(j.data.map((m) => m.id).join(" "))') || return 1
 }
 
@@ -1136,8 +1168,10 @@ api() {
 status_of() { printf '%s\n' "$1" | sed -n 1p; }
 body_of() { printf '%s\n' "$1" | sed '1d'; }
 
+# A JSON object with one string field, GP_FIELD; the value comes in on
+# standard input rather than in an environment variable ps could show.
 json_string() {
-  GP_VALUE=$1 json_eval 'print(JSON.stringify({[process.env.GP_FIELD]: process.env.GP_VALUE}))' </dev/null
+  printf '%s' "$1" | json_eval 'print(JSON.stringify({[process.env.GP_FIELD]: input}))'
 }
 
 # Unlocks the Curator tools, or sets the passphrase on a fresh install.
@@ -1233,7 +1267,14 @@ contains_word() {
 # the cloud API with its key. Runs over the owner's SSH login, or tells the
 # owner what to run on the server.
 setup_cloud_peer() {
-  local base_url=$1 models=$2 key="" ok=0
+  local base_url=$1 models=$2 key="" ok=0 missing="" m=""
+  # llama-swap passes requests on by adding /v1/chat/completions to the
+  # address before /v1, so the address must be https and end in /v1.
+  case "$base_url" in
+    *[!A-Za-z0-9.:/_~-]*) die "The cloud API address $base_url has characters setup does not accept. Nothing was changed." ;;
+    https://*/v1 | https://*/v1/) ;;
+    *) die "Generation, approaches and lessons use $base_url, which the server cannot pass requests on to: it must start with https:// and end in /v1. Nothing was changed in the app. Run with --all-local to use the local model for those tasks, or keep the app on the cloud without this script." ;;
+  esac
   key=$(current_app_api_key)
   if [ -z "$key" ] || [ "$key" = "$API_KEY" ]; then
     ask_secret key "The API key of $base_url, for generation, approaches and lessons:"
@@ -1262,6 +1303,13 @@ setup_cloud_peer() {
   # The server restarts its endpoint; give it a moment.
   sleep 3
   read_server_models || true
+  for m in ${models//,/ }; do
+    contains_word "$SERVER_MODELS" "cloud/$m" || contains_word "$SERVER_MODELS" "$m" || missing="$missing $m"
+  done
+  if [ -n "$missing" ]; then
+    die "The server does not pass${missing} on to $base_url yet, so nothing was changed in the app, and it keeps its cloud API key. Set the route on the server (sudo $SERVER_TOOL set-cloud --base-url '$base_url' --models '$models'), then run this script again with --reconfigure."
+  fi
+  info "The server passes $models on to $base_url."
 }
 
 find_server_for_admin() {
@@ -1364,11 +1412,13 @@ configure_app() {
     die "The server does not offer $MODEL_FAST (it offers: $SERVER_MODELS)."
   fi
   reason=$MODEL_REASON
-  reads=$MODEL_REASON
+  # The app sends no images yet, and the server loads no vision projector
+  # unless setup ran with --vision on, so no local model is marked as
+  # reading images. Tick it in Settings after turning vision on.
+  reads=""
   if [ -n "$SERVER_MODELS" ] && ! contains_word "$SERVER_MODELS" "$MODEL_REASON"; then
-    warn "The server offers no $MODEL_REASON (minimal profile); solving, book-map and extraction use $MODEL_FAST, and no model reads images."
+    warn "The server offers no $MODEL_REASON (minimal profile); every local task uses $MODEL_FAST."
     reason=$MODEL_FAST
-    reads=""
   fi
   stamp=$(configured_stamp "$reason")
   if [ "$CONFIGURED" = "$stamp" ] && [ "$OPT_RECONFIGURE" != 1 ] && [ "$MODE" != configure ]; then
@@ -1420,11 +1470,15 @@ configure_app() {
     fi
   fi
   if [ "${current_base%/}" != "$base_url" ]; then
-    # The settings from before this script, kept for going back (they hold no key).
+    # The settings from before this script, kept for going back. The API
+    # key's status (with its last four characters) is left out.
     mkdir -p "$CONFIG_DIR/backup"
+    chmod 700 "$CONFIG_DIR/backup"
     backup="$CONFIG_DIR/backup/app-llm-settings-$(date +%Y%m%d-%H%M%S).json"
-    printf '%s\n' "$current" >"$backup"
-    chmod 600 "$backup"
+    (
+      umask 077
+      printf '%s' "$current" | json_eval 'const j = JSON.parse(input); delete j.apiKey; print(JSON.stringify(j, null, 2))' >"$backup"
+    )
     info "The app's earlier LLM settings are saved in $backup."
   fi
   payload=$(settings_payload "$current" "$base_url" "$json_mode" "$reason" "$reads")
@@ -1432,11 +1486,21 @@ configure_app() {
   status=$(status_of "$reply")
   [ "$status" = 200 ] || die "Saving the LLM settings failed (HTTP $status): $(body_of "$reply")"
   old_key=$(current_app_api_key)
+  if [ -n "$old_key" ] && [ "$old_key" != "$API_KEY" ]; then
+    # The key the app held, such as a cloud key, kept for going back.
+    mkdir -p "$CONFIG_DIR/backup"
+    chmod 700 "$CONFIG_DIR/backup"
+    backup="$CONFIG_DIR/backup/app-credentials-$(date +%Y%m%d-%H%M%S).json"
+    (
+      umask 077
+      cp "$(app_config_dir)/credentials.json" "$backup"
+    )
+  fi
   reply=$(api PUT /api/curator/settings/api-key "$(GP_FIELD=apiKey json_string "$API_KEY")")
   status=$(status_of "$reply")
   [ "$status" = 200 ] || die "Saving the API key failed (HTTP $status): $(body_of "$reply")"
   if [ -n "$old_key" ] && [ "$old_key" != "$API_KEY" ]; then
-    info "The app's API key is now the server's key; the app no longer holds the API key it had before."
+    info "The app's API key is now the server's key. The key it had before is saved in $backup (readable by you only)."
   fi
   info "Saved: API address $base_url, JSON mode $json_mode, $MODEL_FAST for $FAST_TASKS, $reason for $REASON_TASKS$(if [ "$OPT_ALL_LOCAL" = 1 ]; then printf ' and %s' "$CLOUD_TASKS"; fi), local models priced at 0."
   if [ "$OPT_NO_TEST" != 1 ]; then connection_test tagging || true; fi
@@ -1460,7 +1524,11 @@ open_browser() {
 wait_for_end() {
   local waited=0 reason=""
   say ""
-  say "GMAT prep is running at $APP_URL with the local LLM server. Press Ctrl+C to stop the app and the tunnel."
+  if [ "$APP_STARTED" = 1 ]; then
+    say "GMAT prep is running at $APP_URL with the local LLM server. Press Ctrl+C to stop the app and the tunnel."
+  else
+    say "The tunnel to the local LLM server is open for the app at $APP_URL. Press Ctrl+C to close it."
+  fi
   while true; do
     if [ "$APP_STARTED" = 1 ] && ! kill -0 "$APP_PID" 2>/dev/null; then
       APP_STARTED=0
@@ -1551,6 +1619,22 @@ main() {
         [ -n "$APP_URL" ] || APP_URL="http://127.0.0.1:${GMAT_PREP_PORT:-4747}"
       fi
       app_answers "$APP_URL" || die "No GMAT prep app answers at $APP_URL."
+      # The settings point the app at the tunnel, so it must be open.
+      if [ "$(curl --noproxy '*' -s --max-time 3 "http://127.0.0.1:$LOCAL_PORT/health" 2>/dev/null || true)" != "OK" ]; then
+        load_api_key
+        [ -n "$(pinned_key)" ] && [ -n "$API_KEY" ] && [ -f "$KEY_FILE" ] ||
+          die "No tunnel is open on 127.0.0.1:$LOCAL_PORT, and this Mac is not paired with the server yet. Run the script once without --configure-only."
+        say "No tunnel is open on 127.0.0.1:$LOCAL_PORT, so the app could not reach the server."
+        confirm "Open the tunnel now and keep it open until Ctrl+C?" y ||
+          die "Open the tunnel first, for example by running this script without --configure-only in another window."
+        step "3. Finding the server"
+        find_server
+        open_tunnel
+        check_api
+        configure_app
+        wait_for_end
+        return 0
+      fi
       configure_app
       return 0
       ;;
