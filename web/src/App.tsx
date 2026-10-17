@@ -12,6 +12,7 @@ import { ScoresPage } from "./scores/ScoresPage.tsx"
 import { SectionalScreen } from "./sectionals/SectionalScreen.tsx"
 import { SectionalsHome } from "./sectionals/SectionalsHome.tsx"
 import { ProfilePicker } from "./ProfilePicker.tsx"
+import { PlanPage } from "./plan/PlanPage.tsx"
 import { ProgressPage } from "./progress/ProgressPage.tsx"
 import { linkProps, usePath } from "./router.ts"
 import { TaxonomyBrowser } from "./TaxonomyBrowser.tsx"
@@ -139,8 +140,9 @@ const UnsavedNotices = () => {
   )
 }
 
-// A Learner's pages: Practice and a set, Sectionals and one Sectional, Mocks
-// and one Mock, Progress, the Error Log, Scores, and the Taxonomy.
+// A Learner's pages: Practice and a set, the Study Plan, Sectionals and one
+// Sectional, Mocks and one Mock, Progress, the Error Log, Scores, and the
+// Taxonomy.
 const LearnerArea = ({ path, onSessionLost, onStopped }: {
   readonly path: string
   readonly onSessionLost: () => void
@@ -170,6 +172,8 @@ const LearnerArea = ({ path, onSessionLost, onStopped }: {
     ? "errors"
     : path === "/progress" || path.startsWith("/progress/")
     ? "progress"
+    : path === "/plan" || path.startsWith("/plan/")
+    ? "plan"
     : "practice"
   const link = (to: string, name: typeof page, label: string) => (
     <a {...linkProps(to)} aria-current={page === name ? "page" : undefined}>
@@ -180,6 +184,7 @@ const LearnerArea = ({ path, onSessionLost, onStopped }: {
     <>
       <nav className="subnav" aria-label="Learner pages">
         {link("/", "practice", "Practice")}
+        {link("/plan", "plan", "Plan")}
         {link("/sectionals", "sectionals", "Sectionals")}
         {link("/mocks", "mocks", "Mocks")}
         {link("/progress", "progress", "Progress")}
@@ -199,6 +204,8 @@ const LearnerArea = ({ path, onSessionLost, onStopped }: {
         ? <ErrorLogPage onSessionLost={onSessionLost} onStopped={onStopped} />
         : page === "progress"
         ? <ProgressPage path={path} onSessionLost={onSessionLost} onStopped={onStopped} />
+        : page === "plan"
+        ? <PlanPage path={path} onSessionLost={onSessionLost} onStopped={onStopped} />
         : <PracticeHome onSessionLost={onSessionLost} onStopped={onStopped} />}
     </>
   )

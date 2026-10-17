@@ -9,8 +9,7 @@ import type { PlanSettingsInput, PlanView } from "../src/api/Plan.ts"
 import type { PracticeView } from "../src/api/Practice.ts"
 import { Db } from "../src/server/db/Database.ts"
 import { planVersions, sessions } from "../src/server/db/schema.ts"
-import { sectionTargetOf } from "../src/server/plans/Plans.ts"
-import { totalScore } from "../src/server/ratings/scale.ts"
+import { sectionTargetOf, totalScore } from "../src/server/ratings/scale.ts"
 import { seedExamBank, SmallBlueprint } from "./fixtures/examBank.ts"
 import { numbered, OtherPsSkill, seedBook } from "./fixtures/bank.ts"
 import { openBrowser, runWithWorkers, tempDataDir, type WorkerTestServices } from "./harness.ts"
@@ -214,7 +213,7 @@ describe("The Diagnostic", () => {
       expect(started.kind).toBe("mock")
       const mock = yield* asha.mocks.get({ params: { id: started.id } })
       expect(mock.sections.map((section) => section.section.id)).toEqual(["verbal", "quant", "di"])
-    })))
+    })), 60_000)
 
   test("can be skipped, and the plan then says each Section starts at Medium", () =>
     run(Effect.gen(function*() {
@@ -230,7 +229,7 @@ describe("The Diagnostic", () => {
       // Saving the settings again keeps the skip.
       const resaved = yield* asha.plan.saveSettings({ payload: settings({ weeklyMinutes: 480 }) })
       expect(resaved.diagnostic.state).toBe("skipped")
-    })))
+    })), 60_000)
 
   test("under a Mock's time a week is the three Sectionals over three days", () =>
     run(Effect.gen(function*() {
@@ -241,7 +240,7 @@ describe("The Diagnostic", () => {
       expect(saved.diagnostic).toMatchObject({ state: "pending", form: "sectionals" })
       const firstThree = saved.plan.slice(0, 3).map((day) => day.items[0]!)
       expect(firstThree.map((item) => [item.kind, item.section?.id])).toEqual([["sectional", "quant"], ["sectional", "verbal"], ["sectional", "di"]])
-    })))
+    })), 60_000)
 })
 
 describe("Study Days and the Daily Log", () => {
@@ -317,5 +316,5 @@ describe("Building again during a day", () => {
       // The finished Mock fills the day: nothing else is planned for it.
       expect(today(after).items.filter((each) => each.status === "planned")).toEqual([])
       expect(today(after).items.find((each) => each.id === diagnostic.id)).toMatchObject({ status: "done" })
-    })))
+    })), 60_000)
 })

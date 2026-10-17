@@ -67,12 +67,17 @@ export class TotalScoreView extends Schema.Class<TotalScoreView>("gmat-prep/api/
   calibrated: Schema.Boolean
 }) {}
 
+// The Study Plan's target Total and the Section score each Section is
+// measured against (decision 82).
+export const ScoreTarget = Schema.Struct({ total: Schema.Int, section: Schema.Int })
+
 export class ScoreEstimates extends Schema.Class<ScoreEstimates>("gmat-prep/api/ScoreEstimates")({
   sections: Schema.Array(ScoreEstimateView),
   total: Schema.NullOr(TotalScoreView),
   // Today in the Profile's time zone: the latest day an Official Score can
   // be dated, and the date its form starts with.
-  today: Day
+  today: Day,
+  target: Schema.NullOr(ScoreTarget)
 }) {}
 
 const TrendPoint = Schema.Struct({ day: Day, score: Schema.Int, low: Schema.Int, high: Schema.Int })
@@ -83,7 +88,8 @@ const TrendPoint = Schema.Struct({ day: Day, score: Schema.Int, low: Schema.Int,
 export class ScoreTrendView extends Schema.Class<ScoreTrendView>("gmat-prep/api/ScoreTrendView")({
   sections: Schema.Array(Schema.Struct({ section: Named, points: Schema.Array(TrendPoint) })),
   total: Schema.Array(TrendPoint),
-  official: Schema.Array(OfficialScoreView)
+  official: Schema.Array(OfficialScoreView),
+  target: Schema.NullOr(ScoreTarget)
 }) {}
 
 export class ScoresApi extends HttpApiGroup.make("scores")

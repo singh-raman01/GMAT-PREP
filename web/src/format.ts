@@ -38,3 +38,18 @@ export const calendarDay = (day: string) =>
   new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" }).format(
     Date.parse(`${day}T00:00:00Z`)
   )
+
+// A calendar day in full, as a heading: "Monday, November 2".
+export const longDay = (day: string) =>
+  new Intl.DateTimeFormat(undefined, { weekday: "long", month: "long", day: "numeric", timeZone: "UTC" }).format(
+    Date.parse(`${day}T00:00:00Z`)
+  )
+
+// Minutes as hours and minutes: "1 hour 40 minutes", "45 minutes".
+export const hoursAndMinutes = (total: number) => {
+  const hours = Math.floor(total / 60)
+  const minutes = total % 60
+  const unit = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`
+  if (hours === 0) return unit(minutes, "minute")
+  return minutes === 0 ? unit(hours, "hour") : `${unit(hours, "hour")} ${unit(minutes, "minute")}`
+}
