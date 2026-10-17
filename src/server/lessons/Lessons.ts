@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, max, sql } from "drizzle-orm"
+import { and, asc, desc, eq, inArray, max, sql } from "drizzle-orm"
 import { Clock, Context, Effect, Layer, Option, Semaphore } from "effect"
 import { type JobView, LlmNotConfigured } from "../../api/Jobs.ts"
 import {
@@ -6,11 +6,13 @@ import {
   CuratorLessonsView,
   LessonBody,
   LessonId,
+  LessonJobRunning,
   LessonListItem,
   LessonNotDraft,
   LessonNotFound,
   type LessonPart,
   LessonProgress,
+  type LessonStatus,
   LessonSubjectView,
   LessonView,
   NoLesson,
@@ -18,7 +20,7 @@ import {
 } from "../../api/Lessons.ts"
 import { Named, NoQuestionsMatch, type PracticeView, SessionId } from "../../api/Practice.ts"
 import { Db } from "../db/Database.ts"
-import { lessons, lessonViews, responses, sessions } from "../db/schema.ts"
+import { jobs, lessons, lessonViews, responses, sessions } from "../db/schema.ts"
 import { JobStore } from "../jobs/JobStore.ts"
 import { namesOf, practiceQuestion, storedQuestions } from "../practice/content.ts"
 import { heldBySections, isCorrect, keysOf, readSelection } from "../practice/history.ts"
@@ -28,7 +30,7 @@ import { missingSettings, Settings } from "../settings/Settings.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { lessonCandidates } from "./candidates.ts"
 import type { LessonContent } from "./content.ts"
-import { checkQuestionsNow, FewestQuestions } from "./pick.ts"
+import { checkQuestionsNow, FewestQuestions, type LessonCandidate } from "./pick.ts"
 import { basisOf, type LessonSubject, lessonSubjects } from "./subjects.ts"
 import { LessonWriting } from "./write.ts"
 
@@ -63,9 +65,21 @@ const latestBy = (rows: ReadonlyArray<LessonRow>, status: string) => {
   return found
 }
 
+const statusOf = (row: LessonRow): LessonStatus =>
+  row.status === "approved" ? "approved" : row.status === "rejected" ? "rejected" : "draft"
+
+// When a version was decided, or written while it waits.
+const settledAt = (row: LessonRow) => (row.status === "draft" ? row.createdAt : row.decidedAt ?? row.createdAt)
+
+// The states of a job that has not finished.
+const Unfinished = ["queued", "running", "paused"]
+
 export class Lessons extends Context.Service<Lessons, {
   readonly overview: Effect.Effect<CuratorLessonsView>
-  write(subjects: ReadonlyArray<string> | undefined, spendCap: number): Effect.Effect<JobView, LlmNotConfigured | NothingToWrite>
+  write(
+    subjects: ReadonlyArray<string> | undefined,
+    spendCap: number
+  ): Effect.Effect<JobView, LessonJobRunning | LlmNotConfigured | NothingToWrite>
   preview(id: string): Effect.Effect<LessonView, LessonNotFound>
   approve(id: string): Effect.Effect<LessonView, LessonNotFound | LessonNotDraft>
   reject(id: string, note: string): Effect.Effect<LessonView, LessonNotFound | LessonNotDraft>
@@ -89,7 +103,8 @@ export class Lessons extends Context.Service<Lessons, {
       const subjects = lessonSubjects(taxonomy)
       const subjectOf = new Map(subjects.map((subject) => [subject.id, subject] as const))
       const run = <A, E>(effect: Effect.Effect<A, E, Db>) => effect.pipe(Effect.provideService(Db, db), Effect.orDie)
-      // One write at a time, so two clicks queue one job.
+      // Writes and decisions one at a time, so a second Write finds the job
+      // the first one queued.
       const oneAtATime = (yield* Semaphore.make(1)).withPermits(1)
 
       const subjectView = (subject: LessonSubject) =>
@@ -139,32 +154,43 @@ export class Lessons extends Context.Service<Lessons, {
         return undefined
       }
 
-      // The check's Questions now, leaving out those a running Sectional or
-      // Mock holds for the Profile.
-      const checkIds = (row: LessonRow, profileId: string | undefined) =>
+      // The subject's Questions a reader may be shown now: those it may teach
+      // from, less those a running Sectional or Mock holds for the Profile.
+      const openFor = (row: LessonRow, profileId: string | undefined) =>
         Effect.gen(function*() {
-          const candidates = (yield* run(lessonCandidates)).get(row.subjectId) ?? []
-          const held = profileId === undefined ? new Set<string>() : yield* run(heldBySections(profileId))
-          return checkQuestionsNow(
-            JSON.parse(row.checks) as ReadonlyArray<string>,
-            JSON.parse(row.examples) as ReadonlyArray<string>,
-            candidates.filter((each) => !held.has(each.id))
-          )
+          const candidates = (yield* run(lessonCandidates(taxonomy))).get(row.subjectId) ?? []
+          if (profileId === undefined) return candidates
+          const held = yield* run(heldBySections(profileId))
+          return candidates.filter((each) => !held.has(each.id))
         })
 
-      const bodyOf = (row: LessonRow) =>
+      // The check's Questions now (decision 100).
+      const checkIdsOf = (row: LessonRow, open: ReadonlyArray<LessonCandidate>) =>
+        checkQuestionsNow(
+          JSON.parse(row.checks) as ReadonlyArray<string>,
+          JSON.parse(row.examples) as ReadonlyArray<string>,
+          open
+        )
+
+      // What a page of the Lesson shows: the methods part alone, or the whole
+      // Lesson with the worked examples among the Questions open now, so a
+      // marked Lesson can show fewer of them (decision 97).
+      const bodyOf = (row: LessonRow, part: LessonPart, open: ReadonlyArray<LessonCandidate>) =>
         Effect.gen(function*() {
           const content = JSON.parse(row.content) as LessonContent
+          const methods = content.methods.map((method) => ({
+            name: method.name,
+            strategy: method.strategy === null ? null : names.named(method.strategy),
+            whenValid: method.whenValid,
+            steps: method.steps
+          }))
+          if (part === "methods") return new LessonBody({ rules: [], methods, traps: [], examples: [] })
+          const openIds = new Set(open.map((each) => each.id))
           const exampleIds = JSON.parse(row.examples) as ReadonlyArray<string>
-          const stored = yield* run(storedQuestions(exampleIds))
+          const stored = yield* run(storedQuestions(exampleIds.filter((id) => openIds.has(id))))
           return new LessonBody({
             rules: content.rules,
-            methods: content.methods.map((method) => ({
-              name: method.name,
-              strategy: method.strategy === null ? null : names.named(method.strategy),
-              whenValid: method.whenValid,
-              steps: method.steps
-            })),
+            methods,
             traps: content.traps.map((trap) => ({
               trapPattern: trap.trapPattern === null ? null : names.named(trap.trapPattern),
               text: trap.text
@@ -223,30 +249,39 @@ export class Lessons extends Context.Service<Lessons, {
           })
         })
 
-      const viewOf = (row: LessonRow, profileId: string | undefined) =>
+      const viewOf = (row: LessonRow, profileId: string | undefined, open: ReadonlyArray<LessonCandidate>, body: LessonBody) =>
         Effect.gen(function*() {
           return new LessonView({
             id: LessonId.make(row.id),
             subject: subjectViewOf(row),
             version: row.version,
-            status: row.status === "approved" ? "approved" : row.status === "rejected" ? "rejected" : "draft",
-            body: yield* bodyOf(row),
+            status: statusOf(row),
+            body,
             minutes: minutesFor(row.words),
             methodsMinutes: minutesFor(row.methodsWords),
-            checkQuestions: (yield* checkIds(row, profileId)).length,
+            checkQuestions: checkIdsOf(row, open).length,
             writtenAt: row.createdAt,
             progress: profileId === undefined ? null : yield* progressOf(profileId, row)
           })
         })
 
-      const latestJob = store.list.pipe(Effect.map((jobs) => jobs.find((job) => job.kind === LessonWriting.kind) ?? null))
+      // A version as the Curator reads it: the whole Lesson, as a Learner with
+      // no Sectional or Mock running would.
+      const previewOf = (row: LessonRow) =>
+        Effect.gen(function*() {
+          const open = yield* openFor(row, undefined)
+          return yield* viewOf(row, undefined, open, yield* bodyOf(row, "whole", open))
+        })
+
+      const latestJob = store.list.pipe(Effect.map((all) => all.find((job) => job.kind === LessonWriting.kind) ?? null))
 
       const overview = Effect.gen(function*() {
         const rows = yield* allRows
-        const candidates = yield* run(lessonCandidates)
+        const candidates = yield* run(lessonCandidates(taxonomy))
         const approved = latestBy(rows, "approved")
         const drafts = latestBy(rows, "draft")
         const rejected = latestBy(rows, "rejected")
+        const versionsOf = Map.groupBy(rows.toSorted((a, b) => b.version - a.version), (row) => row.subjectId)
         const ref = (row: LessonRow, at: number) => ({ id: LessonId.make(row.id), version: row.version, at })
         const lessonRows = subjects.map((subject) => {
           const current = approved.get(subject.id)
@@ -260,6 +295,7 @@ export class Lessons extends Context.Service<Lessons, {
             rejected: turnedDown === undefined
               ? null
               : { ...ref(turnedDown, turnedDown.decidedAt ?? turnedDown.createdAt), note: turnedDown.note ?? "" },
+            versions: (versionsOf.get(subject.id) ?? []).map((row) => ({ ...ref(row, settledAt(row)), status: statusOf(row) })),
             marked: current === undefined ? null : markedFor(current, candidates) ?? null,
             questions: (candidates.get(subject.id) ?? []).length
           })
@@ -279,6 +315,10 @@ export class Lessons extends Context.Service<Lessons, {
 
       const write = (given: ReadonlyArray<string> | undefined, spendCap: number) =>
         Effect.gen(function*() {
+          const [unfinished] = yield* db.select({ id: jobs.id }).from(jobs)
+            .where(and(eq(jobs.kind, LessonWriting.kind), inArray(jobs.status, Unfinished)))
+            .limit(1).pipe(Effect.orDie)
+          if (unfinished !== undefined) return yield* new LessonJobRunning()
           const llm = yield* settings.llm
           const missing = missingSettings(llm, Option.isSome(yield* keys.read), "lessons")
           if (missing.length > 0) return yield* new LlmNotConfigured({ missing })
@@ -297,7 +337,7 @@ export class Lessons extends Context.Service<Lessons, {
         Effect.gen(function*() {
           const row = yield* rowOf(id)
           if (row === undefined) return yield* new LessonNotFound()
-          return yield* viewOf(row, undefined)
+          return yield* previewOf(row)
         })
 
       const decide = (id: string, status: "approved" | "rejected", note: string | null) =>
@@ -307,7 +347,7 @@ export class Lessons extends Context.Service<Lessons, {
           if (row.status !== "draft") return yield* new LessonNotDraft({ status: row.status })
           const now = yield* Clock.currentTimeMillis
           yield* db.update(lessons).set({ status, decidedAt: now, note }).where(eq(lessons.id, id)).pipe(Effect.orDie)
-          return yield* viewOf({ ...row, status, decidedAt: now, note }, undefined)
+          return yield* previewOf({ ...row, status, decidedAt: now, note })
         }).pipe(oneAtATime)
 
       const list = (_profileId: string) =>
@@ -321,6 +361,8 @@ export class Lessons extends Context.Service<Lessons, {
           })
         })
 
+      // Records the view with the worked examples the page is sent, as those
+      // are what it makes Seen (decision 99).
       const record = (
         profileId: string,
         subjectId: string,
@@ -331,6 +373,8 @@ export class Lessons extends Context.Service<Lessons, {
         Effect.gen(function*() {
           const row = yield* approvedOf(subjectId)
           if (row === undefined) return yield* new NoLesson()
+          const open = yield* openFor(row, profileId)
+          const body = yield* bodyOf(row, part, open)
           yield* db.insert(lessonViews).values({
             id: crypto.randomUUID(),
             profileId,
@@ -338,16 +382,17 @@ export class Lessons extends Context.Service<Lessons, {
             kind,
             part,
             planItemId: planItemId ?? null,
-            viewedAt: yield* Clock.currentTimeMillis
+            viewedAt: yield* Clock.currentTimeMillis,
+            shownExamples: JSON.stringify(body.examples.map((example) => example.question.id))
           }).pipe(Effect.orDie)
-          return yield* viewOf(row, profileId)
+          return yield* viewOf(row, profileId, open, body)
         })
 
       const check = (caller: Caller, subjectId: string, planItemId: string | undefined) =>
         Effect.gen(function*() {
           const row = yield* approvedOf(subjectId)
           if (row === undefined) return yield* new NoLesson()
-          const ids = yield* checkIds(row, caller.profileId)
+          const ids = checkIdsOf(row, yield* openFor(row, caller.profileId))
           if (ids.length === 0) return yield* new NoQuestionsMatch({ heldForMocks: 0, unavailable: 0, inSection: 0 })
           const name = subjectOf.get(subjectId)?.name ?? subjectId
           return yield* practice.startLessonCheck(caller, { id: row.id, title: `Lesson check: ${name}` }, ids, planItemId)

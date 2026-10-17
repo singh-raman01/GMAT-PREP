@@ -20,6 +20,9 @@ export type LessonSubjectKind = typeof LessonSubjectKind.Type
 export const LessonPart = Schema.Literals(["whole", "methods"])
 export type LessonPart = typeof LessonPart.Type
 
+export const LessonStatus = Schema.Literals(["draft", "approved", "rejected"])
+export type LessonStatus = typeof LessonStatus.Type
+
 // Dollars a Lesson job may spend unless the Curator gives another cap.
 export const DefaultLessonSpendCap = 5
 
@@ -33,6 +36,8 @@ export class LessonSubjectView extends Schema.Class<LessonSubjectView>("gmat-pre
   topic: Schema.NullOr(Named)
 }) {}
 
+// The methods part alone carries the methods, with no rules, traps or worked
+// examples.
 export class LessonBody extends Schema.Class<LessonBody>("gmat-prep/api/LessonBody")({
   rules: Schema.Array(Schema.Struct({ title: Schema.String, text: Schema.String })),
   methods: Schema.Array(Schema.Struct({
@@ -42,7 +47,9 @@ export class LessonBody extends Schema.Class<LessonBody>("gmat-prep/api/LessonBo
     steps: Schema.String
   })),
   traps: Schema.Array(Schema.Struct({ trapPattern: Schema.NullOr(Named), text: Schema.String })),
-  // Each worked example with its right answers and the walkthrough.
+  // Each worked example with its right answers and the walkthrough: those
+  // still published with the subject outside the Mock Reserve, and none a
+  // running Sectional or Mock holds for the Profile.
   examples: Schema.Array(Schema.Struct({
     question: PracticeQuestion,
     keys: Schema.Array(Schema.Struct({ part: Schema.Int, key: Schema.NullOr(Schema.String) })),
@@ -68,7 +75,7 @@ export class LessonView extends Schema.Class<LessonView>("gmat-prep/api/LessonVi
   id: LessonId,
   subject: LessonSubjectView,
   version: Schema.Int,
-  status: Schema.Literals(["draft", "approved", "rejected"]),
+  status: LessonStatus,
   body: LessonBody,
   // Minutes to read, at 200 words a minute: the whole Lesson and its methods.
   minutes: Schema.Int,
@@ -97,6 +104,8 @@ export class CuratorLessonRow extends Schema.Class<CuratorLessonRow>("gmat-prep/
   draft: Schema.NullOr(VersionRef),
   // A newer version turned down, with the Curator's note.
   rejected: Schema.NullOr(Schema.Struct({ id: LessonId, version: Schema.Int, at: Schema.Number, note: Schema.String })),
+  // Every version written, the newest first, so any can be opened.
+  versions: Schema.Array(Schema.Struct({ id: LessonId, version: Schema.Int, status: LessonStatus, at: Schema.Number })),
   // Why the approved Lesson should be written again, if it should.
   marked: Schema.NullOr(Schema.String),
   // Published Questions outside the Mock Reserve that it may teach from.
@@ -125,6 +134,13 @@ export class LessonNotDraft extends Schema.TaggedError<LessonNotDraft>()(
 // Nothing to write: every subject has a Lesson or too few Questions.
 export class NothingToWrite extends Schema.TaggedError<NothingToWrite>()("NothingToWrite", {}, { httpApiStatus: 409 }) {}
 
+// One Lesson job at a time: one is queued, running or paused already.
+export class LessonJobRunning extends Schema.TaggedError<LessonJobRunning>()(
+  "LessonJobRunning",
+  {},
+  { httpApiStatus: 409 }
+) {}
+
 // The subject has no approved Lesson yet.
 export class NoLesson extends Schema.TaggedError<NoLesson>()("NoLesson", {}, { httpApiStatus: 404 }) {}
 
@@ -132,11 +148,11 @@ export class CuratorLessonsApi extends HttpApiGroup.make("curatorLessons")
   .add(
     HttpApiEndpoint.get("overview", "/", { success: CuratorLessonsView }),
     // Queues a job writing the subjects given, or every one without a Lesson
-    // or marked for rewriting.
+    // or marked for rewriting, unless a Lesson job is not finished yet.
     HttpApiEndpoint.post("write", "/write", {
       payload: Schema.Struct({ subjects: Schema.optional(Schema.Array(Schema.String)), spendCap: SpendCap }),
       success: JobView,
-      error: [LlmNotConfigured, NothingToWrite]
+      error: [LessonJobRunning, LlmNotConfigured, NothingToWrite]
     }),
     HttpApiEndpoint.get("lesson", "/:id", { params: { id: LessonId }, success: LessonView, error: LessonNotFound }),
     HttpApiEndpoint.post("approve", "/:id/approve", {

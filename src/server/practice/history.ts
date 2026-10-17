@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, inArray, isNotNull, max, sql } from "drizzle-orm"
+import { and, asc, eq, gte, inArray, isNotNull, isNull, max, ne, or, sql } from "drizzle-orm"
 import { Effect, Schema } from "effect"
 import { PartChoice, type Selection } from "../../api/Practice.ts"
 import { Db } from "../db/Database.ts"
@@ -102,20 +102,27 @@ export const paperSeenBy = (profileId: string, which: "first" | "last" = "first"
     return paperSeenOf(marks, pages, yield* mergeTargets, which)
   })
 
-// When the Profile's Paper Marks and opened Lessons made each Question Seen,
-// with no Session serving it, by the Question it counts as: a Paper Mark's
-// Questions from when it was made, a Lesson's worked examples from when the
-// whole Lesson was opened (decision 99).
+// When the Profile's Paper Marks and Lessons made each Question Seen, with no
+// Session serving it, by the Question it counts as: a Paper Mark's Questions
+// from when it was made, a Lesson's worked examples from when a page of it
+// showed them (decision 99).
 export const seenWithoutSessionsBy = (profileId: string, which: "first" | "last" = "first") =>
   Effect.gen(function*() {
     const db = yield* Db
     const resolve = yield* mergeTargets
     const seen = new Map(yield* paperSeenBy(profileId, which))
-    const opened = yield* db.select({ at: lessonViews.viewedAt, examples: lessons.examples }).from(lessonViews)
+    const shown = yield* db.select({ at: lessonViews.viewedAt, shown: lessonViews.shownExamples, examples: lessons.examples })
+      .from(lessonViews)
       .innerJoin(lessons, eq(lessons.id, lessonViews.lessonId))
-      .where(and(eq(lessonViews.profileId, profileId), eq(lessonViews.kind, "opened"), eq(lessonViews.part, "whole")))
-    for (const view of opened) {
-      for (const example of JSON.parse(view.examples) as ReadonlyArray<string>) {
+      .where(and(
+        eq(lessonViews.profileId, profileId),
+        or(
+          and(isNotNull(lessonViews.shownExamples), ne(lessonViews.shownExamples, "[]")),
+          and(isNull(lessonViews.shownExamples), eq(lessonViews.kind, "opened"), eq(lessonViews.part, "whole"))
+        )
+      ))
+    for (const view of shown) {
+      for (const example of JSON.parse(view.shown ?? view.examples) as ReadonlyArray<string>) {
         const id = resolve(example)
         const kept = seen.get(id)
         if (kept === undefined || (which === "first" ? view.at < kept : view.at > kept)) seen.set(id, view.at)
@@ -125,7 +132,7 @@ export const seenWithoutSessionsBy = (profileId: string, which: "first" | "last"
   })
 
 // A Question is Seen by a Profile once a Session has served it to them, a
-// Paper Mark covers it, or a Lesson they opened worked through it.
+// Paper Mark covers it, or a Lesson has shown it to them as a worked example.
 export const seenBy = (profileId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
@@ -170,7 +177,7 @@ export const heldBySections = (profileId: string) =>
 // When a Profile last saw each Question it has Seen, a merged Question's
 // servings counting for the one it became. A Paper Mark counts as a sighting
 // at the time it was made, the latest of those that cover the Question, and
-// a Lesson at the time it was last opened.
+// a Lesson at the last time a page of it showed the Question.
 export const lastSeenBy = (profileId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
