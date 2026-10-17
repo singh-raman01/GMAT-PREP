@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import type { LessonListItem, LessonPart, LessonView } from "../../../src/api/Lessons.ts"
 import type { PracticeQuestion } from "../../../src/api/Practice.ts"
 import { call } from "../api.ts"
-import { useFocusOnMount } from "../focus.ts"
+import { useFocusOnMount, useFocusWhenReady } from "../focus.ts"
 import { dayAndTime } from "../format.ts"
 import { AnswerParts } from "../practice/Parts.tsx"
 import { useReading } from "../progress/reading.ts"
@@ -165,6 +165,7 @@ export const LessonContent = ({ lesson, part }: { readonly lesson: LessonView; r
           </section>
           <section className="group lesson-part" aria-labelledby="lesson-examples">
             <h2 id="lesson-examples">Worked examples</h2>
+            {lesson.body.examples.length === 0 && <p className="empty">No worked example can be shown now.</p>}
             {lesson.body.examples.map((example, index) => (
               <div key={example.question.id} className="worked-example">
                 <h3>Example {index + 1}</h3>
@@ -185,7 +186,6 @@ export const LessonPage = ({ subject, part, onSessionLost, onStopped }: Props & 
   readonly subject: string
   readonly part: LessonPart
 }) => {
-  const heading = useFocusOnMount<HTMLHeadingElement>()
   const handle = useCallback(
     (failure: { readonly _tag: string }) => (failure._tag === "NotUnlocked" ? onSessionLost() : onStopped(failure)),
     [onSessionLost, onStopped]
@@ -193,6 +193,7 @@ export const LessonPage = ({ subject, part, onSessionLost, onStopped }: Props & 
   // The Study Plan item it was opened from, if any.
   const [planItemId] = useState(() => new URLSearchParams(window.location.search).get("item") ?? undefined)
   const [lesson, setLesson] = useState<LessonView | null>()
+  const heading = useFocusWhenReady<HTMLHeadingElement>(lesson !== undefined)
   const [problem, setProblem] = useState<string>()
   const busy = useRef(false)
 
