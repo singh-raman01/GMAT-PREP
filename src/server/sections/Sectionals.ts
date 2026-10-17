@@ -56,6 +56,7 @@ import { ratedAmong } from "../ratings/rated.ts"
 import { rateSession } from "../ratings/rateSession.ts"
 import { type ScoreLine, UncalibratedLine } from "../ratings/scale.ts"
 import { Settings } from "../settings/Settings.ts"
+import { Snapshots } from "../snapshots/Snapshots.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { nextUnit, openSlots, sectionEstimate, sectionStock, seededRandom, type Unit } from "./adaptive.ts"
 import {
@@ -322,8 +323,10 @@ export class Sectionals extends Context.Service<Sectionals, {
       // The clocks of Sectionals now running, as last ticked.
       const clocks = new Map<string, ClockState>()
       // Open while a Sectional may be running; it starts open, so the first
-      // tick picks up Sectionals left running when the app last stopped.
+      // tick picks up Sectionals left running when the app last stopped, and
+      // opens after a restore, which may bring running ones back.
       const wake = yield* Latch.make(true)
+      yield* (yield* Snapshots).afterRestore(wake.open)
 
       // A Question is served at a moment of the clock, which is saved then.
       const serve = (sessionId: string, position: number, questionId: string, servedElapsedMs: number) =>

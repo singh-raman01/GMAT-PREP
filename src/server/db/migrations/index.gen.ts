@@ -21,7 +21,11 @@ import m18 from "./20261017031909_lessons/migration.sql" with { type: "text" }
 import m19 from "./20261017034632_tutor_chat/migration.sql" with { type: "text" }
 import m20 from "./20261017050105_snapshots/migration.sql" with { type: "text" }
 import m21 from "./20261017054631_lan_mode/migration.sql" with { type: "text" }
-import m22 from "./20261017075753_bank_version/migration.sql" with { type: "text" }
+import m22 from "./20261017060947_lesson_view_examples/migration.sql" with { type: "text" }
+import m23 from "./20261017064449_tutor_review_fixes/migration.sql" with { type: "text" }
+import m24 from "./20261017070427_snapshot_review_fixes/migration.sql" with { type: "text" }
+import m25 from "./20261017075753_bank_version/migration.sql" with { type: "text" }
+import m26 from "./20261017081256_merge_tutor_snapshots/migration.sql" with { type: "text" }
 
 export const bundledMigrations: ReadonlyArray<{ readonly name: string; readonly sql: string }> = [
   { name: "20261016072200_init", sql: m0 },
@@ -46,5 +50,9 @@ export const bundledMigrations: ReadonlyArray<{ readonly name: string; readonly 
   { name: "20261017034632_tutor_chat", sql: m19 },
   { name: "20261017050105_snapshots", sql: m20 },
   { name: "20261017054631_lan_mode", sql: m21 },
-  { name: "20261017075753_bank_version", sql: m22 },
+  { name: "20261017060947_lesson_view_examples", sql: m22 },
+  { name: "20261017064449_tutor_review_fixes", sql: m23 },
+  { name: "20261017070427_snapshot_review_fixes", sql: m24 },
+  { name: "20261017075753_bank_version", sql: m25 },
+  { name: "20261017081256_merge_tutor_snapshots", sql: m26 },
 ]

@@ -236,9 +236,15 @@ export class ErrorLog extends Context.Service<ErrorLog, {
   // Every served row of the Profile's Sessions, kept between reads.
   servings(profileId: string): Effect.Effect<ReadonlyArray<Serving>>
   history(profileId: string): Effect.Effect<LearningHistory>
-  // What the database holds now, as a key: it changes with every write, so
-  // anything worked out from a Profile's facts can be kept under it.
+  // What the database holds now, as a key: it changes with every write but
+  // those made through factFree, so anything worked out from a Profile's
+  // facts can be kept under it.
   version(profileId: string): Effect.Effect<string>
+  // Runs a write that no fact depends on, such as a plan version or a Daily
+  // Log note, in a transaction, and leaves the version as it was, so what
+  // was worked out from the facts stays kept. A failure is a defect, as with
+  // the app's other writes.
+  factFree<A, E, R>(write: Effect.Effect<A, E, R>): Effect.Effect<A, never, R>
   // The same but for Mistake Type changes, which change only the labels: for
   // what is worked out without them, such as the Abilities (decision 127).
   factsVersion(profileId: string): Effect.Effect<string>
@@ -443,33 +449,39 @@ export class ErrorLog extends Context.Service<ErrorLog, {
         })
 
       // The database as it stands: any write, from this process or another,
-      // changes one of the two. The facts' version leaves out the rows
-      // Mistake Type changes write, which change only the labels; a
-      // transaction holds the one connection, so the changes counted inside
-      // one are its own.
+      // changes one of the two, but for the rows written through factFree.
+      // The facts' version also leaves out the rows Mistake Type changes
+      // write, which change only the labels. A transaction holds the one
+      // connection, so the changes counted inside one are its own.
+      let factFreeChanges = 0
       let labelChanges = 0
       const versionsOf = (profileId: string) =>
         run(
           db.select({ changes: sql<number>`total_changes()`, version: sql<number>`(select data_version from pragma_data_version)` })
             .from(profiles).where(eq(profiles.id, profileId))
-        ).pipe(Effect.map(([row]) => ({
-          database: `${row?.changes}:${row?.version}`,
-          facts: `${(row?.changes ?? 0) - labelChanges}:${row?.version}`
-        })))
+        ).pipe(Effect.map(([row]) => {
+          const changes = (row?.changes ?? 0) - factFreeChanges
+          return { database: `${changes}:${row?.version}`, facts: `${changes - labelChanges}:${row?.version}` }
+        }))
       const databaseVersion = (profileId: string) => versionsOf(profileId).pipe(Effect.map((versions) => versions.database))
       const factsVersion = (profileId: string) => versionsOf(profileId).pipe(Effect.map((versions) => versions.facts))
       const totalChanges = run(db.select({ changes: sql<number>`total_changes()` }).from(sql`(select 1)`)).pipe(
         Effect.map(([row]) => row?.changes ?? 0)
       )
-      const labelWrite = <A, E, R>(write: Effect.Effect<A, E, R>) =>
+      // A write in a transaction, its changes counted apart.
+      const countedWrite = <A, E, R>(write: Effect.Effect<A, E, R>, counted: (changes: number) => void) =>
         db.transaction(() =>
           Effect.gen(function*() {
             const before = yield* totalChanges
             const result = yield* write
-            labelChanges += (yield* totalChanges) - before
+            counted((yield* totalChanges) - before)
             return result
           })
         ).pipe(Effect.orDie)
+      const factFree = <A, E, R>(write: Effect.Effect<A, E, R>) =>
+        countedWrite(write, (changes) => void (factFreeChanges += changes))
+      const labelWrite = <A, E, R>(write: Effect.Effect<A, E, R>) =>
+        countedWrite(write, (changes) => void (labelChanges += changes))
 
       // The labels of a few misses are read by their Responses; of many, by
       // the Profile.
@@ -844,7 +856,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
         }).pipe(Effect.catchCause((cause) => Effect.logWarning(`The Error Log could not be read ahead: ${Cause.pretty(cause)}`)))
       )
 
-      return ErrorLog.of({ list, get, setMistakeType, retryState, history, servings, version: databaseVersion, factsVersion })
+      return ErrorLog.of({ list, get, setMistakeType, retryState, history, servings, version: databaseVersion, factsVersion, factFree })
     })
   )
 }

@@ -19,7 +19,7 @@ import {
 import { Db } from "../db/Database.ts"
 import { devices, lanMode } from "../db/schema.ts"
 import { Network } from "./Network.ts"
-import { hostName, isOwnAddress, judge, LoopbackNames, reachOf, type Verdict } from "./reach.ts"
+import { hostName, isOwnAddress, judge, LoopbackNames, reachOf, type Refused, type Verdict } from "./reach.ts"
 import { LastUsedResolutionMs, newToken, sha256 } from "./tokens.ts"
 
 // LAN mode, pairing and paired devices (decisions 119 to 125).
@@ -91,10 +91,13 @@ export class LanAccess extends Context.Service<LanAccess, {
   revoke(id: DeviceId): Effect.Effect<LanView, DeviceNotFound>
   // LAN mode now and at each change, for the listeners.
   readonly mode: Stream.Stream<boolean>
+  // Each device revoked, for the listeners, which close the connections it
+  // may still have open.
+  readonly revocations: Stream.Stream<void>
   reportListening(listening: Listening): Effect.Effect<void>
-  // Each change that can end another device's access, LAN mode going off or
-  // a device revoked, for requests held open.
-  readonly accessChanges: Stream.Stream<void>
+  // Waits until a request may no longer be answered, as when LAN mode goes
+  // off or its device is revoked, and gives the refusal.
+  accessEnds(request: HttpServerRequest.HttpServerRequest): Effect.Effect<Refused>
 }>()("gmat-prep/server/access/LanAccess") {
   static readonly layer = Layer.effect(
     LanAccess,
@@ -106,7 +109,8 @@ export class LanAccess extends Context.Service<LanAccess, {
       const modeRef = yield* SubscriptionRef.make(modeRow?.on ?? false)
       const listeningRef = yield* Ref.make(NotListening)
       const pairingRef = yield* Ref.make<Pairing>({ code: null, wrong: 0 })
-      const changes = yield* PubSub.unbounded<void>()
+      // Each change that can end a device's access.
+      const changes = yield* PubSub.unbounded<"lan-off" | "revoked">()
       const onePairingAtATime = (yield* Semaphore.make(1)).withPermits(1)
 
       // Every device, by token hash and by id. Only this process writes them.
@@ -221,7 +225,7 @@ export class LanAccess extends Context.Service<LanAccess, {
         yield* SubscriptionRef.set(modeRef, on)
         if (!on) {
           yield* Ref.set(pairingRef, { code: null, wrong: 0 })
-          yield* PubSub.publish(changes, undefined)
+          yield* PubSub.publish(changes, "lan-off")
         }
         return yield* view
       })
@@ -242,10 +246,22 @@ export class LanAccess extends Context.Service<LanAccess, {
           const revokedAt = yield* Clock.currentTimeMillis
           yield* db.update(devices).set({ revokedAt }).where(eq(devices.id, id)).pipe(Effect.orDie)
           keep({ ...row, revokedAt })
-          yield* PubSub.publish(changes, undefined)
+          yield* PubSub.publish(changes, "revoked")
         }
         return yield* view
       })
+
+      // Judged again at each change that can end a device's access,
+      // subscribed first so that no change is missed.
+      const accessEnds = (request: HttpServerRequest.HttpServerRequest) =>
+        Effect.gen(function*() {
+          const changed = yield* PubSub.subscribe(changes)
+          for (;;) {
+            const verdict = yield* judgeRequest(request)
+            if (verdict._tag === "refuse") return verdict
+            yield* PubSub.take(changed)
+          }
+        }).pipe(Effect.scoped)
 
       return LanAccess.of({
         judge: judgeRequest,
@@ -257,8 +273,9 @@ export class LanAccess extends Context.Service<LanAccess, {
         makeCode,
         revoke,
         mode: SubscriptionRef.changes(modeRef),
+        revocations: Stream.fromPubSub(changes).pipe(Stream.filter((change) => change === "revoked"), Stream.as(undefined)),
         reportListening: (listening) => Ref.set(listeningRef, listening),
-        accessChanges: Stream.fromPubSub(changes)
+        accessEnds
       })
     })
   )

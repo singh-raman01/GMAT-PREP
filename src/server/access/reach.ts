@@ -27,10 +27,10 @@ export interface Reach {
 
 export type Refusal = "other-name" | "lan-off" | "host-only" | "not-paired"
 
-export type Verdict =
-  | { readonly _tag: "allow"; readonly fromHost: boolean }
-  // lan: whether LAN mode was on, which the refusal's words follow.
-  | { readonly _tag: "refuse"; readonly reason: Refusal; readonly lan: boolean }
+// lan: whether LAN mode was on, which the refusal's words follow.
+export type Refused = { readonly _tag: "refuse"; readonly reason: Refusal; readonly lan: boolean }
+
+export type Verdict = { readonly _tag: "allow"; readonly fromHost: boolean } | Refused
 
 export const LoopbackNames: ReadonlyArray<string> = ["127.0.0.1", "localhost", "[::1]"]
 
@@ -75,10 +75,23 @@ export const routePath = (url: string): string | undefined => {
   return path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path
 }
 
+// Longer than any path of the app's own pages and files.
+export const MaxPlainPath = 2048
+
+const NotPlain = /[^A-Za-z0-9\-._~]/
+
 // A path that reads the same to the router as it is written: plain
 // characters only, so no decoding, folding of slashes or cutting at ; can
-// make it name another route.
-const PlainPath = /^\/(?:[A-Za-z0-9\-._~]+\/?)*$/
+// make it name another route, and no dot segments. A device that is not
+// paired sends any path it likes, so it is read a segment at a time, in time
+// linear in its length, never by a pattern that backtracks.
+export const isPlainPath = (path: string) => {
+  if (path.length > MaxPlainPath || !path.startsWith("/")) return false
+  const segments = path.slice(1).split("/")
+  // A trailing slash, or the path "/" itself.
+  if (segments.at(-1) === "") segments.pop()
+  return segments.every((segment) => segment !== "" && segment !== "." && segment !== ".." && !NotPlain.test(segment))
+}
 
 const isApiPath = (lowered: string) => lowered === "/api" || lowered.startsWith("/api/")
 
@@ -88,7 +101,7 @@ const isApiPath = (lowered: string) => lowered === "/api" || lowered.startsWith(
 // encoding the router undoes.
 export const openToUnpaired = (method: string, url: string) => {
   const raw = url.split("?", 1)[0] ?? ""
-  if (!PlainPath.test(raw) || /(^|\/)\.\.?(\/|$)/.test(raw)) return false
+  if (!isPlainPath(raw)) return false
   const lowered = raw.toLowerCase()
   if (PairingPaths.includes(lowered)) return method === "GET" || method === "POST"
   return (method === "GET" || method === "HEAD") && !isApiPath(lowered)

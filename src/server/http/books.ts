@@ -215,10 +215,14 @@ export const SnapshotsHandlers = HttpApiBuilder.group(
   "snapshots",
   Effect.fn(function*(handlers) {
     const snapshots = yield* Snapshots
+    const curator = yield* Curator
     return handlers.handleAll({
       list: () => snapshots.list,
       take: () => snapshots.take("manual").pipe(Effect.andThen(snapshots.list)),
-      restore: ({ params }) => snapshots.restore(params.id)
+      // The passphrase again, as a restore replaces every Learner's work
+      // since the snapshot.
+      restore: ({ params, payload }) =>
+        curator.confirm(payload.passphrase).pipe(Effect.andThen(snapshots.restore(params.id)))
     })
   })
 )

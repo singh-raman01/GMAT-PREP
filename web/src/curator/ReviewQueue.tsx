@@ -13,6 +13,7 @@ import {
   type ReviewItemView,
   type ReviewReason
 } from "../../../src/api/Review.ts"
+import type { SnapshotFailed } from "../../../src/api/Snapshots.ts"
 import type { TaxonomyView } from "../../../src/api/Taxonomy.ts"
 import { bandOf } from "../../../src/api/difficulty.ts"
 import { call, type Client } from "../api.ts"
@@ -82,6 +83,7 @@ const send = (client: Client, action: Action, id: ReviewItemView["id"]): Effect.
 
 const isCannotPublish = (failure: { readonly _tag: string }): failure is CannotPublish => failure._tag === "CannotPublish"
 const isKeysDiffer = (failure: { readonly _tag: string }): failure is KeysDiffer => failure._tag === "KeysDiffer"
+const isSnapshotFailed = (failure: { readonly _tag: string }): failure is SnapshotFailed => failure._tag === "SnapshotFailed"
 
 // Taxonomy names by id, for Skills, Strategies, Mistake Types and Trap
 // Patterns; an id the Taxonomy does not hold shows as itself.
@@ -112,11 +114,18 @@ const itemName = (item: ReviewItemView) => {
   return first === undefined ? "A Question" : `${first.bookTitle}: ${first.set}, question ${first.number}`
 }
 
+// Parts of a sentence, as "a, b and c".
+const listed = (parts: ReadonlyArray<string | undefined>) => {
+  const present = parts.filter((part): part is string => part !== undefined)
+  return present.length <= 1 ? present.join("") : `${present.slice(0, -1).join(", ")} and ${present.at(-1)}`
+}
+
 const Done: Record<string, string> = {
   published: "Published",
   withdrawn: "Withdrawn",
   merged: "Merged",
-  dismissed: "Dismissed"
+  dismissed: "Dismissed",
+  "key-changed": "Key changed"
 }
 
 // Jobs whose progress adds or changes items.
@@ -211,7 +220,9 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
       setAnnouncement(
         next.status === "open"
           ? `${itemName(item)} is kept as a Variant; it still waits for you.`
-          : `${Done[next.decision ?? ""] ?? "Decided"}: ${itemName(item)}.`
+          : `${next.kind === "report" && next.decision === "dismissed" ? "Kept as it is" : Done[next.decision ?? ""] ?? "Decided"}: ${
+            itemName(item)
+          }.`
       )
       return undefined
     }
@@ -230,6 +241,7 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
       void load()
       return "The other Question is still waiting for its checks. Merge into it once it is published or held."
     }
+    if (isSnapshotFailed(failure)) return `Nothing was merged, as the snapshot taken first failed: ${failure.detail}`
     if (failure._tag === "ReviewItemNotOpen" || failure._tag === "ReviewItemNotFound") {
       void load()
       return "This item changed in the meantime; the queue was read again."
@@ -264,6 +276,8 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
     switch (result.failure._tag) {
       case "KeyNotAnOption":
         return `Choose one of its answer choices: ${result.failure.options.join(", ")}.`
+      case "SnapshotFailed":
+        return `The key was not changed, as the snapshot taken first failed: ${result.failure.detail}`
       case "ReviewItemNotOpen":
       case "ReviewItemNotFound":
         void load()
@@ -275,7 +289,8 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
   }
 
   const names = namesOf(taxonomy)
-  const questions = items?.filter((item) => item.question !== null).length ?? 0
+  const questions = items?.filter((item) => item.question !== null && item.kind === "check").length ?? 0
+  const reports = items?.filter((item) => item.kind === "report").length ?? 0
   const pages = items?.filter((item) => item.page !== null).length ?? 0
 
   return (
@@ -283,7 +298,8 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
       <h1 ref={heading} tabIndex={-1}>Review Queue</h1>
       <p className="lede">
         Questions that pass every check are published on their own. The rest wait here, each with every reason, until
-        you publish, change the key of, or withdraw them.
+        you publish, change the key of, or withdraw them. Learners' Problem Reports wait here too, until you keep the
+        Question as it is, change its key or withdraw it.
       </p>
       <p className="visually-hidden" role="status">{announcement}</p>
       {waiting !== undefined && (waiting.checking > 0 || waiting.paused > 0 || waiting.stranded > 0) && (
@@ -322,10 +338,11 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
         : (
           <>
             <p className="queue-count">
-              {[
-                questions > 0 ? `${questions} ${questions === 1 ? "Question" : "Questions"}` : undefined,
+              {listed([
+                questions > 0 ? `${questions} held ${questions === 1 ? "Question" : "Questions"}` : undefined,
+                reports > 0 ? `Learners' reports on ${reports} ${reports === 1 ? "Question" : "Questions"}` : undefined,
                 pages > 0 ? `${pages} ${pages === 1 ? "page" : "pages"}` : undefined
-              ].filter((part) => part !== undefined).join(" and ")} {questions + pages === 1 ? "waits" : "wait"} for you.
+              ])} {questions + pages === 1 && reports === 0 ? "waits" : "wait"} for you.
             </p>
             <ul className="review-items">
               {items.map((item) => (
@@ -587,7 +604,7 @@ const ReviewItem = (
   const otherPassage = repeats && question.stimulus?.kind === "passage" && item.related?.stimulus?.kind === "passage" &&
     item.related.stimulus.body !== question.stimulus.body
   const override = question.keyOverrides.at(-1)
-  const reported = item.reasons.some((reason) => reason.code === "problem-report") && question.status === "published"
+  const reported = item.kind === "report"
   return (
     <li className="review-item">
       {title}
@@ -684,8 +701,9 @@ const ReviewItem = (
       </div>
       {reported && (
         <p className="hint">
-          A Learner reported this published Question. It stays published until you decide: keep it as it is, change its
-          key, which checks it again, or withdraw it.
+          {question.status === "published"
+            ? "Learners reported this published Question. It stays published until you decide: keep it as it is, change its key, which checks it again, or withdraw it."
+            : "Learners reported this Question, which a check also holds. Keep it as it is, change its key, which checks it again, or withdraw it."}
         </p>
       )}
       {otherPassage && (
@@ -732,8 +750,9 @@ const ReviewItem = (
 
 const Reasons = ({ reasons }: { readonly reasons: ReadonlyArray<ReviewReason> }) => (
   <ul className="reasons">
-    {reasons.map((reason) => (
-      <li key={`${reason.code}-${reason.detail}`}>
+    {reasons.map((reason, index) => (
+      // Two Learners may report in the same words.
+      <li key={index}>
         <span className="reason-label">{ReasonLabels[reason.code]}</span> {reason.detail}
       </li>
     ))}

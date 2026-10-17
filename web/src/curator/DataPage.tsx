@@ -1,9 +1,10 @@
 import { type FormEvent, useCallback, useEffect, useId, useRef, useState } from "react"
 import { type CuratorProfileView, type InstallExportView, InstallExportPath } from "../../../src/api/Exports.ts"
-import type { SnapshotKind, SnapshotsView, SnapshotView } from "../../../src/api/Snapshots.ts"
+import type { IntegrityView, SnapshotKind, SnapshotsView, SnapshotView } from "../../../src/api/Snapshots.ts"
 import { call } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
 import { dayAndTime } from "../format.ts"
+import { blockedText, sizeText, takenTexts } from "./dataText.ts"
 
 // The Curator's care of the install's data (docs/design.md, "Data safety and
 // operations"): snapshots and restoring one, each Profile's PIN and
@@ -23,15 +24,6 @@ const kindNames: Record<SnapshotKind, string> = {
   "pre-restore": "Before a restore",
   "manual": "Taken by hand"
 }
-
-export const sizeText = (bytes: number | null) =>
-  bytes === null
-    ? "size unknown"
-    : bytes < 1024 * 1024
-    ? `${Math.max(1, Math.round(bytes / 1024))} KB`
-    : bytes < 1024 * 1024 * 1024
-    ? `${(bytes / 1024 / 1024).toFixed(1)} MB`
-    : `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
 
 export const DataPage = ({ onLocked, onStopped }: Props) => {
   const heading = useFocusOnMount<HTMLHeadingElement>()
@@ -53,11 +45,51 @@ export const DataPage = ({ onLocked, onStopped }: Props) => {
   )
 }
 
+// The last full check, worded by what it found and when it ran.
+const IntegrityNote = ({ integrity }: { readonly integrity: IntegrityView }) => {
+  const when = dayAndTime(integrity.at)
+  switch (integrity.outcome) {
+    case "ok":
+      return (
+        <p className="hint">
+          {integrity.afterRestore
+            ? `The full check after the restore on ${when} found no damage.`
+            : `The weekly full check found no damage on ${when}.`}
+        </p>
+      )
+    case "not-run":
+      return (
+        <p className="hint">
+          The full check of the database could not run on {when}: {integrity.detail}. It is tried again within the hour.
+        </p>
+      )
+    case "damaged":
+      return integrity.afterRestore
+        ? (
+          <p className="problem">
+            The full check after the restore on {when} still found damage, in the database file itself, which a restore
+            cannot repair: {integrity.detail}. Stop the app, move gmat-prep.sqlite out of the data folder, copy the
+            snapshot you want from the snapshots folder in its place under the name gmat-prep.sqlite, and start the app
+            again.
+          </p>
+        )
+        : (
+          <p className="problem">
+            The weekly full check on {when} found damage in the database: {integrity.detail}. Restore the latest snapshot
+            taken before that day.
+          </p>
+        )
+  }
+}
+
 const Snapshots = ({ onFailure }: { readonly onFailure: (failure: { readonly _tag: string }) => void }) => {
   const [view, setView] = useState<SnapshotsView>()
   const [problem, setProblem] = useState<string>()
   const [done, setDone] = useState<string>()
   const [asking, setAsking] = useState<SnapshotView>()
+  // What is under way: taking a snapshot, or restoring the one asked about.
+  const [working, setWorking] = useState<"taking" | "restoring">()
+  const [passphraseProblem, setPassphraseProblem] = useState<string>()
   const busy = useRef(false)
   const title = useRef<HTMLHeadingElement>(null)
 
@@ -73,10 +105,12 @@ const Snapshots = ({ onFailure }: { readonly onFailure: (failure: { readonly _ta
   const take = async () => {
     if (busy.current) return
     busy.current = true
+    setWorking("taking")
     setProblem(undefined)
     setDone(undefined)
     const result = await call((client) => client.snapshots.take())
     busy.current = false
+    setWorking(undefined)
     if (result._tag === "Success") {
       setView(result.success)
       return setDone("Snapshot taken.")
@@ -88,37 +122,50 @@ const Snapshots = ({ onFailure }: { readonly onFailure: (failure: { readonly _ta
     onFailure(result.failure)
   }
 
-  const restore = async (snapshot: SnapshotView) => {
+  const ask = (snapshot: SnapshotView | undefined) => {
+    setAsking(snapshot)
+    setPassphraseProblem(undefined)
+  }
+
+  const restore = async (snapshot: SnapshotView, passphrase: string, when: string) => {
     if (busy.current) return
     busy.current = true
+    setWorking("restoring")
     setProblem(undefined)
     setDone(undefined)
-    const result = await call((client) => client.snapshots.restore({ params: { id: snapshot.id } }))
+    setPassphraseProblem(undefined)
+    const result = await call((client) => client.snapshots.restore({ params: { id: snapshot.id }, payload: { passphrase } }))
     busy.current = false
-    setAsking(undefined)
+    setWorking(undefined)
+    const failure = result._tag === "Failure" ? result.failure : undefined
+    // A wrong passphrase leaves the question open, to try again.
+    switch (failure?._tag) {
+      case "WrongPassphrase":
+        return setPassphraseProblem(
+          `That is not the passphrase. ${failure.attemptsLeft} more tries before the tools lock for 5 minutes.`
+        )
+      case "CuratorLocked":
+        return setPassphraseProblem(`Too many wrong passphrases: the tools are locked until ${dayAndTime(failure.lockedUntil)}.`)
+    }
+    ask(undefined)
     title.current?.focus()
-    if (result._tag === "Success") {
+    if (failure === undefined) {
       setDone(
-        `Restored the snapshot from ${dayAndTime(snapshot.takenAt)}. The database it replaced is kept as a snapshot, "${
-          kindNames["pre-restore"]
-        }", should you want it back.`
+        `Restored the snapshot from ${when}. The database it replaced is kept as a snapshot, "${kindNames["pre-restore"]}", should you want it back.`
       )
       return void load()
     }
-    const failure = result.failure
     switch (failure._tag) {
       case "RestoreBlocked":
-        return setProblem(
-          failure.reason === "job-running"
-            ? "A job is running. Pause it, or wait for it to finish, then restore."
-            : "A Learner is in a Mock, Sectional or timed set. Restore once it has ended."
-        )
+        return setProblem(blockedText(failure))
       case "SnapshotUnusable":
         return setProblem(
           failure.reason === "changed"
             ? "This snapshot's file has changed since it was taken, so it is not restored."
             : failure.reason === "newer"
             ? "A newer version of the app took this snapshot. Update the app to restore it."
+            : failure.reason === "foreign"
+            ? "This file is not a snapshot of this app's database, so it is not restored."
             : `This snapshot's file is damaged and is not restored: ${failure.detail}`
         )
       case "SnapshotNotFound":
@@ -131,35 +178,40 @@ const Snapshots = ({ onFailure }: { readonly onFailure: (failure: { readonly _ta
     }
   }
 
+  const taken = takenTexts(view?.snapshots ?? [])
+
   return (
-    <section className="group" aria-labelledby="snapshots-title">
+    <section className="group" aria-labelledby="snapshots-title" aria-busy={working !== undefined}>
       <h2 id="snapshots-title" ref={title} tabIndex={-1}>Snapshots</h2>
       <p className="group-about">
         Kept: the last 7 days, a snapshot from each of the 4 weeks before them, and the last 10 taken before a change.
+        Copies found in the snapshots folder are listed too, and the app never deletes them.
       </p>
-      {view?.integrity != null && (
-        view.integrity.ok
-          ? <p className="hint">The weekly full check found no damage on {dayAndTime(view.integrity.at)}.</p>
-          : (
-            <p className="problem">
-              The weekly full check on {dayAndTime(view.integrity.at)} found damage in the database: {view.integrity.detail}.
-              Restore the latest snapshot taken before that day.
-            </p>
-          )
-      )}
+      {view?.integrity != null && <IntegrityNote integrity={view.integrity} />}
       {view !== undefined && view.failures.length > 0 && (
         <ul className="problem-list" aria-label="Snapshots that failed">
-          {view.failures.map((failure) => (
-            <li key={failure.kind} className="problem">
+          {view.failures.map((failure, index) => (
+            <li key={`${failure.kind}-${failure.at}-${index}`} className="problem">
               {kindNames[failure.kind]} snapshot, {dayAndTime(failure.at)}: {failure.error}
             </li>
           ))}
         </ul>
       )}
       <div className="actions">
-        <button type="button" className="button" onClick={() => void take()}>Take a snapshot now</button>
+        <button
+          type="button"
+          className="button"
+          aria-busy={working === "taking"}
+          aria-disabled={working !== undefined}
+          onClick={() => void take()}
+        >
+          {working === "taking" ? "Taking a snapshot" : "Take a snapshot now"}
+        </button>
       </div>
-      <div role="status">{done !== undefined && <p className="saved">{done}</p>}</div>
+      <div role="status">
+        {working === "restoring" && <p className="quiet">Restoring the snapshot. Learners' requests wait while the data is swapped.</p>}
+        {done !== undefined && <p className="saved">{done}</p>}
+      </div>
       {problem !== undefined && <p className="problem" role="alert">{problem}</p>}
       {view === undefined
         ? <p className="quiet" aria-busy="true">Reading the snapshots</p>
@@ -167,40 +219,95 @@ const Snapshots = ({ onFailure }: { readonly onFailure: (failure: { readonly _ta
         ? <p className="empty">No snapshot is kept yet. The first daily one is taken within the hour.</p>
         : (
           <ul className="set-list snapshot-list">
-            {view.snapshots.map((snapshot) => (
-              <li key={snapshot.id}>
-                <span className="set-name">{dayAndTime(snapshot.takenAt)}</span>
-                <span className="set-facts">{kindNames[snapshot.kind]}, {sizeText(snapshot.size)}.</span>
-                {asking?.id === snapshot.id
-                  ? (
-                    <div className="snapshot-confirm" role="group" aria-labelledby={`restore-${snapshot.id}`}>
-                      <p id={`restore-${snapshot.id}`}>
-                        Put the database back as it was then? Everything since is replaced; the database as it is now is
-                        kept as a snapshot first.
-                      </p>
-                      <div className="actions">
-                        <button type="button" className="button" onClick={() => void restore(snapshot)}>Restore it</button>
-                        <KeepButton onKeep={() => setAsking(undefined)} />
-                      </div>
-                    </div>
-                  )
-                  : (
-                    <button type="button" className="button button-quiet" onClick={() => setAsking(snapshot)}>
-                      Restore<span className="visually-hidden"> the snapshot from {dayAndTime(snapshot.takenAt)}</span>
-                    </button>
-                  )}
-              </li>
-            ))}
+            {view.snapshots.map((snapshot) => {
+              const when = taken.get(snapshot.id) ?? dayAndTime(snapshot.takenAt)
+              return (
+                <li key={snapshot.id}>
+                  <span className="set-name">{when}</span>
+                  <span className="set-facts">
+                    {kindNames[snapshot.kind]}, {sizeText(snapshot.size)}
+                    {snapshot.found ? ", found in the snapshots folder." : "."}
+                  </span>
+                  {asking?.id === snapshot.id
+                    ? (
+                      <RestoreForm
+                        when={when}
+                        restoring={working === "restoring"}
+                        problem={passphraseProblem}
+                        onRestore={(passphrase) => void restore(snapshot, passphrase, when)}
+                        onKeep={() => ask(undefined)}
+                      />
+                    )
+                    : (
+                      <button
+                        type="button"
+                        className="button button-quiet"
+                        aria-disabled={working !== undefined}
+                        onClick={() => working === undefined && ask(snapshot)}
+                      >
+                        Restore<span className="visually-hidden"> the snapshot from {when}</span>
+                      </button>
+                    )}
+                </li>
+              )
+            })}
           </ul>
         )}
     </section>
   )
 }
 
-// The way out of a question asked in place, focused when it appears.
-const KeepButton = ({ onKeep, label = "Keep it as it is" }: { readonly onKeep: () => void; readonly label?: string }) => {
-  const ref = useFocusOnMount<HTMLButtonElement>()
-  return <button ref={ref} type="button" className="button button-quiet" onClick={onKeep}>{label}</button>
+// The question asked before a restore, which replaces every Learner's work
+// since the snapshot: the passphrase again, and the way out.
+const RestoreForm = (
+  { when, restoring, problem, onRestore, onKeep }: {
+    readonly when: string
+    readonly restoring: boolean
+    readonly problem: string | undefined
+    readonly onRestore: (passphrase: string) => void
+    readonly onKeep: () => void
+  }
+) => {
+  const id = useId()
+  const field = useFocusOnMount<HTMLInputElement>()
+  const [passphrase, setPassphrase] = useState("")
+  return (
+    <form
+      className="snapshot-confirm"
+      noValidate
+      aria-labelledby={`${id}-ask`}
+      aria-busy={restoring}
+      onSubmit={(event) => {
+        event.preventDefault()
+        if (!restoring) onRestore(passphrase)
+      }}
+    >
+      <p id={`${id}-ask`}>
+        Put the database back as it was on {when}? Everything since is replaced; the database as it is now is kept as a
+        snapshot first. Enter the Curator passphrase to go on.
+      </p>
+      <label htmlFor={id}>Curator passphrase</label>
+      <input
+        ref={field}
+        id={id}
+        type="password"
+        autoComplete="current-password"
+        value={passphrase}
+        aria-invalid={problem !== undefined}
+        aria-describedby={problem === undefined ? undefined : `${id}-problem`}
+        onChange={(event) => setPassphrase(event.target.value)}
+      />
+      {problem !== undefined && <p id={`${id}-problem`} className="field-error" role="alert">{problem}</p>}
+      <div className="actions">
+        <button type="submit" className="button" aria-busy={restoring} aria-disabled={restoring}>
+          {restoring ? "Restoring" : "Restore it"}
+        </button>
+        <button type="button" className="button button-quiet" aria-disabled={restoring} onClick={() => !restoring && onKeep()}>
+          Keep it as it is
+        </button>
+      </div>
+    </form>
+  )
 }
 
 const Profiles = ({ onFailure }: { readonly onFailure: (failure: { readonly _tag: string }) => void }) => {
@@ -229,8 +336,9 @@ const Profiles = ({ onFailure }: { readonly onFailure: (failure: { readonly _tag
     <section className="group" aria-labelledby="profiles-title">
       <h2 id="profiles-title" ref={title} tabIndex={-1}>Profiles</h2>
       <p className="group-about">
-        Set a new PIN for a Learner who forgot theirs, or take it away. Deleting a Profile removes everything it holds,
-        after a snapshot.
+        Set a new PIN for a Learner who forgot theirs, or take it away. Deleting a Profile removes everything it holds
+        from the app, after a snapshot. Copies of it stay in the snapshots until the app deletes them, the daily ones
+        within about five weeks, and in the install's last archive, if one was made.
       </p>
       <div role="status">{done !== undefined && <p className="saved">{done}</p>}</div>
       {rows === undefined
@@ -318,7 +426,7 @@ const PinForm = (
         aria-describedby={problem === undefined ? undefined : `${id}-problem`}
         onChange={(event) => setPin(event.target.value)}
       />
-      {problem !== undefined && <p id={`${id}-problem`} className="field-error">{problem}</p>}
+      {problem !== undefined && <p id={`${id}-problem`} className="field-error" role="alert">{problem}</p>}
       <div className="actions">
         <button type="submit" className="button">Set the PIN</button>
         {row.profile.hasPin && (
@@ -423,8 +531,8 @@ const Archive = ({ onFailure }: { readonly onFailure: (failure: { readonly _tag:
       <h2 id="archive-title">Move the install</h2>
       <p className="group-about">
         One archive holds the database, the Books and their page images. To move the install, close the app on the
-        other computer, unpack the archive into its data folder, and start it. The LLM key is not in it: enter it again
-        under Settings there.
+        other computer, unpack the archive into an empty data folder there, and start it. The LLM key is not in it:
+        enter it again under Settings there.
       </p>
       <div className="actions">
         <button type="button" className="button" aria-busy={making} onClick={() => void make()}>

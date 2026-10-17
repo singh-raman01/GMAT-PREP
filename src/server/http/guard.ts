@@ -1,9 +1,9 @@
-import { Cause, Effect } from "effect"
-import { HttpEffect, HttpRouter, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http"
+import { Cause, Effect, Stream } from "effect"
+import { HttpBody, HttpEffect, HttpRouter, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { BookUploadPath, MaxBookBytes } from "../../api/Books.ts"
 import { RefusedHeader } from "../../api/Lan.ts"
 import { LanAccess } from "../access/LanAccess.ts"
-import { RefusalTexts } from "../access/reach.ts"
+import { RefusalTexts, type Refused } from "../access/reach.ts"
 
 // Who may reach the server is decided in LanAccess (decisions 119 to 125):
 // a web page on another site can point its own host name at this computer
@@ -90,6 +90,25 @@ const logServerFailure = (request: HttpServerRequest.HttpServerRequest, cause: C
     )
   )
 
+// The app reads why from the header, to ask for pairing.
+const refusal = (verdict: Refused) =>
+  HttpServerResponse.text(RefusalTexts[verdict.reason](verdict.lan), {
+    status: 403,
+    headers: { [RefusedHeader]: verdict.reason }
+  })
+
+// A stream to another device, such as its event stream, ends part way when
+// its access does; Bun goes on sending any other response until the listener
+// holding it closes (src/server/http/listeners.ts). The stream fails rather
+// than ends, so the device cannot take it for whole, and with no error, as
+// Bun prints any other.
+const stopsWhenAccessEnds = (response: HttpServerResponse.HttpServerResponse, ended: Effect.Effect<Refused>) => {
+  const body = response.body
+  if (body._tag !== "Stream") return response
+  const stopped = body.stream.pipe(Stream.interruptWhen(Effect.andThen(ended, Effect.fail(undefined))))
+  return HttpServerResponse.setBody(response, HttpBody.stream(stopped, body.contentType, body.contentLength))
+}
+
 // Refuses other hosts, devices not let in, and cross-site writes, adds the
 // security headers to every response, error responses included, and logs
 // server failures. Ordinary requests are not logged, to keep the terminal
@@ -102,18 +121,24 @@ export const GuardLive = HttpRouter.middleware(
         const request = yield* HttpServerRequest.HttpServerRequest
         yield* HttpEffect.appendPreResponseHandler(addSecurityHeaders)
         const verdict = yield* access.judge(request)
-        if (verdict._tag === "refuse") {
-          // The app reads why from the header, to ask for pairing.
-          return HttpServerResponse.text(RefusalTexts[verdict.reason](verdict.lan), {
-            status: 403,
-            headers: { [RefusedHeader]: verdict.reason }
-          })
-        }
+        if (verdict._tag === "refuse") return refusal(verdict)
         const refusedWrite = writeRefusal(request, request.headers["host"] ?? "")
         if (refusedWrite !== undefined) {
           return refusedWrite
         }
-        return yield* httpEffect.pipe(Effect.tapCause((cause) => logServerFailure(request, cause)))
+        const logged = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          effect.pipe(Effect.tapCause((cause) => logServerFailure(request, cause)))
+        if (verdict.fromHost) return yield* logged(httpEffect)
+        // Another device's access can end while its request runs (decisions
+        // 120 and 123): the request then stops where it is, so a write not
+        // yet committed rolls back, and the device is refused. As without
+        // the race, only the route's handler can be interrupted, and a device
+        // that goes away still ends its request.
+        const ended = access.accessEnds(request)
+        const response = yield* logged(
+          Effect.raceFirst(Effect.uninterruptible(httpEffect), Effect.map(ended, refusal)).pipe(Effect.interruptible)
+        )
+        return stopsWhenAccessEnds(response, ended)
       })
   }),
   { global: true }

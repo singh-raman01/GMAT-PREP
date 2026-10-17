@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test"
+import fc from "fast-check"
 import {
   isOwnAddress,
+  isPlainPath,
   judge,
   lanAddressesOf,
+  MaxPlainPath,
   openToUnpaired,
   type Reach,
   reachOf,
@@ -80,6 +83,42 @@ describe("Reaching the server", () => {
     }
     expect(openToUnpaired("GET", "/API/PAIRING")).toBe(true)
     expect(openToUnpaired("DELETE", "/api/pairing")).toBe(false)
+  })
+
+  test("a plain path is slash-separated segments of plain characters, no dot segments, up to the longest the app has", () => {
+    for (const path of ["/", "/a", "/a/", "/a/b", "/a/b/", "/..a", "/a..", "/a./b", "/~-_.", "/" + "a".repeat(MaxPlainPath - 1)]) {
+      expect([path, isPlainPath(path)]).toEqual([path, true])
+    }
+    for (const path of ["", "a", "//", "/a//b", "/a//", "/.", "/..", "/./", "/a/../b", "/a/.", "/a b", "/a;b", "/a%2e", "/é", "/" + "a".repeat(MaxPlainPath)]) {
+      expect([path, isPlainPath(path)]).toEqual([path, false])
+    }
+    // The same rule as one pattern, which backtracks, so only on short paths.
+    const asOnePattern = (path: string) => /^\/(?:[A-Za-z0-9\-._~]+\/?)*$/.test(path) && !/(^|\/)\.\.?(\/|$)/.test(path)
+    const shortPaths = fc.array(fc.constantFrom("a", "Z", "0", ".", "/", "-", "_", "~", "!", "%", ";", " "), { maxLength: 14 })
+    fc.assert(fc.property(shortPaths, (chars) => {
+      expect(isPlainPath(chars.join(""))).toBe(asOnePattern(chars.join("")))
+    }), { numRuns: 5000 })
+  })
+
+  test("a device that is not paired is judged in time linear in the path it sends", () => {
+    const hostile = [
+      "/" + "a".repeat(9_998) + "!",
+      "/" + "a".repeat(MaxPlainPath - 2) + "!",
+      "/" + "a/".repeat(MaxPlainPath / 2 - 1) + "!",
+      "/" + "a.".repeat(MaxPlainPath / 2 - 1) + "!",
+      "/" + "%2e/".repeat(2_500)
+    ]
+    for (const url of hostile) {
+      // The fastest of three, so a pause elsewhere on the computer does not count.
+      let fastest = Infinity
+      for (let round = 0; round < 3; round++) {
+        const started = performance.now()
+        expect(openToUnpaired("GET", url)).toBe(false)
+        expect(judge(request({ url }), lan)).toMatchObject({ _tag: "refuse", reason: "not-paired" })
+        fastest = Math.min(fastest, performance.now() - started)
+      }
+      expect({ length: url.length, withinFiveMs: fastest < 5 }).toEqual({ length: url.length, withinFiveMs: true })
+    }
   })
 
   test("a paired device reaches everything but what only this computer may do, however it is spelt", () => {

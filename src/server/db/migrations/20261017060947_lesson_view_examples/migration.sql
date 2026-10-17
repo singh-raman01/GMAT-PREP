@@ -1,0 +1,1 @@
+ALTER TABLE `lesson_views` ADD `shown_examples` text;

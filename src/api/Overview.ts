@@ -40,6 +40,10 @@ export class CuratorOverview extends Schema.Class<CuratorOverview>("gmat-prep/ap
   thinSkills: Schema.Int,
   // Review Queue items waiting for a decision.
   reviewQueue: Schema.Int,
+  // Learners' Problem Reports waiting for a decision, and the Questions they
+  // are on; each Question's reports are one of the Review Queue's items.
+  problemReports: Schema.Int,
+  reportedQuestions: Schema.Int,
   // The month so far, from its first day in the app's time zone.
   monthFrom: Schema.Number,
   // What every LLM call cost this month, and the jobs that ran in it.
