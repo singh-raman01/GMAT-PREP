@@ -624,8 +624,10 @@ describe("Data from the version before these fixes", () => {
 
   test("the migration marks the stored report items, dates the stored messages and closes items left on withdrawn Questions", async () => {
     const dataDir = tempDataDir()
-    expect(bundledMigrations.at(-1)!.name).toEndWith("_tutor_review_fixes")
-    await open(dataDir, bundledMigrations.slice(0, -1))
+    // Every migration before these fixes', as the version before them had.
+    const fixes = bundledMigrations.findIndex((migration) => migration.name.endsWith("_tutor_review_fixes"))
+    expect(fixes).toBeGreaterThan(0)
+    await open(dataDir, bundledMigrations.slice(0, fixes))
     const db = new Database(join(dataDir, "gmat-prep.sqlite"))
     // A row with the given values, and a stand-in for each other column that needs one.
     const insert = (table: string, values: Record<string, string | number>) => {
