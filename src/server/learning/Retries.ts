@@ -34,10 +34,11 @@ const dueOf = (state: RetryState): ReadonlyArray<Due> =>
     return [{ ...entry, step: ladder.step, dueDay: ladder.dueDay, timed }]
   }).toSorted((a, b) => a.dueDay - b.dueDay || a.lastMissedAt - b.lastMissedAt)
 
-// A step 1 waits while its Question cannot be served: a running Sectional
-// or Mock holds it, or it is out of the Question Bank for a check.
+// A step waits while a running Sectional or Mock holds the entry's
+// Question, as the Error Log leaves the entry out then; a step 1 also while
+// its Question is out of the Question Bank for a check.
 const waits = (due: Due, held: ReadonlySet<string>) =>
-  due.step === 1 && (held.has(due.questionId) || due.question.status !== "published")
+  held.has(due.questionId) || (due.step === 1 && due.question.status !== "published")
 
 export class Retries extends Context.Service<Retries, {
   due(profileId: string): Effect.Effect<RetriesView>
@@ -98,9 +99,13 @@ export class Retries extends Context.Service<Retries, {
         Effect.gen(function*() {
           const state = yield* errorLog.retryState(caller.profileId)
           if (state.running !== undefined) return yield* new RetriesRunning({ id: SessionId.make(state.running) })
-          const wanted = dueOf(state).filter((each) => each.dueDay <= state.today && each.timed === timed)
-          if (wanted.length === 0) return yield* new NoRetriesDue({ skipped: 0 })
           const held = yield* run(heldBySections(caller.profileId))
+          // A held entry's later steps wait too; step 1s that wait are kept
+          // for the plan to count.
+          const wanted = dueOf(state).filter((each) =>
+            each.dueDay <= state.today && each.timed === timed && (each.step === 1 || !held.has(each.questionId))
+          )
+          if (wanted.length === 0) return yield* new NoRetriesDue({ skipped: 0 })
           const seen = yield* run(seenBy(caller.profileId))
           const resolve = yield* run(mergeTargets)
           const pool = yield* run(publishedPool)

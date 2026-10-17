@@ -1,16 +1,18 @@
 import { describe, expect, test } from "bun:test"
 import { eq } from "drizzle-orm"
-import { Effect, Ref } from "effect"
+import { Clock, Effect, Ref } from "effect"
 import { Cookies, HttpClient, HttpClientRequest } from "effect/http"
 import { HttpApiClient } from "effect/http-api"
 import { TestClock } from "effect/testing"
 import { Api } from "../src/api/Api.ts"
 import type { PracticeChoice, PracticeView } from "../src/api/Practice.ts"
+import { DefaultBlueprint } from "../src/api/blueprint.ts"
 import { RetrySetMax } from "../src/api/Retries.ts"
 import type { QuestionId } from "../src/api/Review.ts"
 import { Db } from "../src/server/db/Database.ts"
-import { questions } from "../src/server/db/schema.ts"
-import { numbered, OtherPsSkill, seedBook } from "./fixtures/bank.ts"
+import { questions, sessions } from "../src/server/db/schema.ts"
+import { encodeConfig } from "../src/server/sections/config.ts"
+import { numbered, OtherPsSkill, PsSkill, seedBook } from "./fixtures/bank.ts"
 import { openBrowser, runWithWorkers, tempDataDir, type WorkerTestServices } from "./harness.ts"
 
 // Noon UTC on 1 October 2026, so Study Days are whole days.
@@ -329,5 +331,60 @@ describe("Review fixes in Retries", () => {
       expect(report.map((each) => [each.skill.id, each.questionType.id, each.skipped, each.available])).toEqual([
         [OtherPsSkill, "quant.ps", 0, 0]
       ])
+    })))
+
+  test("the Siblings report pairs a Data Sufficiency type with the Quant Skill its Questions take", () =>
+    run(Effect.gen(function*() {
+      yield* seedBook("DI Review", numbered(1, { questionType: "di.ds", primarySkill: PsSkill }))
+      yield* seedBook("More DI", numbered(2, { questionType: "di.ds", primarySkill: OtherPsSkill }, 2))
+      const asha = yield* learner("Asha")
+      const missed = yield* takeSet(asha, yield* asha.practice.start({ payload: { choice: { kind: "filters", status: "unseen", size: 1, skill: PsSkill } } }), "A")
+      expect(missed.served.length).toBe(1)
+      yield* asha.later(2)
+      yield* takeSet(asha, yield* asha.retries.start({ payload: { timed: false } }), "C")
+      yield* asha.later(5)
+      expect(yield* asha.retries.start({ payload: { timed: true } }).pipe(Effect.flip)).toMatchObject({ _tag: "NoRetriesDue", skipped: 1 })
+      const curator = yield* openBrowser
+      yield* curator.curatorAccess.setPassphrase({ payload: { passphrase: "correct horse battery" } })
+      const report = yield* curator.siblings.report()
+      expect(report.map((each) => [each.skill.id, each.questionType.id, each.section.id, each.skipped, each.available])).toEqual([
+        [PsSkill, "di.ds", "di", 1, 1],
+        [OtherPsSkill, "di.ds", "di", 0, 2]
+      ])
+    })))
+
+  test("every step of an entry whose Question a running Sectional holds waits, counted but not named", () =>
+    run(Effect.gen(function*() {
+      yield* seedBook("Quant Review", numbered(4))
+      const asha = yield* learner("Asha")
+      const entry = (yield* takeSet(asha, yield* asha.practice.start({ payload: { choice: untimedSet(1) } }), "A")).served[0]!
+      yield* asha.later(2)
+      yield* takeSet(asha, yield* asha.retries.start({ payload: { timed: false } }), "C")
+      // A Sectional that chose the entry's Question from the Seen tier runs.
+      const db = yield* Db
+      yield* db.insert(sessions).values({
+        id: crypto.randomUUID(),
+        profileId: (yield* asha.session.me()).id,
+        kind: "sectional",
+        timed: true,
+        config: encodeConfig({
+          section: "quant",
+          blueprint: DefaultBlueprint,
+          units: [{ unitId: entry, group: "ps", questionIds: [entry], seen: [entry], skipped: [], tier: "seen", slot: "own" }],
+          passed: {},
+          stage: "question",
+          unfilled: 0,
+          report: null
+        }),
+        status: "active",
+        timeLimitMs: 45 * 60_000,
+        elapsedMs: 0,
+        clockSavedAt: yield* Clock.currentTimeMillis,
+        createdAt: yield* Clock.currentTimeMillis
+      }).pipe(Effect.orDie)
+      yield* asha.later(5)
+      const due = yield* asha.retries.due()
+      expect([due.due.map((each) => each.questionId), due.timed, due.waiting]).toEqual([[], 0, 1])
+      expect((yield* asha.retries.start({ payload: { timed: true } }).pipe(Effect.flip))._tag).toBe("NoRetriesDue")
     })))
 })

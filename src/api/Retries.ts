@@ -35,8 +35,8 @@ export class RetriesView extends Schema.Class<RetriesView>("gmat-prep/api/Retrie
   // How many are ready of each timing.
   untimed: Schema.Int,
   timed: Schema.Int,
-  // Step 1s due whose Question cannot be served now: a running Sectional or
-  // Mock holds it, or it is out of the Question Bank for a check.
+  // Steps due that wait: a running Sectional or Mock holds the entry's
+  // Question, or a step 1's Question is out of the Question Bank for a check.
   waiting: Schema.Int,
   // How many fall due on each of the next 7 Study Days.
   upcoming: Schema.Array(Schema.Struct({ day: Day, steps: Schema.Int })),
@@ -44,8 +44,8 @@ export class RetriesView extends Schema.Class<RetriesView>("gmat-prep/api/Retrie
   running: Schema.NullOr(SessionId)
 }) {}
 
-// Nothing to serve with that timing: none was due, or each step due was a
-// Sibling step with no Sibling left, skipped now with a note.
+// Nothing to serve with that timing: none was due, each step due waits, or
+// each was a Sibling step with no Sibling left, skipped now with a note.
 export class NoRetriesDue extends Schema.TaggedError<NoRetriesDue>()(
   "NoRetriesDue",
   { skipped: Schema.Int },

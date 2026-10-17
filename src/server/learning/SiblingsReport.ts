@@ -2,6 +2,7 @@ import { eq, sql } from "drizzle-orm"
 import { Context, Effect, Layer } from "effect"
 import { Named } from "../../api/Practice.ts"
 import { FewSiblings, SkillSiblings } from "../../api/Siblings.ts"
+import { sectionOf } from "../../api/taxonomyRules.ts"
 import { Db } from "../db/Database.ts"
 import { questions, retrySkips } from "../db/schema.ts"
 import { namesOf } from "../practice/content.ts"
@@ -29,11 +30,12 @@ export class SiblingsReport extends Context.Service<SiblingsReport, {
           questionType: questions.questionType,
           open: sql<number>`${questions.reserve} = 0 or ${questions.releasedAt} is not null`
         }).from(questions).where(eq(questions.status, "published")).pipe(Effect.orDie)
-        const counts = new Map<string, { all: number; open: number }>()
+        // Published Questions outside the Reserve, by Skill and type; a pair
+        // whose Questions are all in it counts 0.
+        const counts = new Map<string, number>()
         for (const row of published) {
           if (row.skill === null) continue
-          const found = counts.get(key(row.skill, row.questionType)) ?? { all: 0, open: 0 }
-          counts.set(key(row.skill, row.questionType), { all: found.all + 1, open: found.open + (row.open ? 1 : 0) })
+          counts.set(key(row.skill, row.questionType), (counts.get(key(row.skill, row.questionType)) ?? 0) + (row.open ? 1 : 0))
         }
         const skipped = new Map<string, { count: number; last: number }>()
         for (const row of skips) {
@@ -41,30 +43,29 @@ export class SiblingsReport extends Context.Service<SiblingsReport, {
           const found = skipped.get(key(row.skill, row.questionType)) ?? { count: 0, last: 0 }
           skipped.set(key(row.skill, row.questionType), { count: found.count + 1, last: Math.max(found.last, row.at) })
         }
-        return taxonomy.sections.flatMap((section) =>
-          section.topics.flatMap((topic) =>
-            topic.skills.flatMap((skill) =>
-              section.questionTypes.flatMap((questionType) => {
-                const skips = skipped.get(key(skill.id, questionType.id))
-                const count = counts.get(key(skill.id, questionType.id)) ?? { all: 0, open: 0 }
-                // A Skill and type no published Question has is the
-                // Taxonomy's, not a shortage; one whose Questions are all in
-                // the Reserve has none to give.
-                if (skips === undefined && (count.all === 0 || count.open > FewSiblings)) return []
-                return [
-                  new SkillSiblings({
-                    skill: names.named(skill.id),
-                    questionType: names.named(questionType.id),
-                    section: new Named({ id: section.id, name: section.name }),
-                    skipped: skips?.count ?? 0,
-                    lastSkippedAt: skips?.last ?? null,
-                    available: count.open
-                  })
-                ]
-              })
-            )
-          )
-        ).toSorted((a, b) =>
+        // Every Skill and Question Type a published Question or a skip has:
+        // a Data Insights type can take a Quant or Verbal Skill. A pair with
+        // neither is the Taxonomy's, not a shortage.
+        const sectionNamed = (questionType: string) => {
+          const section = taxonomy.sections.find((each) => each.id === sectionOf(questionType))
+          return new Named({ id: section?.id ?? sectionOf(questionType), name: section?.name ?? sectionOf(questionType) })
+        }
+        return [...new Set([...counts.keys(), ...skipped.keys()])].flatMap((pair) => {
+          const [skill, questionType] = pair.split("|") as [string, string]
+          const skips = skipped.get(pair)
+          const available = counts.get(pair) ?? 0
+          if (skips === undefined && available > FewSiblings) return []
+          return [
+            new SkillSiblings({
+              skill: names.named(skill),
+              questionType: names.named(questionType),
+              section: sectionNamed(questionType),
+              skipped: skips?.count ?? 0,
+              lastSkippedAt: skips?.last ?? null,
+              available
+            })
+          ]
+        }).toSorted((a, b) =>
           b.skipped - a.skipped || a.available - b.available || a.skill.name.localeCompare(b.skill.name) ||
           a.questionType.name.localeCompare(b.questionType.name)
         )

@@ -5,7 +5,8 @@ import { SlowFactor } from "./misses.ts"
 import type { RetryItem } from "./retryConfig.ts"
 
 // Each Error Log entry's Retry Ladder, from the facts (docs/design.md,
-// "Learning loop"): its misses outside its own retries start it; the final
+// "Learning loop"): its misses outside its own step-1 retries start it, as
+// does the first of those when no other miss came before it; the final
 // Response to each retry Question, once its set shows how it went, is a
 // step taken; a stored skip is a step with nothing to serve.
 
@@ -73,24 +74,48 @@ export const laddersOf = (input: {
     add(miss.questionId, missOf(miss))
     firstOther.set(miss.questionId, Math.min(firstOther.get(miss.questionId) ?? Infinity, miss.at))
   }
-  for (const miss of ownRetries) {
-    if (miss.at < (firstOther.get(miss.questionId) ?? Infinity)) add(miss.questionId, missOf(miss))
+  // Only the first: later ones are that run's step 1 taken again. The set
+  // whose miss starts the run took no step of it.
+  const startedBy = new Set<string>()
+  for (const miss of ownRetries.toSorted((a, b) => a.at - b.at)) {
+    if (miss.at < (firstOther.get(miss.questionId) ?? Infinity)) {
+      add(miss.questionId, missOf(miss))
+      firstOther.set(miss.questionId, miss.at)
+      startedBy.add(`${miss.sessionId}|${miss.questionId}`)
+    }
   }
   const bySession = Map.groupBy(input.responses, (response) => response.sessionId)
   for (const session of input.sessions) {
     if (!session.shown) continue
     const mine = (bySession.get(session.id) ?? []).toSorted((a, b) => a.seq - b.seq)
-    for (const item of session.retry) {
+    // Each item takes the Responses to the Question served for it; one
+    // served in its place after a merge goes to an item none answered. An
+    // entry takes one step a set, from its first item.
+    const claimed = new Set<string>()
+    const byItem = session.retry.map((item) => {
+      const given = mine.filter((response) => response.questionId === item.questionId)
+      for (const response of given) claimed.add(response.id)
+      return given
+    })
+    const entries = new Set<string>()
+    for (const [index, item] of session.retry.entries()) {
+      const entry = resolve(item.entry)
+      if (entries.has(entry) || startedBy.has(`${session.id}|${entry}`)) continue
       // The Question served for the step, or the one it was merged into.
       const counted = resolve(item.questionId)
-      const given = mine.filter((response) => resolve(response.questionId) === counted)
+      const own = byItem[index]!
+      const given = own.length > 0
+        ? own
+        : mine.filter((response) => !claimed.has(response.id) && resolve(response.questionId) === counted)
+      for (const response of given) claimed.add(response.id)
       const final = given.at(-1)
       const question = input.questions.get(counted)
       if (final === undefined || question === undefined) continue
+      entries.add(entry)
       const keys = question.parts.map((part) => ({ position: part.position, key: part.key }))
       const right = final.kind !== "time-out" && isCorrect(final.selection, keys)
       const firstTime = given[0]!.timeSpentMs
-      add(resolve(item.entry), {
+      add(entry, {
         at: final.at,
         event: (reasons) => ({
           kind: "attempt",
