@@ -13,8 +13,9 @@ import {
 import { calendarDaysUnder, studyDaysUnder } from "../../api/studyDay.ts"
 import { Db } from "../db/Database.ts"
 import { dayRulesOf, DefaultRules } from "../profiles/days.ts"
-import { officialScores, scoreEstimates } from "../db/schema.ts"
+import { officialScores, planSettings, scoreEstimates } from "../db/schema.ts"
 import { trendOf } from "../analytics/views.ts"
+import { sectionTargetOf } from "./scale.ts"
 import { namesOf } from "../practice/content.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { scoreEstimatesOf, scoreEstimateView } from "./estimates.ts"
@@ -56,13 +57,26 @@ export class Scores extends Context.Service<Scores, {
           return calendarDaysUnder(rules)(now)
         })
 
+      // The Study Plan's target, from its latest settings (decision 82).
+      const targetOf = (profileId: string) =>
+        db.select({ targetTotal: planSettings.targetTotal }).from(planSettings).where(eq(planSettings.profileId, profileId))
+          .orderBy(desc(planSettings.setAt), desc(sql`${planSettings}.rowid`)).limit(1).pipe(
+            Effect.orDie,
+            Effect.map(([row]) =>
+              row?.targetTotal === null || row?.targetTotal === undefined
+                ? null
+                : { total: row.targetTotal, section: sectionTargetOf(row.targetTotal) }
+            )
+          )
+
       const estimates = (profileId: string) =>
         Effect.gen(function*() {
           const found = yield* scoreEstimatesOf(profileId).pipe(Effect.provideService(Db, db), Effect.orDie)
           return new ScoreEstimates({
             sections: found.sections.map(scoreEstimateView((id) => names.named(id))),
             total: found.total === null ? null : new TotalScoreView(found.total),
-            today: new Date((yield* todayOf(profileId)) * DayMs).toISOString().slice(0, 10)
+            today: new Date((yield* todayOf(profileId)) * DayMs).toISOString().slice(0, 10),
+            target: yield* targetOf(profileId)
           })
         })
 
@@ -128,7 +142,8 @@ export class Scores extends Context.Service<Scores, {
               }]
             }),
             total: found.total.map((point) => ({ day: day(point.day), score: point.score, low: point.low, high: point.high })),
-            official: yield* list(profileId)
+            official: yield* list(profileId),
+            target: yield* targetOf(profileId)
           })
         })
 

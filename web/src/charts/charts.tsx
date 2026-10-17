@@ -20,7 +20,16 @@ export interface LineSeries {
 }
 
 export interface Marker {
+  readonly id: string
   readonly x: number
+  readonly y: number
+  readonly label: string
+}
+
+// A level to read the lines against, such as a target, drawn dashed across
+// the chart.
+export interface Guide {
+  readonly id: string
   readonly y: number
   readonly label: string
 }
@@ -57,11 +66,12 @@ const scale = (domain: readonly [number, number], range: readonly [number, numbe
 }
 
 export const LineChart = (
-  { description, series, markers = [], xDomain, xSteps = QuestionSteps, yDomain, xLabel, yTicks, yLabel }: {
+  { description, series, markers = [], guides = [], xDomain, xSteps = QuestionSteps, yDomain, xLabel, yTicks, yLabel }: {
     // What the chart shows, in words, for a screen reader.
     readonly description: string
     readonly series: ReadonlyArray<LineSeries>
     readonly markers?: ReadonlyArray<Marker>
+    readonly guides?: ReadonlyArray<Guide>
     readonly xDomain: readonly [number, number]
     // The steps the x axis's labels may take, such as weeks for days.
     readonly xSteps?: ReadonlyArray<number>
@@ -100,6 +110,12 @@ export const LineChart = (
           />
         )
       )}
+      {guides.map((guide) => (
+        <g key={`guide-${guide.id}`} className="chart-line tone-guide dashed">
+          <polyline points={`${Margin.left},${clampY(guide.y)} ${width - Margin.right},${clampY(guide.y)}`} />
+          <title>{guide.label}</title>
+        </g>
+      ))}
       {series.map((each) => (
         <g key={each.id} className={`chart-line tone-${each.tone}${each.dashed === true ? " dashed" : ""}`}>
           {each.points.length > 1 && (
@@ -109,7 +125,7 @@ export const LineChart = (
         </g>
       ))}
       {markers.map((marker) => (
-        <g key={`${marker.x}-${marker.y}`} className="chart-marker">
+        <g key={marker.id} className="chart-marker">
           <circle cx={x(marker.x)} cy={clampY(marker.y)} r={6} />
           <title>{marker.label}</title>
         </g>

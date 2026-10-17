@@ -2,7 +2,7 @@ import { Effect, Layer, Redacted } from "effect"
 import { HttpServerRequest } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"
 import { Api, Health } from "../../api/Api.ts"
-import { CurrentProfile, NotUnlocked, ProfileCookie, ProfileSession } from "../../api/Profiles.ts"
+import { BackgroundHeader, CurrentProfile, NotUnlocked, ProfileCookie, ProfileSession } from "../../api/Profiles.ts"
 import { Profiles } from "../profiles/Profiles.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { WorkerSupervisor } from "../worker/WorkerSupervisor.ts"
@@ -13,7 +13,9 @@ import {
   GoldenHandlers,
   OverviewHandlers,
   ReviewHandlers,
-  SiblingsHandlers
+  CuratorDataHandlers,
+  SiblingsHandlers,
+  SnapshotsHandlers
 } from "./books.ts"
 import { CuratorHandlers, CuratorSessionLive } from "./curatorHandlers.ts"
 import { ErrorLogHandlers } from "./errorLog.ts"
@@ -22,7 +24,9 @@ import { PaperMarksHandlers } from "./paperMarks.ts"
 import { PracticeHandlers } from "./practice.ts"
 import { RetriesHandlers } from "./retries.ts"
 import { AnalyticsHandlers } from "./analytics.ts"
-import { PlanHandlers } from "./plan.ts"
+import { PlanHandlers, SessionDataHandlers } from "./plan.ts"
+import { CuratorLessonsHandlers, LessonsHandlers } from "./lessons.ts"
+import { CuratorTutorHandlers, TutorHandlers } from "./tutor.ts"
 import { ScoresHandlers } from "./scores.ts"
 import { SectionalsHandlers } from "./sectionals.ts"
 
@@ -44,8 +48,8 @@ export const ProfileSessionLive = Layer.effect(
     const profiles = yield* Profiles
     return ProfileSession.of({
       cookie: Effect.fn(function*(httpEffect, { credential }) {
-        const profile = yield* profiles.fromToken(Redacted.value(credential))
         const request = yield* HttpServerRequest.HttpServerRequest
+        const profile = yield* profiles.fromToken(Redacted.value(credential), request.headers[BackgroundHeader] !== "1")
         const expected = request.headers[ExpectedProfileHeader]
         if (expected !== undefined && expected !== profile.id) {
           return yield* new NotUnlocked()
@@ -139,6 +143,8 @@ export const ApiRoutes = HttpApiBuilder.layer(Api).pipe(
     RetriesHandlers,
     AnalyticsHandlers,
     PlanHandlers,
+    LessonsHandlers,
+    TutorHandlers,
     CuratorHandlers,
     BooksHandlers,
     ReviewHandlers,
@@ -146,7 +152,12 @@ export const ApiRoutes = HttpApiBuilder.layer(Api).pipe(
     BankHandlers,
     GenerationHandlers,
     SiblingsHandlers,
-    OverviewHandlers
+    OverviewHandlers,
+    SnapshotsHandlers,
+    CuratorDataHandlers,
+    SessionDataHandlers,
+    CuratorLessonsHandlers,
+    CuratorTutorHandlers
   ]),
   Layer.provide([ProfileSessionLive, CuratorSessionLive])
 )

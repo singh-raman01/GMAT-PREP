@@ -77,6 +77,10 @@ const ruleAt = (rules: ReadonlyArray<DayRule>, millis: number) => {
   return index
 }
 
+// The rule in effect at a moment: a change still waiting for its rollover
+// is not.
+export const ruleInEffect = (rules: ReadonlyArray<DayRule>, millis: number): DayRule => rules[ruleAt(rules, millis)]!
+
 // The Study Day of many moments under a Profile's rules. After a change the
 // day never goes back: a zone behind the old one holds the day after the
 // last one ended until its own date catches up, so no day repeats.

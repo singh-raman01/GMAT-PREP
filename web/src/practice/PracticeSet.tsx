@@ -262,7 +262,7 @@ const SetScreen = (
       <p className="visually-hidden" role="status">{announcement}</p>
       {view.clock?.interrupted === true && (
         <p className="clock-note">
-          The clock did not count time while the app was stopped or the computer slept.
+          The clock did not count time while the app was stopped, the computer slept or the data was restored.
         </p>
       )}
       {!view.heldHere && (
@@ -467,6 +467,7 @@ const QuestionScreen = (
             parts={parts}
             mistakes={current.mistakes}
             onFailure={onFailure}
+            questionId={current.question.id}
           />
           {!locked && (
             <div className="actions debrief-actions">
@@ -702,6 +703,7 @@ const ResultRow = (
                 parts={review.served.question.parts}
                 mistakes={review.served.mistakes}
                 onFailure={onFailure}
+                questionId={review.served.question.id}
               />
             )}
           </>

@@ -259,7 +259,9 @@ const Running = (
       )}
       <p className="visually-hidden" role="status">{announcement}</p>
       {view.clock.interrupted && (
-        <p className="clock-note">The clock did not count time while the app was stopped or the computer slept.</p>
+        <p className="clock-note">
+          The clock did not count time while the app was stopped, the computer slept or the data was restored.
+        </p>
       )}
       {!view.heldHere && (
         <div className="held-elsewhere" role="status">
@@ -678,7 +680,7 @@ const Report = ({ view, onFailure }: { readonly view: SectionalView; readonly on
       }`
       : undefined,
     report.rescored
-      ? "An answer key changed after the Section closed, so these results and the score follow the current keys."
+      ? "An answer key changed after the Section closed, by a correction or a merge of duplicate Questions, so these results and the score follow the current keys."
       : undefined
   ].filter((note) => note !== undefined)
   return (
@@ -785,6 +787,7 @@ const ResultRow = (
                 parts={served.question.parts}
                 mistakes={served.mistakes}
                 onFailure={onFailure}
+                questionId={served.question.id}
               />
             )}
           </>

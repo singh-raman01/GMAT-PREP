@@ -52,19 +52,25 @@ import {
   reviewItems,
   solverRuns,
   sources,
-  stimuli
+  stimuli,
+  tutorMessages
 } from "../db/schema.ts"
 import { SolverRuns } from "../books/enrichment.ts"
 import { JobStore } from "../jobs/JobStore.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
+import { SnapshotFailed } from "../../api/Snapshots.ts"
+import { answered } from "../snapshots/rescores.ts"
+import { Snapshots } from "../snapshots/Snapshots.ts"
 import { runGate } from "./gate.ts"
 import { QuestionRefresh, RefreshCap } from "./refreshJob.ts"
+import { carryReports } from "./reportItems.ts"
 import { assignUndecided, releaseUnfitting } from "./reserve.ts"
 import { drafts } from "./stranded.ts"
 import { stimulusViews } from "../stimuli/stimuli.ts"
 
-// The Curator's decisions on held Questions and unread pages. A Question the
-// Publish Gate is still checking (a draft) is not in the queue.
+// The Curator's decisions on held Questions, unread pages and Learners'
+// reports on published Questions. A Question the Publish Gate is still
+// checking (a draft) is not in the queue.
 
 const decodeReason = Schema.decodeUnknownOption(ReviewReason)
 
@@ -91,6 +97,10 @@ const readReasons = (json: string): ReadonlyArray<ReviewReason> => {
 
 type ItemRow = typeof reviewItems.$inferSelect
 
+// The item gathering Learners' reports on a Question, which only the
+// Curator decides (decision 107).
+const isReport = (row: ItemRow) => row.kind === "report"
+
 // Reasons enrichment may settle when tried again after an unusable reply.
 const RetryCodes: ReadonlySet<string> = new Set(["tags", "approach-misses-key", "option-notes", "teaching-text", "not-enriched"])
 // Of those, the ones about the Approaches and notes.
@@ -109,14 +119,14 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
   usePassage(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | NoOtherPassage>
   merge(
     id: ReviewItemId
-  ): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | KeysDiffer | MergeTargetChecking>
+  ): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | KeysDiffer | MergeTargetChecking | SnapshotFailed>
   dismiss(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen>
   overrideKey(
     id: ReviewItemId,
     part: number,
     key: string,
     reason: string
-  ): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | KeyNotAnOption>
+  ): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | KeyNotAnOption | SnapshotFailed>
   checkAgain(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen>
   readonly drafts: Effect.Effect<DraftsView>
   readonly checkDrafts: Effect.Effect<DraftsView>
@@ -125,6 +135,7 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
     ReviewQueue,
     Effect.gen(function*() {
       const db = yield* Db
+      const snapshots = yield* Snapshots
       const store = yield* JobStore
       const taxonomy = (yield* Taxonomy).view
       const oneAtATime = (yield* Semaphore.make(1)).withPermits(1)
@@ -289,12 +300,14 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
                 bookTitle: titles.find((book) => book.id === row.bookId)?.title ?? "",
                 number: row.page
               },
+              kind: isReport(row) ? "report" : "check",
               reasons,
               related: row.relatedQuestionId === null ? null : views.get(row.relatedQuestionId) ?? null,
               status: row.status as "open" | "decided",
               decision: row.decision as ReviewItemView["decision"],
-              // Text in doubt is not enriched at all, so trying again cannot help it.
-              checkable: row.status === "open" && question !== undefined &&
+              // Text in doubt is not enriched at all, so trying again cannot
+              // help it; a report waits for the Curator, not a check.
+              checkable: row.status === "open" && question !== undefined && !isReport(row) &&
                 !reasons.some((reason) => UnsureCodes.has(reason.code)) &&
                 (reasons.some((reason) => RetryCodes.has(reason.code)) || question.solverAnswers.length < SolverRuns),
               createdAt: row.createdAt
@@ -333,7 +346,10 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
       const openItem = (id: ReviewItemId, fits: (row: ItemRow) => boolean) =>
         Effect.gen(function*() {
           const row = yield* rowOf(id)
-          const checking = row.questionId !== null && (yield* statusOf(row.questionId)) !== "held"
+          const status = row.questionId === null ? undefined : yield* statusOf(row.questionId)
+          // A Learner's report is about a published Question, which stays
+          // published until the Curator decides (decision 107).
+          const checking = row.questionId !== null && status !== "held" && !(isReport(row) && status === "published")
           if (row.status !== "open" || checking || !fits(row)) {
             return yield* new ReviewItemNotOpen({ item: yield* viewOf(row) })
           }
@@ -357,6 +373,20 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
             .returning()
             .pipe(Effect.orDie)
           return updated!
+        })
+
+      // The Question's other open items, of the given kind or any.
+      const decideOthers = (row: ItemRow, decision: string, kind?: "check" | "report") =>
+        Effect.gen(function*() {
+          const now = yield* Clock.currentTimeMillis
+          yield* db.update(reviewItems).set({ status: "decided", decision, decidedAt: now })
+            .where(and(
+              eq(reviewItems.questionId, row.questionId!),
+              eq(reviewItems.status, "open"),
+              ne(reviewItems.id, row.id),
+              kind === undefined ? undefined : eq(reviewItems.kind, kind)
+            ))
+            .pipe(Effect.orDie)
         })
 
       const setQuestionStatus = (questionId: string, status: QuestionStatus) =>
@@ -396,11 +426,14 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
           return yield* decide(row, "published")
         })).pipe(Effect.flatMap(viewOf), oneAtATime)
 
+      // Its other open items, a check's or Learners' reports, are decided
+      // with it, as nothing more can be done about a withdrawn Question.
       const withdraw = (id: ReviewItemId) =>
         inTransaction(Effect.gen(function*() {
           const row = yield* openItem(id, isQuestion)
           yield* setQuestionStatus(row.questionId!, "withdrawn")
           yield* releaseShrunk
+          yield* decideOthers(row, "withdrawn")
           return yield* decide(row, "withdrawn")
         })).pipe(Effect.flatMap(viewOf), oneAtATime)
 
@@ -474,15 +507,30 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
       // withdrawn, marked as merged into it, so a Learner's history with it
       // counts for the related one and its facts stay (ADR 0005). Items and
       // Questions that pointed at it point at the related one now, and so do
-      // Bookmarks; the related one is checked again if its Sources now
-      // disagree. A Key Override goes with the Sources it settled; a
-      // golden-set approval, which is of the Question's own item, goes.
+      // Bookmarks, Tutor Chat messages and Problem Reports; reports still
+      // waiting wait on the related one. The related one is checked again if
+      // its Sources now disagree. A Key Override goes with the Sources it
+      // settled; a golden-set approval, which is of the Question's own item,
+      // goes.
       const partsOf = (questionId: string) =>
         db.select({ id: parts.id, position: parts.position, key: parts.key, keyBasis: parts.keyBasis }).from(parts)
           .where(eq(parts.questionId, questionId)).orderBy(asc(parts.position)).pipe(Effect.orDie)
 
+      // Whether merging the item's Question into the related one judges past
+      // Responses again: when their keys differ and it has been answered.
+      const mergeRescores = (id: ReviewItemId) =>
+        Effect.gen(function*() {
+          const row = yield* openItem(id, repeats)
+          const mine = joinedKey((yield* partsOf(row.questionId!)).map((part) => part.key))
+          const theirs = joinedKey((yield* partsOf(row.relatedQuestionId!)).map((part) => part.key))
+          return mine !== theirs && (yield* answered([row.questionId!]).pipe(Effect.provideService(Db, db)))
+        })
+
       const merge = (id: ReviewItemId) =>
         Effect.gen(function*() {
+          // A merge into a Question with another key judges the answers to
+          // this one by that key, so a snapshot comes first (decision 118).
+          if (yield* mergeRescores(id)) yield* snapshots.take("pre-rescore")
           const decided = yield* inTransaction(Effect.gen(function*() {
             const row = yield* openItem(id, repeats)
             const target = row.relatedQuestionId!
@@ -531,6 +579,10 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
             )).pipe(Effect.orDie)
             yield* db.update(bookmarks).set({ questionId: target }).where(eq(bookmarks.questionId, row.questionId!))
               .pipe(Effect.orDie)
+            yield* db.update(tutorMessages).set({ questionId: target }).where(eq(tutorMessages.questionId, row.questionId!))
+              .pipe(Effect.orDie)
+            yield* carryReports(row.questionId!, target).pipe(Effect.provideService(Db, db), Effect.orDie)
+            yield* decideOthers(row, "merged", "check")
             const now = yield* Clock.currentTimeMillis
             yield* db.update(questions).set({ status: "withdrawn", mergedInto: target, updatedAt: now })
               .where(eq(questions.id, row.questionId!)).pipe(Effect.orDie)
@@ -542,29 +594,44 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
           return yield* viewOf(decided)
         }).pipe(oneAtATime)
 
+      // An unread page, or a Learner's report on a Question kept as it is.
       const dismiss = (id: ReviewItemId) =>
         inTransaction(Effect.gen(function*() {
-          const row = yield* openItem(id, (item) => item.questionId === null && item.page !== null)
+          const row = yield* openItem(id, (item) => (item.questionId === null && item.page !== null) || isReport(item))
           return yield* decide(row, "dismissed")
         })).pipe(Effect.flatMap(viewOf), oneAtATime)
+
+      // The open item and the Part its key is for, when the key is one of
+      // the Part's options.
+      const keyFor = (id: ReviewItemId, position: number, key: string) =>
+        Effect.gen(function*() {
+          const row = yield* openItem(id, isQuestion)
+          const [part] = yield* db.select().from(parts)
+            .where(and(eq(parts.questionId, row.questionId!), eq(parts.position, position))).pipe(Effect.orDie)
+          const choices = part === undefined
+            ? []
+            : (yield* db.select({ label: options.label }).from(options).where(eq(options.partId, part.id))
+              .orderBy(asc(options.position)).pipe(Effect.orDie)).map((option) => option.label)
+          if (part === undefined || !choices.includes(key)) return yield* new KeyNotAnOption({ options: choices })
+          return { row, part }
+        })
 
       // The Curator's key replaces the Book's, with a reason kept beside it.
       // Reasons about the key are settled; a changed key owes the Question new
       // Approaches and wrong-option notes, and its tags, Difficulty estimate
       // and solver runs are kept. Either way it goes back through the
-      // Publish Gate, in a job.
+      // Publish Gate, in a job. Changed through a report item, it decides
+      // that item.
       const overrideKey = (id: ReviewItemId, position: number, key: string, reason: string) =>
         Effect.gen(function*() {
+          // A new key judges every past Response to the Question again, so a
+          // snapshot comes first (decision 118), once the override is known
+          // to be one that goes through.
+          yield* keyFor(id, position, key)
+          yield* snapshots.take("pre-rescore")
           const row = yield* inTransaction(Effect.gen(function*() {
-            const row = yield* openItem(id, isQuestion)
+            const { row, part } = yield* keyFor(id, position, key)
             const questionId = row.questionId!
-            const [part] = yield* db.select().from(parts)
-              .where(and(eq(parts.questionId, questionId), eq(parts.position, position))).pipe(Effect.orDie)
-            const choices = part === undefined
-              ? []
-              : (yield* db.select({ label: options.label }).from(options).where(eq(options.partId, part.id))
-                .orderBy(asc(options.position)).pipe(Effect.orDie)).map((option) => option.label)
-            if (part === undefined || !choices.includes(key)) return yield* new KeyNotAnOption({ options: choices })
             const now = yield* Clock.currentTimeMillis
             yield* db.insert(keyOverrides).values({
               id: crypto.randomUUID(),
@@ -602,6 +669,9 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
               updatedAt: now
             }).where(eq(questions.id, questionId)).pipe(Effect.orDie)
             yield* refresh([questionId], "Checking a Question after a Key Override")
+            // Changing the key is the Curator's decision on Learners' reports;
+            // a check's item waits for the Publish Gate.
+            if (isReport(row)) yield* decide(row, "key-changed")
             return row
           }))
           return yield* viewOf((yield* db.select().from(reviewItems).where(eq(reviewItems.id, row.id)).pipe(Effect.orDie))[0]!)
@@ -609,11 +679,12 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
 
       // Tries again what an unusable reply left out or got wrong: tags held
       // for are asked for again, Approaches and notes are written again, and
-      // missing solves are asked for, all in a job.
+      // missing solves are asked for, all in a job. A report item is not
+      // checked: the Question stays as it is until the Curator decides.
       const checkAgain = (id: ReviewItemId) =>
         Effect.gen(function*() {
           const row = yield* inTransaction(Effect.gen(function*() {
-            const row = yield* openItem(id, isQuestion)
+            const row = yield* openItem(id, (item) => isQuestion(item) && !isReport(item))
             const item = yield* viewOf(row)
             if (!item.checkable) return yield* new ReviewItemNotOpen({ item })
             const questionId = row.questionId!

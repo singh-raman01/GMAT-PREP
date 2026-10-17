@@ -62,13 +62,28 @@ describe("Timing", () => {
     const section = Array.from({ length: 8 }, (_, position) =>
       timed({ position, correct: position < 3, servedElapsedMs: position * 300_000, timeSpentMs: 300_000 })
     )
-    expect(endingOf([...section, timed({ kind: "practice", correct: false })])).toEqual({
+    expect(endingOf([...section, timed({ kind: "practice", correct: false })], () => undefined)).toEqual({
       last: { right: 0, answered: 5 },
       rest: { right: 3, answered: 3 }
     })
     const curve = pacingOf(section, 2_700_000, 9)
     expect(curve[0]).toEqual({ question: 1, usedMs: 300_000, evenMs: 300_000 })
     expect(curve.at(-1)).toEqual({ question: 8, usedMs: 2_400_000, evenMs: 2_400_000 })
+  })
+
+  test("leaves time-outs out of how Sections end and of the pacing curve", () => {
+    // Ten served; the last two ran out of time.
+    const section = [
+      ...Array.from({ length: 8 }, (_, position) => timed({ position, correct: position < 6, servedElapsedMs: position * 300_000 })),
+      timed({ position: 8, correct: false, timedOut: true, servedElapsedMs: 2_400_000 }),
+      timed({ position: 9, correct: false, timedOut: true, servedElapsedMs: 2_600_000 })
+    ]
+    // The last 5 served are places 5 to 9; of them, 5, 6 and 7 were answered.
+    expect(endingOf(section, () => 9)).toEqual({ last: { right: 1, answered: 3 }, rest: { right: 5, answered: 5 } })
+    const curve = pacingOf(section, 2_700_000, 21)
+    expect(curve.length).toBe(8)
+    // Over the Section's 21 Questions, the 8th answer is at 8/21 of 45 minutes.
+    expect(curve.at(-1)).toEqual({ question: 8, usedMs: 2_220_000, evenMs: Math.round((2_700_000 * 8) / 21) })
   })
 })
 

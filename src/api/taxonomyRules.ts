@@ -52,6 +52,28 @@ export const optionMistakeTypes = (taxonomy: TaxonomyView): ReadonlyArray<Taxono
 export const SufficiencyTopic = "di.sufficiency"
 const isSufficiency = (skill: string) => skill.startsWith(`${SufficiencyTopic}.`)
 
+// Whether the tag rules let a Skill be the primary Skill of a Question of
+// this type: a DS Question's primary Skill is the maths it tests, a Quant
+// Skill, so never a sufficiency Skill (decision 19).
+export const mayBePrimary = (questionType: string, skill: string) =>
+  questionType !== "di.ds" || (!isSufficiency(skill) && sectionOf(skill) === "quant")
+
+// The Skills no Question can have as its primary Skill, as every Question
+// Type they fit refuses them that role: in version 1, the two sufficiency
+// Skills, which fit DS alone. Questions carry them as secondary Skills.
+export const secondaryOnlySkills = (taxonomy: TaxonomyView): ReadonlySet<string> => {
+  const primary = new Set(
+    taxonomy.sections.flatMap((section) => section.questionTypes).flatMap((type) =>
+      skillsFor(taxonomy, type.id).filter((skill) => mayBePrimary(type.id, skill.id)).map((skill) => skill.id)
+    )
+  )
+  return new Set(
+    taxonomy.sections.flatMap((section) => section.topics.flatMap((topic) => topic.skills))
+      .map((skill) => skill.id)
+      .filter((id) => !primary.has(id))
+  )
+}
+
 export interface QuestionTags {
   readonly questionType: string
   readonly primarySkill: string | null
@@ -82,14 +104,15 @@ export const tagProblems = (taxonomy: TaxonomyView, tags: QuestionTags): Readonl
   if (tags.primarySkill !== null && tags.secondarySkills.includes(tags.primarySkill)) {
     problems.push("Its primary Skill is also a secondary one.")
   }
-  if (tags.questionType === "di.ds" && tags.primarySkill !== null) {
+  if (tags.primarySkill !== null && !mayBePrimary(tags.questionType, tags.primarySkill)) {
     if (isSufficiency(tags.primarySkill)) problems.push("Its primary Skill is a sufficiency Skill, not its maths.")
-    else if (allSkills.has(tags.primarySkill) && sectionOf(tags.primarySkill) !== "quant") {
-      problems.push("Its primary Skill should be the maths it tests, a Quant Skill.")
-    }
-    if (!isSufficiency(tags.primarySkill) && tags.secondarySkills.filter(isSufficiency).length !== 1) {
-      problems.push("It needs exactly one sufficiency Skill among its secondary Skills.")
-    }
+    else if (allSkills.has(tags.primarySkill)) problems.push("Its primary Skill should be the maths it tests, a Quant Skill.")
+  }
+  if (
+    tags.questionType === "di.ds" && tags.primarySkill !== null && !isSufficiency(tags.primarySkill) &&
+    tags.secondarySkills.filter(isSufficiency).length !== 1
+  ) {
+    problems.push("It needs exactly one sufficiency Skill among its secondary Skills.")
   }
   const strategies = known(strategiesFor(taxonomy, tags.questionType))
   for (const strategy of tags.strategies) {

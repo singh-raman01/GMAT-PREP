@@ -114,7 +114,8 @@ export const llmCalls = sqliteTable(
     detail: text("detail"),
     createdAt: integer("created_at").notNull()
   },
-  (t) => [index("llm_calls_job").on(t.jobId)]
+  // Tutor Chat's monthly spend is summed by task and time.
+  (t) => [index("llm_calls_job").on(t.jobId), index("llm_calls_task").on(t.task, t.createdAt)]
 )
 
 // Books the Curator added. The file is stored once in the data folder's books
@@ -459,8 +460,12 @@ export const reviewItems = sqliteTable(
     relatedQuestionId: text("related_question_id").references(() => questions.id, { onDelete: "set null" }),
     // open or decided
     status: text("status").notNull(),
-    // published, withdrawn, variant, merged or dismissed
+    // published, withdrawn, variant, merged, dismissed or key-changed
     decision: text("decision"),
+    // check for what extraction, linking or the Publish Gate held; report for
+    // the item gathering Learners' Problem Reports on a Question, which only
+    // the Curator decides (decision 107).
+    kind: text("kind").notNull().default("check"),
     createdAt: integer("created_at").notNull(),
     decidedAt: integer("decided_at")
   },
@@ -868,4 +873,140 @@ export const dailyNotes = sqliteTable(
     writtenAt: integer("written_at").notNull()
   },
   (t) => [index("daily_notes_profile_day").on(t.profileId, t.day)]
+)
+
+// A Lesson for a subject, a Skill or a Question Type: a version for each
+// time the worker writes one (decisions 93 to 97). Learners see the latest
+// approved version; a newer draft waits for the Curator.
+export const lessons = sqliteTable(
+  "lessons",
+  {
+    id: text("id").primaryKey(),
+    // skill or questionType
+    subjectKind: text("subject_kind").notNull(),
+    subjectId: text("subject_id").notNull(),
+    version: integer("version").notNull(),
+    // draft, approved or rejected
+    status: text("status").notNull(),
+    // JSON: the subject as the Taxonomy described it when the Lesson was
+    // written, so a change to it marks the Lesson for rewriting.
+    basis: text("basis").notNull(),
+    // JSON: the rules, methods, traps and the worked examples' walkthroughs.
+    content: text("content").notNull(),
+    // Its words, and the methods part's, for the Study Plan's estimate.
+    words: integer("words").notNull(),
+    methodsWords: integer("methods_words").notNull(),
+    // JSON arrays of Question ids, in the order picked.
+    examples: text("examples").notNull(),
+    checks: text("checks").notNull(),
+    model: text("model").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    jobId: text("job_id"),
+    createdAt: integer("created_at").notNull(),
+    decidedAt: integer("decided_at"),
+    // The Curator's note on a rejection.
+    note: text("note")
+  },
+  (t) => [uniqueIndex("lessons_subject_version").on(t.subjectKind, t.subjectId, t.version)]
+)
+
+// A Profile opening a Lesson, or marking a part of it read (decisions 99 and
+// 101). The worked examples it showed count as Seen from then.
+export const lessonViews = sqliteTable(
+  "lesson_views",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    lessonId: text("lesson_id").notNull().references(() => lessons.id, { onDelete: "restrict" }),
+    // opened or read
+    kind: text("kind").notNull(),
+    // whole or methods
+    part: text("part").notNull(),
+    // The Study Plan item it was opened from, if any.
+    planItemId: text("plan_item_id"),
+    viewedAt: integer("viewed_at").notNull(),
+    // JSON array of the worked examples' Question ids the page was sent.
+    // Null on views recorded before these were kept; of those, an opened
+    // whole Lesson counts as having shown every worked example.
+    shownExamples: text("shown_examples")
+  },
+  (t) => [index("lesson_views_profile").on(t.profileId, t.viewedAt)]
+)
+
+// A Learner's Tutor Chat message about a Question and its reply (decision
+// 104). Read only for the Profile that wrote it.
+export const tutorMessages = sqliteTable(
+  "tutor_messages",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    questionId: text("question_id").notNull().references(() => questions.id, { onDelete: "cascade" }),
+    message: text("message").notNull(),
+    // The message as compared for reuse: trimmed, spaces folded, lower case.
+    messageKey: text("message_key").notNull(),
+    reply: text("reply").notNull(),
+    // The Question's key the reply was written against, joined as keys.ts
+    // joins it; a reply is reused, and sent back as context, only while the
+    // key is the same. Null for replies from before it was kept.
+    answerKey: text("answer_key"),
+    // An earlier version stored each repeat as a row of its own, naming the
+    // message whose reply it reused. A repeat is now counted on the message
+    // it repeats, which moves to when it was last asked.
+    reusedFrom: text("reused_from"),
+    repeats: integer("repeats").notNull().default(0),
+    askedAt: integer("asked_at").notNull().default(0),
+    model: text("model").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    tokensIn: integer("tokens_in").notNull(),
+    tokensOut: integer("tokens_out").notNull(),
+    cost: real("cost").notNull(),
+    createdAt: integer("created_at").notNull()
+  },
+  (t) => [index("tutor_messages_asked").on(t.profileId, t.questionId, t.askedAt)]
+)
+
+// A Learner's report that a Question is wrong (decision 107). It joins the
+// Question's open report item; while that item is open, a Profile that
+// reports the Question again replaces its words.
+export const problemReports = sqliteTable(
+  "problem_reports",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    questionId: text("question_id").notNull().references(() => questions.id, { onDelete: "cascade" }),
+    text: text("text").notNull(),
+    reviewItemId: text("review_item_id").references(() => reviewItems.id, { onDelete: "set null" }),
+    createdAt: integer("created_at").notNull()
+  },
+  (t) => [index("problem_reports_question").on(t.questionId), index("problem_reports_profile").on(t.profileId, t.createdAt)]
+)
+
+// Each snapshot of the database taken or tried, and each file found in the
+// snapshots folder (decision 109): the kept ones can be restored; a failed
+// one is shown until a later snapshot succeeds.
+export const snapshots = sqliteTable(
+  "snapshots",
+  {
+    id: text("id").primaryKey(),
+    // daily, pre-migration, pre-taxonomy, pre-rescore, pre-deletion,
+    // pre-restore or manual
+    kind: text("kind").notNull(),
+    // Its file in the snapshots folder; none for a failed attempt.
+    file: text("file"),
+    takenAt: integer("taken_at").notNull(),
+    // The host's calendar date it was taken, as YYYY-MM-DD.
+    day: text("day").notNull(),
+    size: integer("size"),
+    sha256: text("sha256"),
+    // ok; failed, an attempt or a found file that is no snapshot; removed
+    // once retention deleted its file; or missing, its file gone from the
+    // folder
+    status: text("status").notNull(),
+    error: text("error"),
+    removedAt: integer("removed_at"),
+    // Found in the folder, not taken by this app, so retention never
+    // deletes it.
+    found: integer("found", { mode: "boolean" }).notNull().default(false)
+  },
+  (t) => [index("snapshots_taken").on(t.takenAt), uniqueIndex("snapshots_file").on(t.file)]
 )

@@ -47,6 +47,12 @@ export interface LlmRequest<A> {
   readonly output: Schema.Codec<A, unknown>
   // The job the call is made for; its spend counts against the job's cap.
   readonly jobId?: string
+  // How many times to send it while the API is down or rate limited; a
+  // Learner waiting on a reply, as in Tutor Chat, is given fewer.
+  readonly attempts?: number
+  // A cap of the caller's own, such as Tutor Chat's monthly cap, checked
+  // before the retry after an invalid reply as a job's cap is.
+  readonly retryCheck?: Effect.Effect<void, SpendCapReached>
 }
 
 // A checked reply and where it came from. Every stored output keeps the
@@ -251,7 +257,7 @@ export class LlmAdapter extends Context.Service<LlmAdapter, {
                   return yield* new LlmRefused({ status: failure.status ?? 0, message })
                 }
                 const waitFor = failure.retryAfterMs ?? 0
-                if (attempt >= MaxAttempts || waitFor > MaxInlineWaitMs) {
+                if (attempt >= (request.attempts ?? MaxAttempts) || waitFor > MaxInlineWaitMs) {
                   return yield* new LlmUnavailable({
                     status: failure.status,
                     message,
@@ -287,7 +293,10 @@ export class LlmAdapter extends Context.Service<LlmAdapter, {
           const first = yield* attempt(base)
           // An invalid reply gets one retry, with the reply and what was wrong,
           // unless the first attempt used up the cap.
-          if (first.checked._tag === "Failure") yield* checkCap
+          if (first.checked._tag === "Failure") {
+            yield* checkCap
+            if (request.retryCheck !== undefined) yield* request.retryCheck
+          }
           const final = first.checked._tag === "Success" ? first : yield* attempt([
             ...base,
             { role: "assistant", content: first.sent.reply.content ?? "" },

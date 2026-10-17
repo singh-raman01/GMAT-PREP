@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, sql } from "drizzle-orm"
+import { and, desc, eq, gt, gte, sql } from "drizzle-orm"
 import { Cause, Clock, Context, Effect, Layer, Option, Schema } from "effect"
 import {
   JobId,
@@ -132,6 +132,8 @@ export class JobStore extends Context.Service<JobStore, {
   // The server's side.
   create<P, C>(kind: JobKind<P, C>, params: P, spendCap: number): Effect.Effect<JobView>
   readonly list: Effect.Effect<ReadonlyArray<JobView>>
+  // Every job changed since a moment, however many, the latest first.
+  changedSince(millis: number): Effect.Effect<ReadonlyArray<JobView>>
   pause(id: JobId): Effect.Effect<JobView, JobNotFound | JobNotChangeable>
   resume(id: JobId, spendCap: number | undefined): Effect.Effect<JobView, JobNotFound | JobNotChangeable | SpendCapTooLow>
   cancel(id: JobId): Effect.Effect<JobView, JobNotFound | JobNotChangeable>
@@ -164,6 +166,12 @@ export class JobStore extends Context.Service<JobStore, {
         Effect.map((rows) => rows.map(view)),
         Effect.orDie
       )
+
+      const changedSince = (millis: number) =>
+        db.select().from(jobs).where(gte(jobs.updatedAt, millis)).orderBy(desc(jobs.createdAt)).pipe(
+          Effect.map((rows) => rows.map(view)),
+          Effect.orDie
+        )
 
       // Applies a change decided from the row as read. The update holds only
       // if nothing changed since the read, such as the worker claiming the
@@ -281,7 +289,8 @@ export class JobStore extends Context.Service<JobStore, {
         )
 
       // Takes the oldest job that is waiting, due to resume, or left by a
-      // worker that stopped. One statement, so two workers never share a job.
+      // worker that stopped. The claim is one statement, so two workers never
+      // share a job.
       const claim = (workerId: string) =>
         Effect.gen(function*() {
           const now = yield* Clock.currentTimeMillis
@@ -294,6 +303,10 @@ export class JobStore extends Context.Service<JobStore, {
             order by ${jobs.createdAt}
             limit 1
           )`
+          // A read first, so a worker with nothing to do never waits for the
+          // write lock, which a restore holds for seconds.
+          const [waiting] = yield* db.select({ id: jobs.id }).from(jobs).where(eq(jobs.id, claimable)).pipe(Effect.orDie)
+          if (waiting === undefined) return Option.none()
           const [claimed] = yield* db.update(jobs)
             .set({
               status: "running",
@@ -403,6 +416,7 @@ export class JobStore extends Context.Service<JobStore, {
         heartbeatStopped,
         create,
         list,
+        changedSince,
         pause,
         resume,
         cancel,

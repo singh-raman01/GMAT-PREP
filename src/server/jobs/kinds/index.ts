@@ -2,6 +2,7 @@ import { BookExtraction } from "../../books/extractJob.ts"
 import { BookIntake } from "../../books/intakeJob.ts"
 import { BookMapping } from "../../books/mapJob.ts"
 import { GenerationBatch } from "../../generation/batchJob.ts"
+import { LessonWriting } from "../../lessons/write.ts"
 import { GoldenCheck } from "../../review/goldenJob.ts"
 import { QuestionRefresh } from "../../review/refreshJob.ts"
 import { type AnyJobKind, JobKinds } from "../JobKind.ts"
@@ -15,7 +16,8 @@ export const AllJobKinds: ReadonlyArray<AnyJobKind> = [
   BookExtraction,
   QuestionRefresh,
   GoldenCheck,
-  GenerationBatch
+  GenerationBatch,
+  LessonWriting
 ]
 
 export const JobKindsLive = JobKinds.layer(AllJobKinds)

@@ -1,8 +1,21 @@
-import { and, asc, eq, gte, inArray, isNotNull, max, sql } from "drizzle-orm"
+import { and, asc, eq, gte, inArray, isNotNull, isNull, max, ne, or, sql } from "drizzle-orm"
 import { Effect, Schema } from "effect"
 import { PartChoice, type Selection } from "../../api/Practice.ts"
 import { Db } from "../db/Database.ts"
-import { bookmarks, books, difficulty, optionNotes, parts, questions, responses, servedQuestions, sessions, sources } from "../db/schema.ts"
+import {
+  bookmarks,
+  books,
+  difficulty,
+  lessons,
+  lessonViews,
+  optionNotes,
+  parts,
+  questions,
+  responses,
+  servedQuestions,
+  sessions,
+  sources
+} from "../db/schema.ts"
 import { chosenQuestions, decodeConfig, SectionKinds } from "../sections/config.ts"
 import { marksAndPages, paperSeenOf } from "./paperSeen.ts"
 import type { History, PoolQuestion } from "./selection.ts"
@@ -80,8 +93,8 @@ export const mergeTargets = Effect.gen(function*() {
   }
 })
 
-// When the Profile's Paper Marks made each Question Seen, by the Question
-// it counts as.
+// When the Profile's Paper Marks made each Question Seen, by the Question it
+// counts as.
 export const paperSeenBy = (profileId: string, which: "first" | "last" = "first") =>
   Effect.gen(function*() {
     const { marks, pages } = yield* marksAndPages(profileId)
@@ -89,8 +102,37 @@ export const paperSeenBy = (profileId: string, which: "first" | "last" = "first"
     return paperSeenOf(marks, pages, yield* mergeTargets, which)
   })
 
-// A Question is Seen by a Profile once a Session has served it to them, or a
-// Paper Mark covers it.
+// When the Profile's Paper Marks and Lessons made each Question Seen, with no
+// Session serving it, by the Question it counts as: a Paper Mark's Questions
+// from when it was made, a Lesson's worked examples from when a page of it
+// showed them (decision 99).
+export const seenWithoutSessionsBy = (profileId: string, which: "first" | "last" = "first") =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const resolve = yield* mergeTargets
+    const seen = new Map(yield* paperSeenBy(profileId, which))
+    const shown = yield* db.select({ at: lessonViews.viewedAt, shown: lessonViews.shownExamples, examples: lessons.examples })
+      .from(lessonViews)
+      .innerJoin(lessons, eq(lessons.id, lessonViews.lessonId))
+      .where(and(
+        eq(lessonViews.profileId, profileId),
+        or(
+          and(isNotNull(lessonViews.shownExamples), ne(lessonViews.shownExamples, "[]")),
+          and(isNull(lessonViews.shownExamples), eq(lessonViews.kind, "opened"), eq(lessonViews.part, "whole"))
+        )
+      ))
+    for (const view of shown) {
+      for (const example of JSON.parse(view.shown ?? view.examples) as ReadonlyArray<string>) {
+        const id = resolve(example)
+        const kept = seen.get(id)
+        if (kept === undefined || (which === "first" ? view.at < kept : view.at > kept)) seen.set(id, view.at)
+      }
+    }
+    return seen as ReadonlyMap<string, number>
+  })
+
+// A Question is Seen by a Profile once a Session has served it to them, a
+// Paper Mark covers it, or a Lesson has shown it to them as a worked example.
 export const seenBy = (profileId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
@@ -98,7 +140,7 @@ export const seenBy = (profileId: string) =>
     const rows = yield* db.selectDistinct({ questionId: servedQuestions.questionId }).from(servedQuestions)
       .innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
       .where(eq(sessions.profileId, profileId))
-    return new Set([...rows.map((row) => resolve(row.questionId)), ...(yield* paperSeenBy(profileId)).keys()])
+    return new Set([...rows.map((row) => resolve(row.questionId)), ...(yield* seenWithoutSessionsBy(profileId)).keys()])
   })
 
 // The Questions of every unit the Profile's running Sectionals chose, served
@@ -134,7 +176,8 @@ export const heldBySections = (profileId: string) =>
 
 // When a Profile last saw each Question it has Seen, a merged Question's
 // servings counting for the one it became. A Paper Mark counts as a sighting
-// at the time it was made, the latest of those that cover the Question.
+// at the time it was made, the latest of those that cover the Question, and
+// a Lesson at the last time a page of it showed the Question.
 export const lastSeenBy = (profileId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
@@ -149,7 +192,7 @@ export const lastSeenBy = (profileId: string) =>
       const id = resolve(row.questionId)
       last.set(id, Math.max(last.get(id) ?? 0, Number(row.at ?? 0)))
     }
-    for (const [id, at] of yield* paperSeenBy(profileId, "last")) last.set(id, Math.max(last.get(id) ?? 0, at))
+    for (const [id, at] of yield* seenWithoutSessionsBy(profileId, "last")) last.set(id, Math.max(last.get(id) ?? 0, at))
     return last
   })
 
@@ -225,13 +268,14 @@ export const publishedPool = Effect.gen(function*() {
 })
 
 // The pool with the Trap Patterns each Question's options carry, for a
-// choice that names one.
+// choice that names one. Notes count once enrichment is done, as notes
+// written for an older key wait to be written again (decision 62).
 export const withTrapPatterns = (pool: ReadonlyArray<PoolQuestion>) =>
   Effect.gen(function*() {
     const db = yield* Db
     const rows = yield* db.selectDistinct({ questionId: parts.questionId, trapPattern: optionNotes.trapPattern })
-      .from(optionNotes).innerJoin(parts, eq(parts.id, optionNotes.partId))
-      .where(isNotNull(optionNotes.trapPattern))
+      .from(optionNotes).innerJoin(parts, eq(parts.id, optionNotes.partId)).innerJoin(questions, eq(questions.id, parts.questionId))
+      .where(and(isNotNull(optionNotes.trapPattern), eq(questions.enrichment, "done")))
     const byQuestion = new Map<string, Array<string>>()
     for (const row of rows) byQuestion.set(row.questionId, [...(byQuestion.get(row.questionId) ?? []), row.trapPattern!])
     return pool.map((question): PoolQuestion => ({ ...question, trapPatterns: byQuestion.get(question.id) ?? [] }))

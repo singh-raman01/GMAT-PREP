@@ -55,6 +55,7 @@ import { ratedAmong } from "../ratings/rated.ts"
 import { rateSession } from "../ratings/rateSession.ts"
 import { type ScoreLine, UncalibratedLine } from "../ratings/scale.ts"
 import { Settings } from "../settings/Settings.ts"
+import { Snapshots } from "../snapshots/Snapshots.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { nextUnit, openSlots, sectionEstimate, sectionStock, seededRandom, type Unit } from "./adaptive.ts"
 import {
@@ -181,67 +182,83 @@ export class Sectionals extends Context.Service<Sectionals, {
       // whose Reserve decision is made, an RC passage's or MSR set's
       // together, with whether they are held for Mocks and when the Profile
       // last saw one of them.
-      const poolFor = (profileId: string, section: string) =>
-        poolAndSightings(profileId, section).pipe(Effect.map((found) => found.units))
+      const unitsOf = (
+        all: Effect.Success<typeof publishedPool>,
+        lastSeen: ReadonlyMap<string, number>,
+        section: string
+      ): ReadonlyArray<Unit> => {
+        const published = all.filter((question) => question.section === section && question.reserve !== null)
+        const units = new Map<string, { group: GroupId; members: Array<(typeof published)[number]> }>()
+        for (const question of published) {
+          const group = groupOf(question.questionType)
+          if (group === undefined) continue
+          const unitId = group.units ? question.stimulusId : question.id
+          if (unitId === null) continue
+          const unit = units.get(unitId) ?? { group: group.id, members: [] }
+          unit.members.push(question)
+          units.set(unitId, unit)
+        }
+        return [...units].map(([id, unit]): Unit => {
+          const seenAt = unit.members.flatMap((member) => {
+            const at = lastSeen.get(member.id)
+            return at === undefined ? [] : [at]
+          })
+          return {
+            id,
+            group: unit.group,
+            questionIds: unit.members.map((member) => member.id),
+            difficulty: unit.members.reduce((sum, member) => sum + member.difficulty, 0) / unit.members.length,
+            reserve: unit.members.every((member) => member.reserve === true && !member.released),
+            lastSeenAt: seenAt.length === 0 ? null : Math.max(...seenAt)
+          }
+        })
+      }
 
       const poolAndSightings = (profileId: string, section: string) =>
         Effect.gen(function*() {
-          const published = (yield* run(publishedPool))
-            .filter((question) => question.section === section && question.reserve !== null)
           const lastSeen = yield* run(lastSeenBy(profileId))
           const paperSeen = yield* run(paperSeenBy(profileId))
-          const units = new Map<string, { group: GroupId; members: Array<(typeof published)[number]> }>()
-          for (const question of published) {
-            const group = groupOf(question.questionType)
-            if (group === undefined) continue
-            const unitId = group.units ? question.stimulusId : question.id
-            if (unitId === null) continue
-            const unit = units.get(unitId) ?? { group: group.id, members: [] }
-            unit.members.push(question)
-            units.set(unitId, unit)
-          }
-          const pool = [...units].map(([id, unit]): Unit => {
-            const seenAt = unit.members.flatMap((member) => {
-              const at = lastSeen.get(member.id)
-              return at === undefined ? [] : [at]
+          return { units: unitsOf(yield* run(publishedPool), lastSeen, section), lastSeen, paperSeen }
+        })
+
+      const readinessOf = (blueprint: Effect.Success<typeof settings.blueprint>, section: string, pool: ReadonlyArray<Unit>) => {
+        const stock = sectionStock(blueprint, section, pool)
+        return new SectionReadiness({
+          section: sectionName(section),
+          questions: sectionCount(blueprint, section),
+          minutes: SectionMinutes,
+          ready: stock.every((group) => group.unseen >= group.needed),
+          groups: stock.map((group) =>
+            new GroupStockView({
+              group: new Named({ id: group.group, name: groupsOf(section).find((each) => each.id === group.group)!.name }),
+              needed: group.needed,
+              unseen: group.unseen,
+              byBand: group.byBand
             })
-            return {
-              id,
-              group: unit.group,
-              questionIds: unit.members.map((member) => member.id),
-              difficulty: unit.members.reduce((sum, member) => sum + member.difficulty, 0) / unit.members.length,
-              reserve: unit.members.every((member) => member.reserve === true && !member.released),
-              lastSeenAt: seenAt.length === 0 ? null : Math.max(...seenAt)
-            }
-          })
-          return { units: pool, lastSeen, paperSeen }
+          )
+        })
+      }
+
+      // Whether each Section asked about can start, from the Question Bank
+      // and the Profile's sightings read once for all of them.
+      const readinessIn = (profileId: string, sections: ReadonlyArray<string>) =>
+        Effect.gen(function*() {
+          const blueprint = yield* settings.blueprint
+          const all = yield* run(publishedPool)
+          const lastSeen = yield* run(lastSeenBy(profileId))
+          return sections.map((section) => readinessOf(blueprint, section, unitsOf(all, lastSeen, section)))
         })
 
       const readiness = (profileId: string, section: string) =>
-        Effect.gen(function*() {
-          const blueprint = yield* settings.blueprint
-          const stock = sectionStock(blueprint, section, yield* poolFor(profileId, section))
-          return new SectionReadiness({
-            section: sectionName(section),
-            questions: sectionCount(blueprint, section),
-            minutes: SectionMinutes,
-            ready: stock.every((group) => group.unseen >= group.needed),
-            groups: stock.map((group) =>
-              new GroupStockView({
-                group: new Named({ id: group.group, name: groupsOf(section).find((each) => each.id === group.group)!.name }),
-                needed: group.needed,
-                unseen: group.unseen,
-                byBand: group.byBand
-              })
-            )
-          })
-        })
+        readinessIn(profileId, [section]).pipe(Effect.map((found) => found[0]!))
 
       // The clocks of Sectionals now running, as last ticked.
       const clocks = new Map<string, ClockState>()
       // Open while a Sectional may be running; it starts open, so the first
-      // tick picks up Sectionals left running when the app last stopped.
+      // tick picks up Sectionals left running when the app last stopped, and
+      // opens after a restore, which may bring running ones back.
       const wake = yield* Latch.make(true)
+      yield* (yield* Snapshots).afterRestore(wake.open)
 
       // A Question is served at a moment of the clock, which is saved then.
       const serve = (sessionId: string, position: number, questionId: string, servedElapsedMs: number) =>
@@ -645,8 +662,7 @@ export class Sectionals extends Context.Service<Sectionals, {
           .where(and(eq(sessions.profileId, profileId), eq(sessions.kind, kind), eq(sessions.status, "active")))
           .pipe(Effect.orDie, Effect.map((rows) => rows[0]?.id))
 
-      const readinessAll = (profileId: string) =>
-        Effect.forEach(taxonomy.sections, (section) => readiness(profileId, section.id))
+      const readinessAll = (profileId: string) => readinessIn(profileId, taxonomy.sections.map((section) => section.id))
 
       const options = (profileId: string) =>
         Effect.gen(function*() {

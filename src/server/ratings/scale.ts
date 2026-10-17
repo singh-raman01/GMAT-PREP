@@ -79,6 +79,15 @@ const fiveAbove = (value: number) => Math.ceil((value - 5) / 10 - 1e-9) * 10 + 5
 // (Q + V + DI - 180) × 4 to be odd.
 export const totalScore = (scores: readonly [number, number, number]) => within(nearestFive(rawTotal(scores)), TotalScoreRange)
 
+// The Section target of a target Total (decision 82): the lowest Section
+// score that, given to all three Sections, reaches it.
+export const sectionTargetOf = (total: number): number => {
+  for (let score: number = SectionScoreRange.lowest; score <= SectionScoreRange.highest; score += 1) {
+    if (totalScore([score, score, score]) >= total) return score
+  }
+  return SectionScoreRange.highest
+}
+
 export interface TotalEstimate {
   readonly score: number
   readonly low: number

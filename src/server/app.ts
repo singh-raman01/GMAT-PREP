@@ -8,6 +8,9 @@ import { Generation } from "./generation/Generation.ts"
 import { JobFeed } from "./events/JobFeed.ts"
 import { ErrorLog } from "./learning/ErrorLog.ts"
 import { Plans } from "./plans/Plans.ts"
+import { Lessons } from "./lessons/Lessons.ts"
+import { LlmAdapter } from "./llm/LlmAdapter.ts"
+import { Tutor } from "./tutor/Tutor.ts"
 import { Retries } from "./learning/Retries.ts"
 import { Analytics } from "./analytics/Analytics.ts"
 import { SiblingsReport } from "./learning/SiblingsReport.ts"
@@ -32,6 +35,8 @@ import { Overview } from "./review/Overview.ts"
 import { ReviewQueue } from "./review/ReviewQueue.ts"
 import { ApiKeyStore } from "./settings/ApiKeyStore.ts"
 import { Settings } from "./settings/Settings.ts"
+import { Snapshots } from "./snapshots/Snapshots.ts"
+import { Exports } from "./snapshots/Exports.ts"
 import { Taxonomy } from "./taxonomy/Taxonomy.ts"
 
 // Every route the server answers, behind the Host check.
@@ -61,6 +66,8 @@ export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Plans.layer.pip
     Retries.layer,
     Scores.layer,
     PaperMarks.layer,
+    Lessons.layer,
+    Tutor.layer,
     RemoveUploadLeftovers
   )),
   // The analytics, which Retries order their steps by.
@@ -69,7 +76,12 @@ export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Plans.layer.pip
   // the Practice and Error Log services Retries build on, and the Bank and
   // Siblings counts the Curator's Overview reads.
   Layer.provideMerge(Layer.mergeAll(Sectionals.layer, Practice.layer, ErrorLog.layer, Bank.layer, SiblingsReport.layer)),
+  // Tutor Chat calls the LLM from the server, over the transport given.
+  Layer.provideMerge(LlmAdapter.layer),
   Layer.provideMerge(Layer.mergeAll(Settings.layer, ApiKeyStore.layer, BookFiles.layer, FigureFiles.layer, Taxonomy.layer)),
+  // Snapshots, taken before risky changes in the services above, and
+  // exports.
+  Layer.provideMerge(Layer.mergeAll(Snapshots.layer, Exports.layer)),
   Layer.provideMerge(JobStore.layer),
   Layer.provideMerge(kinds),
   Layer.provideMerge(DatabaseLive)

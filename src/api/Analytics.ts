@@ -1,6 +1,7 @@
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
 import { Day } from "./day.ts"
+import { LessonPart } from "./Lessons.ts"
 import { Named, PracticeChoice, SessionId } from "./Practice.ts"
 import { ProfileSession } from "./Profiles.ts"
 
@@ -40,7 +41,11 @@ export class WeakAreaView extends Schema.Class<WeakAreaView>("gmat-prep/api/Weak
   // Its misses' Mistake Types, Slow and Guessed among them, the most first.
   mix: Schema.Array(Counted),
   // The Practice Set its button starts.
-  remedy: Schema.Struct({ timed: Schema.Boolean, choice: PracticeChoice })
+  remedy: Schema.Struct({ timed: Schema.Boolean, choice: PracticeChoice }),
+  // The part of its Lesson to read beside the set, from its most common
+  // Mistake Type: the whole Lesson for a Concept gap, the methods for a Wrong
+  // approach, else none. The page links it once the Lesson is approved.
+  lesson: Schema.NullOr(LessonPart)
 }) {}
 
 export class WeakAreasView extends Schema.Class<WeakAreasView>("gmat-prep/api/WeakAreasView")({
@@ -76,11 +81,14 @@ export class PacingPointView extends Schema.Class<PacingPointView>("gmat-prep/ap
 }) {}
 
 export class TimingView extends Schema.Class<TimingView>("gmat-prep/api/TimingView")({
+  // The Profile's time zone, for the Mocks' times.
+  timeZone: Schema.String,
   // Time over Target Time on first answers in timed Sessions.
   questionTypes: Schema.Array(Schema.Struct({ questionType: Named, pace: Pace })),
   // The same, by the Strategy of each Question's fastest Approach.
   strategies: Schema.Array(Schema.Struct({ strategy: Named, pace: Pace })),
-  // Sectionals and Mock Sections: the last 5 Questions against the rest.
+  // Sectionals and Mock Sections: the first answers on the last 5 Questions
+  // served against the rest, time-outs left out.
   ending: Schema.Struct({ last: Accuracy, rest: Accuracy }),
   // Each finished Mock's pacing, Section by Section, the latest first.
   mocks: Schema.Array(Schema.Struct({

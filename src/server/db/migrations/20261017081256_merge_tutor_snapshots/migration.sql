@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS `tutor_messages_profile_question`;

@@ -20,7 +20,7 @@ import {
 } from "../../api/ErrorLog.ts"
 import { MistakesView, Named, ResponseView, ServedView, SessionId } from "../../api/Practice.ts"
 import { QuestionId } from "../../api/Review.ts"
-import { calendarDaysUnder, studyDaysUnder } from "../../api/studyDay.ts"
+import { calendarDaysUnder, type DayRule, ruleInEffect, studyDaysUnder } from "../../api/studyDay.ts"
 import { Db } from "../db/Database.ts"
 import { dayRulesOf, DefaultRules } from "../profiles/days.ts"
 import { books, mistakeLabels, profiles, questions, responses, retrySkips, servedQuestions, sessions } from "../db/schema.ts"
@@ -101,7 +101,9 @@ interface Facts {
   readonly resolve: (questionId: string) => string
   readonly labels: ReadonlyMap<string, string>
   readonly ladders: ReadonlyMap<string, EntryLadder>
-  // The time zone in effect now.
+  // The Profile's day rules, and the time zone in effect now: a change
+  // waiting for the next rollover is not yet.
+  readonly rules: ReadonlyArray<DayRule>
   readonly timeZone: string
   // Today's Study Day, under the Profile's day rules.
   readonly today: number
@@ -241,6 +243,15 @@ export class ErrorLog extends Context.Service<ErrorLog, {
   // Every served row of the Profile's Sessions, kept between reads.
   servings(profileId: string): Effect.Effect<ReadonlyArray<Serving>>
   history(profileId: string): Effect.Effect<LearningHistory>
+  // What the database holds now, as a key: it changes with every write but
+  // those made through factFree, so anything worked out from a Profile's
+  // facts can be kept under it.
+  version(profileId: string): Effect.Effect<string>
+  // Runs a write that no fact depends on, such as a plan version or a Daily
+  // Log note, in a transaction, and leaves the version as it was, so what
+  // was worked out from the facts stays kept. A failure is a defect, as with
+  // the app's other writes.
+  factFree<A, E, R>(write: Effect.Effect<A, E, R>): Effect.Effect<A, never, R>
 }>()("gmat-prep/server/ErrorLog") {
   static readonly layer = Layer.effect(
     ErrorLog,
@@ -335,11 +346,15 @@ export class ErrorLog extends Context.Service<ErrorLog, {
               : and(eq(mistakeLabels.profileId, profileId), inArray(mistakeLabels.responseId, missed))!
           ))
           const rules = (yield* dayRulesOf(profileId).pipe(Effect.provideService(Db, db))) ?? DefaultRules
-          const timeZone = rules.at(-1)!.timeZone
+          const now = yield* Clock.currentTimeMillis
+          const timeZone = ruleInEffect(rules, now).timeZone
           const dayOf = studyDaysUnder(rules)
           const dateOf = calendarDaysUnder(rules)
           const skips = yield* run(db.select().from(retrySkips).where(and(eq(retrySkips.profileId, profileId), skipsWhere)))
-          const ladders = laddersOf({
+          // The ladders are worked out when first read, as the analytics never
+          // read them.
+          let ladders: ReadonlyMap<string, EntryLadder> | undefined
+          const laddersNow = () => (ladders ??= laddersOf({
             misses,
             sessions: [...found.values()].flatMap((session) =>
               session.retry.length === 0
@@ -351,7 +366,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             skips: skips.map((row) => ({ questionId: row.questionId, step: row.step as Step, at: row.createdAt, note: row.note })),
             resolve,
             dayOf
-          })
+          }))
           return {
             sessions: found,
             responses: responseFacts,
@@ -359,9 +374,12 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             summaries,
             resolve,
             labels,
-            ladders,
+            get ladders() {
+              return laddersNow()
+            },
+            rules,
             timeZone,
-            today: dayOf(yield* Clock.currentTimeMillis),
+            today: dayOf(now),
             dayOf,
             dateOf,
             targetMs: (questionId: string) => questionFacts.get(questionId)?.targetMs ?? 0,
@@ -439,14 +457,28 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           return { answers, served }
         })
 
-      // Every fact of the Profile's history.
       // The database as it stands: any write, from this process or another,
-      // changes one of the two.
+      // changes one of the two, but for the rows written through factFree.
+      // A transaction holds the one connection, so the changes counted
+      // inside one are its own.
+      let factFreeChanges = 0
       const databaseVersion = (profileId: string) =>
         run(
           db.select({ changes: sql<number>`total_changes()`, version: sql<number>`(select data_version from pragma_data_version)` })
             .from(profiles).where(eq(profiles.id, profileId))
-        ).pipe(Effect.map(([row]) => `${row?.changes}:${row?.version}`))
+        ).pipe(Effect.map(([row]) => `${(row?.changes ?? 0) - factFreeChanges}:${row?.version}`))
+      const totalChanges = run(db.select({ changes: sql<number>`total_changes()` }).from(sql`(select 1)`)).pipe(
+        Effect.map(([row]) => row?.changes ?? 0)
+      )
+      const factFree = <A, E, R>(write: Effect.Effect<A, E, R>) =>
+        db.transaction(() =>
+          Effect.gen(function*() {
+            const before = yield* totalChanges
+            const result = yield* write
+            factFreeChanges += (yield* totalChanges) - before
+            return result
+          })
+        ).pipe(Effect.orDie)
 
       // The whole history's facts, kept for the few Profiles read last until
       // the database changes, so the analytics views read one after another
@@ -458,7 +490,16 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           const version = yield* databaseVersion(profileId)
           const kept = factsKept.get(profileId)
           if (kept !== undefined && kept.version === version) {
-            return { ...kept.facts, today: kept.facts.dayOf(yield* Clock.currentTimeMillis) } satisfies Facts
+            // The latest read moves to the end, so the least recent goes first.
+            factsKept.delete(profileId)
+            factsKept.set(profileId, kept)
+            // A copy with today and the time zone worked out again, which
+            // keeps the ladders lazy.
+            const now = yield* Clock.currentTimeMillis
+            return Object.create(kept.facts, {
+              today: { value: kept.facts.dayOf(now), enumerable: true },
+              timeZone: { value: ruleInEffect(kept.facts.rules, now).timeZone, enumerable: true }
+            }) as Facts
           }
           const found = yield* readSessions(and(eq(sessions.profileId, profileId), inArray(sessions.kind, Kinds)))
           const history = yield* historyOf(profileId)
@@ -794,7 +835,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
         }).pipe(Effect.catchCause((cause) => Effect.logWarning(`The Error Log could not be read ahead: ${Cause.pretty(cause)}`)))
       )
 
-      return ErrorLog.of({ list, get, setMistakeType, retryState, history, servings })
+      return ErrorLog.of({ list, get, setMistakeType, retryState, history, servings, version: databaseVersion, factFree })
     })
   )
 }

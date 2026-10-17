@@ -16,11 +16,16 @@ export type PlanItemId = typeof PlanItemId.Type
 
 // Weekly study time, in minutes: 1 to 60 hours.
 export const WeeklyMinutes = { minimum: 60, maximum: 3600 } as const
+// A test date falls after today and at most this many days on: 2 years.
+export const TestDateDays = 730
 const Weekday = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 6 }))
+// A Total is 205 to 805 in steps of 10.
+export const isTotal = (total: number) => Number.isInteger(total) && total >= 205 && total <= 805 && (total - 205) % 10 === 0
+const Total = Schema.Int.check(Schema.makeFilter(isTotal, { description: "a Total from 205 to 805 that ends in 5" }))
 
 export const PlanSettingsInput = Schema.Struct({
   testDate: Schema.NullOr(Day),
-  targetTotal: Schema.NullOr(Schema.Int.check(Schema.isBetween({ minimum: 205, maximum: 805 }))),
+  targetTotal: Schema.NullOr(Total),
   weeklyMinutes: Schema.Int.check(Schema.isBetween(WeeklyMinutes)),
   // The weekdays with no study, 0 for Sunday; one at least stays a study day.
   daysOff: Schema.Array(Weekday).check(Schema.isMaxLength(7)),
@@ -50,7 +55,7 @@ export const PlanItemStatus = Schema.Literals(["planned", "started", "done", "dr
 export class PlanItemView extends Schema.Class<PlanItemView>("gmat-prep/api/PlanItemView")({
   id: PlanItemId,
   day: Day,
-  kind: Schema.Literals(["mock", "sectional", "retries", "practice"]),
+  kind: Schema.Literals(["mock", "sectional", "retries", "practice", "lesson"]),
   diagnostic: Schema.Boolean,
   // What it is, in words: "Percents, 10 Questions, untimed".
   title: Schema.String,
@@ -61,12 +66,17 @@ export class PlanItemView extends Schema.Class<PlanItemView>("gmat-prep/api/Plan
   weakArea: Schema.NullOr(Schema.Struct({ kind: Schema.Literals(["skill", "questionType"]), scope: Named, priority: Schema.Number })),
   // What it remedies: a Mistake Type, or Slow.
   remedy: Schema.NullOr(Named),
+  // The Trap Pattern a set's Questions share, for a Trap remedy.
+  trapPattern: Schema.NullOr(Named),
   minutes: Schema.Int,
   status: PlanItemStatus,
   // Why it was dropped.
   reason: Schema.NullOr(Schema.String),
   // The Session started from it, to go back to.
-  sessionId: Schema.NullOr(SessionId)
+  sessionId: Schema.NullOr(SessionId),
+  // A Lesson to read (decision 101): its subject, and the whole Lesson or
+  // its methods alone. Its page is opened, not started.
+  lesson: Schema.NullOr(Schema.Struct({ subject: Named, part: Schema.Literals(["whole", "methods"]) }))
 }) {}
 
 export class PlanDayView extends Schema.Class<PlanDayView>("gmat-prep/api/PlanDayView")({
@@ -74,6 +84,9 @@ export class PlanDayView extends Schema.Class<PlanDayView>("gmat-prep/api/PlanDa
   off: Schema.Boolean,
   minutes: Schema.Int,
   phase: Schema.Literals(["diagnostic", "weak-areas", "mixed", "mocks"]),
+  // Whether its sets and Retries are planned yet: the plan sets them 4
+  // weeks ahead, and a later day shows its time and any Mock or Sectional.
+  setsPlanned: Schema.Boolean,
   items: Schema.Array(PlanItemView)
 }) {}
 
@@ -125,6 +138,13 @@ export class PlanItemNotFound extends Schema.TaggedError<PlanItemNotFound>()(
   { httpApiStatus: 404 }
 ) {}
 
+// A Lesson item opens its Lesson's page; there is no Session to start.
+export class PlanItemIsLesson extends Schema.TaggedError<PlanItemIsLesson>()(
+  "PlanItemIsLesson",
+  {},
+  { httpApiStatus: 409 }
+) {}
+
 // The item is not one of today's planned ones: from another day or an older
 // version of the plan, dropped, or done.
 export class PlanItemNotOpen extends Schema.TaggedError<PlanItemNotOpen>()(
@@ -153,6 +173,14 @@ export class DailyLogView extends Schema.Class<DailyLogView>("gmat-prep/api/Dail
 
 export const NoteText = Schema.String.check(Schema.isMaxLength(2000))
 
+// Notes are kept for the Study Days the Daily Log shows: today and the 89
+// before it.
+export class NoteDayInvalid extends Schema.TaggedError<NoteDayInvalid>()(
+  "NoteDayInvalid",
+  { day: Day },
+  { httpApiStatus: 400 }
+) {}
+
 export class PlanApi extends HttpApiGroup.make("plan")
   .add(
     HttpApiEndpoint.get("view", "/", { success: PlanView }),
@@ -170,6 +198,7 @@ export class PlanApi extends HttpApiGroup.make("plan")
       error: [
         PlanItemNotFound,
         PlanItemNotOpen,
+        PlanItemIsLesson,
         FiltersInvalid,
         BookNotFound,
         NoQuestionsMatch,
@@ -187,7 +216,8 @@ export class PlanApi extends HttpApiGroup.make("plan")
     HttpApiEndpoint.put("writeNote", "/daily-log/:day/note", {
       params: { day: Day },
       payload: Schema.Struct({ note: NoteText }),
-      success: DailyLogDay
+      success: DailyLogDay,
+      error: NoteDayInvalid
     })
   )
   .middleware(ProfileSession)

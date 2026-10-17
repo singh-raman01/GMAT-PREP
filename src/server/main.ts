@@ -1,6 +1,6 @@
 import { BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { Config, Effect, Layer, Option } from "effect"
-import { HttpRouter, HttpServer } from "effect/http"
+import { FetchHttpClient, HttpRouter, HttpServer } from "effect/http"
 import { rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { MaxBookBytes } from "../api/Books.ts"
@@ -8,6 +8,9 @@ import { AppConfig } from "./AppConfig.ts"
 import { AppRoutes, AppServices } from "./app.ts"
 import { ResetPassphrase } from "./curator/resetPassphrase.ts"
 import { InstanceLockLive } from "./instanceLock.ts"
+import { LlmTransportHttp } from "./llm/LlmTransport.ts"
+import { fileCommand, SnapshotCopierProcess } from "./snapshots/copier.ts"
+import { Snapshots } from "./snapshots/Snapshots.ts"
 import { WorkerMain } from "./worker/main.ts"
 import { WorkerSupervisor } from "./worker/WorkerSupervisor.ts"
 
@@ -64,7 +67,13 @@ const AnnounceLive = Layer.effectDiscard(
 const MainLive = AnnounceLive.pipe(
   Layer.provideMerge(ServerLive),
   Layer.provide(WorkerSupervisor.layer),
+  // The day's snapshot and the weekly integrity check, at startup and hourly.
+  Layer.provide(Snapshots.schedule),
   Layer.provide(AppServices),
+  // Snapshots are copied by a process of their own.
+  Layer.provide(SnapshotCopierProcess),
+  // Tutor Chat's calls go out over HTTP.
+  Layer.provide(LlmTransportHttp.pipe(Layer.provide(FetchHttpClient.layer))),
   Layer.provide(InstanceLockLive),
   Layer.provide(AppConfig.layerFromEnv)
 )
@@ -82,7 +91,7 @@ const causeMessages = (error: unknown): ReadonlyArray<string> => {
 }
 
 // Plain-language reasons for the startup failures a Learner can meet.
-const explainStartupFailure = (error: unknown): string | undefined => {
+export const explainStartupFailure = (error: unknown): string | undefined => {
   const tagged = error as { readonly _tag?: string; readonly message?: string }
   switch (tagged._tag) {
     case "AlreadyRunning": {
@@ -96,6 +105,12 @@ const explainStartupFailure = (error: unknown): string | undefined => {
     case "ConfigInsideData": {
       const { configDir, dataDir } = error as { configDir: string; dataDir: string }
       return `The config folder ${configDir} is inside the data folder ${dataDir}, so secrets would reach snapshots. Set GMAT_PREP_CONFIG_DIR to a folder outside it.`
+    }
+    case "SnapshotBeforeUpdateFailed": {
+      const { detail, diskFull } = error as { detail: string; diskFull: boolean }
+      return diskFull
+        ? "There is not enough space on the disk for the snapshot taken before updating the database, so nothing was changed. Free some space, then start GMAT prep again."
+        : `The snapshot taken before updating the database could not be written, so nothing was changed: ${detail}`
     }
     case "NewerDatabase":
       return "This data folder was written by a newer version of GMAT prep. Install that version, or restore a snapshot."
@@ -137,6 +152,13 @@ export const main = () => {
       return BunRuntime.runMain(WorkerMain)
     case "reset-passphrase":
       return BunRuntime.runMain(ResetPassphrase)
+    // Work on a database file in a process of its own (decision 111).
+    case "snapshot-copy":
+    case "snapshot-check":
+    case "snapshot-inspect":
+    case "snapshot-migrate":
+    case "snapshot-hash":
+      return void fileCommand(process.argv.slice(process.argv.indexOf(command)))
     default:
       return BunRuntime.runMain(runServer)
   }

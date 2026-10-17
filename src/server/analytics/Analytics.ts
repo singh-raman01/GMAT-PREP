@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm"
+import { and, eq, sql } from "drizzle-orm"
 import { Context, Effect, Layer } from "effect"
 import {
   MistakeTrendView,
@@ -15,11 +15,12 @@ import { Named, SessionId } from "../../api/Practice.ts"
 import { SectionMinutes } from "../../api/Sectionals.ts"
 import { studyDaysUnder } from "../../api/studyDay.ts"
 import { targetSecondsFor } from "../../api/targetTimes.ts"
+import { type Blueprint, sectionCount } from "../../api/blueprint.ts"
 import { sectionOf } from "../../api/taxonomyRules.ts"
 import { Db } from "../db/Database.ts"
 import { approaches, books, questions, sessions, sources } from "../db/schema.ts"
 import { ErrorLog, type LearningHistory, type ShownSession } from "../learning/ErrorLog.ts"
-import { inChunks, type QuestionSummary, questionSummaries } from "../learning/facts.ts"
+import { type QuestionSummary, questionSummaries } from "../learning/facts.ts"
 import { namesOf } from "../practice/content.ts"
 import { isCorrect } from "../practice/history.ts"
 import { ratedHistory, sectionFit } from "../ratings/history.ts"
@@ -30,8 +31,8 @@ import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { type RatedFact, type ScopeAbility, scopeAbilities, scopeKey } from "./abilities.ts"
 import { type Answered, answeredOf } from "./answers.ts"
 import { frequenciesOf } from "./frequency.ts"
-import { endingOf, mistakeWeeksOf, pacesOf, pacingOf, studyDaysOf, type TimedAnswer } from "./views.ts"
-import { mixesOf, trapsOf, weakAreasOf } from "./weakAreas.ts"
+import { endingOf, mistakeWeeksOf, pacesOf, pacingOf, StudyWeek, studyDaysOf, type TimedAnswer } from "./views.ts"
+import { lessonPartFor, mixesOf, trapsOf, weakAreasOf } from "./weakAreas.ts"
 
 // The Learner's analytics (docs/design.md, "Analytics"), worked out on read
 // from the Profile's own facts.
@@ -39,8 +40,8 @@ import { mixesOf, trapsOf, weakAreasOf } from "./weakAreas.ts"
 const DayMs = 24 * 60 * 60 * 1000
 const dayText = (day: number) => new Date(day * DayMs).toISOString().slice(0, 10)
 const LimitMs = SectionMinutes * 60 * 1000
-// The Mistakes view looks back this many Study Weeks.
-const MistakeWeeks = 12
+// Abilities are kept for this many Profiles, the last read.
+const KeptProfiles = 4
 // A Weak Area's remedy serves this many Questions.
 const RemedySize = 10
 
@@ -86,9 +87,32 @@ export class Analytics extends Context.Service<Analytics, {
       // Skill and Question Type Abilities from the Rated Responses of the
       // Sessions that have ended, as Score Estimates count them.
       // known: Questions already read, as the Error Log's history has them.
+      // Kept for the few Profiles read last, under the database's version and
+      // the Study Day, as recency counts in Study Days.
+      const abilitiesKept = new Map<string, { readonly key: string; readonly found: Effect.Success<ReturnType<typeof fitAbilities>> }>()
       const abilitiesFor = (profileId: string, known: ReadonlyMap<string, QuestionSummary> = new Map()) =>
         Effect.gen(function*() {
+          const version = yield* errorLog.version(profileId)
           const clock = yield* run(studyClockOf(profileId))
+          const key = clock === undefined ? `${version}|none` : `${version}|${studyDaysUnder(clock.rules)(clock.now)}`
+          const kept = abilitiesKept.get(profileId)
+          if (kept !== undefined && kept.key === key) {
+            abilitiesKept.delete(profileId)
+            abilitiesKept.set(profileId, kept)
+            return kept.found
+          }
+          const found = yield* fitAbilities(profileId, clock, known)
+          abilitiesKept.delete(profileId)
+          abilitiesKept.set(profileId, { key, found })
+          for (const oldest of [...abilitiesKept.keys()].slice(0, Math.max(0, abilitiesKept.size - KeptProfiles))) abilitiesKept.delete(oldest)
+          return found
+        })
+      const fitAbilities = (
+        profileId: string,
+        clock: Effect.Success<ReturnType<typeof studyClockOf>>,
+        known: ReadonlyMap<string, QuestionSummary>
+      ) =>
+        Effect.gen(function*() {
           const servings = clock === undefined ? [] : yield* errorLog.servings(profileId)
           const history = clock === undefined
             ? []
@@ -156,7 +180,9 @@ export class Analytics extends Context.Service<Analytics, {
         secondarySkills: questions.secondarySkills,
         official: sql<number>`max(coalesce(${books.official}, 0))`
       }).from(questions)
-        .leftJoin(sources, and(eq(sources.questionId, questions.id), eq(sources.merged, false)))
+        // Every Source counts, a merged one too: an official Book's item that
+        // joined a Question already in the Bank makes that Question official.
+        .leftJoin(sources, eq(sources.questionId, questions.id))
         .leftJoin(books, eq(books.id, sources.bookId))
         .where(eq(questions.status, "published"))
         .groupBy(questions.id)
@@ -178,18 +204,31 @@ export class Analytics extends Context.Service<Analytics, {
           const history = yield* errorLog.history(profileId)
           const found = yield* abilitiesFor(profileId, history.summaries)
           const frequencies = frequenciesOf(yield* bank)
-          const misses = history.misses.flatMap(({ miss, mistakeTypes }) => {
-            const question = history.summaries.get(miss.questionId)
+          // Each Question's misses gathered into one fact, its kinds and
+          // Trap Patterns listed once a miss, so counting reads each Question
+          // once however often it was missed.
+          const byQuestion = new Map<string, { readonly kinds: Array<string>; readonly traps: Array<string> }>()
+          for (const { miss, mistakeTypes } of history.misses) {
+            let gathered = byQuestion.get(miss.questionId)
+            if (gathered === undefined) {
+              gathered = { kinds: [], traps: [] }
+              byQuestion.set(miss.questionId, gathered)
+            }
+            for (const kind of mistakeTypes) if (kind !== null) gathered.kinds.push(kind)
+            for (const reason of miss.reasons) if (reason !== "wrong") gathered.kinds.push(reason)
+            const traps = new Set<string>()
+            for (const part of miss.parts) if (part.trapPattern !== null) traps.add(part.trapPattern)
+            for (const trap of traps) gathered.traps.push(trap)
+          }
+          const misses = [...byQuestion].flatMap(([questionId, gathered]) => {
+            const question = history.summaries.get(questionId)
             if (question === undefined) return []
             return [{
               questionType: question.questionType,
               primarySkill: question.primarySkill,
               secondarySkills: question.secondarySkills,
-              kinds: [
-                ...mistakeTypes.filter((kind): kind is string => kind !== null),
-                ...miss.reasons.filter((reason) => reason !== "wrong")
-              ],
-              traps: [...new Set(miss.parts.flatMap((part) => (part.trapPattern === null ? [] : [part.trapPattern])))]
+              kinds: gathered.kinds,
+              traps: gathered.traps
             }]
           })
           return { ...found, frequencies, areas: weakAreasOf(found.abilities, frequencies, mixesOf(misses), trapsOf(misses)) }
@@ -237,7 +276,8 @@ export class Analytics extends Context.Service<Analytics, {
                     ...(area.remedy.timed ? { timed: true } : {}),
                     ...(area.kind === "skill" ? { skill: area.id } : { questionType: area.id })
                   }
-                }
+                },
+                lesson: lessonPartFor(area.topMistake)
               })
             ),
             frequencyBasis: frequencies.basis,
@@ -294,6 +334,30 @@ export class Analytics extends Context.Service<Analytics, {
         return shown
       }
 
+      // Every Approach's Strategy, time and answer, by Question in the order
+      // the Debrief shows them, kept until the Approaches change. They are
+      // only ever deleted and written anew, later than the last, so their
+      // count, newest time and last row say when they have.
+      let approachesKept: {
+        readonly key: string
+        readonly byQuestion: ReadonlyMap<string, ReadonlyArray<{ readonly questionId: string; readonly strategy: string; readonly seconds: number; readonly answer: string | null }>>
+      } | undefined
+      const approachRoutes = Effect.gen(function*() {
+        const [mark] = yield* run(db.select({
+          count: sql<number>`count(*)`,
+          newest: sql<number | null>`max(${approaches.createdAt})`,
+          last: sql<number | null>`max(${approaches}.rowid)`
+        }).from(approaches))
+        const key = `${mark?.count}|${mark?.newest}|${mark?.last}`
+        if (approachesKept !== undefined && approachesKept.key === key) return approachesKept.byQuestion
+        const rows = yield* run(
+          db.select({ questionId: approaches.questionId, strategy: approaches.strategy, seconds: approaches.expectedSeconds, answer: approaches.answer })
+            .from(approaches).orderBy(approaches.questionId, approaches.position)
+        )
+        approachesKept = { key, byQuestion: Map.groupBy(rows, (row) => row.questionId) }
+        return approachesKept.byQuestion
+      })
+
       const timing = (profileId: string) =>
         Effect.gen(function*() {
           const history = yield* errorLog.history(profileId)
@@ -301,11 +365,8 @@ export class Analytics extends Context.Service<Analytics, {
           const servedRow = (sessionId: string, questionId: string) =>
             history.served.get(sessionId)?.find((row) => row.questionId === questionId)
           // The Strategy of each Question's fastest Approach that reaches its key.
-          const ids = [...new Set(timed.map((answer) => answer.questionId))]
-          const routes = yield* run(inChunks(ids, (chunk) =>
-            db.select({ questionId: approaches.questionId, strategy: approaches.strategy, seconds: approaches.expectedSeconds, answer: approaches.answer })
-              .from(approaches).where(inArray(approaches.questionId, chunk))
-          ))
+          const routesOf = yield* approachRoutes
+          const routes = [...new Set(timed.map((answer) => answer.questionId))].flatMap((id) => routesOf.get(id) ?? [])
           const fastest = new Map<string, { strategy: string; seconds: number }>()
           for (const route of routes) {
             const question = history.summaries.get(route.questionId)
@@ -321,7 +382,7 @@ export class Analytics extends Context.Service<Analytics, {
               kind: answer.session.kind,
               position: row?.position ?? 0,
               questionType: answer.question.questionType,
-              correct: answer.correct === true,
+              correct: answer.first.kind !== "time-out" && isCorrect(answer.first.selection, answer.question.parts),
               timedOut: answer.first.kind === "time-out",
               timeSpentMs: answer.first.timeSpentMs,
               targetMs: history.targetMs(answer.questionId),
@@ -340,27 +401,35 @@ export class Analytics extends Context.Service<Analytics, {
               id: sessions.id,
               section: sql<string>`json_extract(${sessions.config}, '$.section')`,
               mockId: sql<string>`json_extract(${sessions.config}, '$.mock.id')`,
-              place: sql<number>`json_extract(${sessions.config}, '$.mock.place')`
+              place: sql<number>`json_extract(${sessions.config}, '$.mock.place')`,
+              blueprint: sql<string>`json_extract(${sessions.config}, '$.blueprint')`
             }).from(sessions).where(and(eq(sessions.profileId, profileId), eq(sessions.kind, "mock-section")))
           )
           const bySession = Map.groupBy(answers, (answer) => answer.sessionId)
           return new TimingView({
+            timeZone: history.timeZone,
             questionTypes: [...paces.questionTypes].toSorted((a, b) => b[1].median - a[1].median)
               .map(([id, pace]) => ({ questionType: named(id), pace })),
             strategies: [...paces.strategies].toSorted((a, b) => b[1].median - a[1].median)
               .map(([id, pace]) => ({ strategy: named(id), pace })),
-            ending: endingOf(answers),
+            ending: endingOf(answers, (sessionId) => {
+              const served = history.served.get(sessionId)
+              return served === undefined || served.length === 0 ? undefined : Math.max(...served.map((row) => row.position))
+            }),
             mocks: mockRows.toSorted((a, b) => (b.finishedAt ?? 0) - (a.finishedAt ?? 0)).map((mock) => ({
               mockId: SessionId.make(mock.id),
               finishedAt: mock.finishedAt ?? 0,
-              sections: sectionRows.filter((row) => row.mockId === mock.id).toSorted((a, b) => a.place - b.place).map((row) => ({
-                section: named(row.section),
-                limitMs: LimitMs,
-                questions: history.served.get(row.id)?.length ?? 0,
-                points: pacingOf(bySession.get(row.id) ?? [], LimitMs, history.served.get(row.id)?.length ?? 0).map((point) =>
-                  new PacingPointView(point)
-                )
-              }))
+              sections: sectionRows.filter((row) => row.mockId === mock.id).toSorted((a, b) => a.place - b.place).map((row) => {
+                // The Section's own size from its Blueprint, so the even pace
+                // runs over every Question, reached or not.
+                const questions = Math.max(history.served.get(row.id)?.length ?? 0, sectionCount(JSON.parse(row.blueprint) as Blueprint, row.section))
+                return {
+                  section: named(row.section),
+                  limitMs: LimitMs,
+                  questions,
+                  points: pacingOf(bySession.get(row.id) ?? [], LimitMs, questions).map((point) => new PacingPointView(point))
+                }
+              })
             }))
           })
         })
@@ -379,8 +448,11 @@ export class Analytics extends Context.Service<Analytics, {
           )
           const rates = (counts: ReadonlyMap<string, number>) =>
             [...counts].toSorted((a, b) => b[1] - a[1]).map(([id, per100]) => ({ kind: named(id), per100 }))
+          // Back to the first week with an answer.
+          const earliest = Math.min(history.today, ...answeredDays)
+          const weekCount = Math.floor((history.today - earliest) / StudyWeek) + 1
           return new MistakeTrendView({
-            weeks: mistakeWeeksOf(answeredDays, wrongParts, history.today, MistakeWeeks).map((week) => ({
+            weeks: mistakeWeeksOf(answeredDays, wrongParts, history.today, weekCount).map((week) => ({
               from: dayText(week.from),
               to: dayText(week.to),
               questions: week.questions,
@@ -409,13 +481,47 @@ export class Analytics extends Context.Service<Analytics, {
               day: dayText(day.day),
               minutes: day.minutes,
               questions: day.questions,
-              sections: [...day.sections].map(([section, accuracy]) => ({ section: named(section), ...accuracy })),
+              // In the Taxonomy's order, so each day reads the same way.
+              sections: taxonomy.sections.flatMap((each) => {
+                const accuracy = day.sections.get(each.id)
+                return accuracy === undefined ? [] : [{ section: named(each.id), ...accuracy }]
+              }),
               mocks: day.mocks
             }))
           })
         })
 
-      return Analytics.of({ weakAreas, planAnalytics, skillMap, timing, mistakes, study })
+      // Each view as last worked out for the few Profiles read last, under the
+      // database's version and the Study Day: reading a view again, or the
+      // view after the one before, costs nothing until something is written.
+      const viewsKept = new Map<string, { readonly key: string; readonly value: unknown }>()
+      const keptView = <A>(name: string, read: (profileId: string) => Effect.Effect<A>) => (profileId: string) =>
+        Effect.gen(function*() {
+          const version = yield* errorLog.version(profileId)
+          const clock = yield* run(studyClockOf(profileId))
+          const key = clock === undefined ? `${version}|none` : `${version}|${studyDaysUnder(clock.rules)(clock.now)}`
+          const slot = `${name}|${profileId}`
+          const kept = viewsKept.get(slot)
+          if (kept !== undefined && kept.key === key) {
+            viewsKept.delete(slot)
+            viewsKept.set(slot, kept)
+            return kept.value as A
+          }
+          const value = yield* read(profileId)
+          viewsKept.delete(slot)
+          viewsKept.set(slot, { key, value })
+          for (const oldest of [...viewsKept.keys()].slice(0, Math.max(0, viewsKept.size - KeptProfiles * 6))) viewsKept.delete(oldest)
+          return value
+        })
+
+      return Analytics.of({
+        weakAreas: keptView("weakAreas", weakAreas),
+        planAnalytics: keptView("planAnalytics", planAnalytics),
+        skillMap: keptView("skillMap", skillMap),
+        timing: keptView("timing", timing),
+        mistakes: keptView("mistakes", mistakes),
+        study: keptView("study", study)
+      })
     })
   )
 }

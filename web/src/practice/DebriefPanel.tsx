@@ -2,9 +2,14 @@ import { type Ref, useEffect, useId, useRef, useState } from "react"
 import { bandNames } from "../../../src/api/difficulty.ts"
 import type { ErrorLogEntry } from "../../../src/api/ErrorLog.ts"
 import type { Debrief, MissedPartView, MistakesView, PracticePart, ResponseView, TrapNoteView } from "../../../src/api/Practice.ts"
+import type { QuestionId } from "../../../src/api/Review.ts"
 import { call } from "../api.ts"
 import { spokenDuration } from "../format.ts"
+import { useLessonOn } from "../lessons/available.ts"
+import { lessonPath } from "../lessons/paths.ts"
 import { RichText } from "../RichText.tsx"
+import { linkProps } from "../router.ts"
+import { TutorPanel } from "../tutor/TutorPanel.tsx"
 import { reportUnsaved } from "../unsaved.ts"
 
 // What a Learner reads after a Question: whether the answer was right, why
@@ -57,7 +62,7 @@ const unratedText = (response: ResponseView, timed: boolean) =>
     : " You had seen this Question before, so this answer does not change your scores."
 
 export const DebriefPanel = (
-  { debrief, response, timed, headingRef, parts, mistakes, onMistakeChanged, onFailure }: {
+  { debrief, response, timed, headingRef, parts, mistakes, onMistakeChanged, onFailure, questionId }: {
     readonly debrief: Debrief
     readonly response: ResponseView | null
     // Whether the set was timed.
@@ -70,6 +75,8 @@ export const DebriefPanel = (
     // Told the entry as saved after a change, and a failure the page handles.
     readonly onMistakeChanged?: (entry: ErrorLogEntry) => void
     readonly onFailure?: (failure: { readonly _tag: string }) => void
+    // The Question, for Tutor Chat and Report a problem (decision 108).
+    readonly questionId?: QuestionId
   }
 ) => {
   const titleId = useId()
@@ -142,7 +149,26 @@ export const DebriefPanel = (
             </ol>
           </>
         )}
+      <LessonLink skill={debrief.skill} />
+      {
+        // A Question served but never answered, as when a Sectional ends with
+        // it on screen, has nothing of the Learner's to discuss.
+        questionId !== undefined && response !== null && <TutorPanel questionId={questionId} onFailure={onFailure} />
+      }
     </section>
+  )
+}
+
+// The Lesson on the Question's primary Skill, once approved (decision 102).
+const LessonLink = ({ skill }: { readonly skill: Debrief["skill"] }) => {
+  const lesson = useLessonOn(skill?.id)
+  if (lesson === undefined) return null
+  return (
+    <p className="debrief-lesson">
+      <a className="button button-quiet" {...linkProps(lessonPath(lesson.subject.id))}>
+        Read the Lesson on {lesson.subject.name}
+      </a>
+    </p>
   )
 }
 

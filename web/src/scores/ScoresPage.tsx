@@ -7,11 +7,12 @@ import {
   type ScoreTrendView
 } from "../../../src/api/Scores.ts"
 import { call } from "../api.ts"
-import { Figure, Legend, LineChart, type LineSeries, type Tone } from "../charts/charts.tsx"
+import { Figure, type Guide, Legend, LineChart, type LineSeries, type Tone } from "../charts/charts.tsx"
 import { DaySteps } from "../charts/ticks.ts"
 import { calendarDay } from "../format.ts"
 import { useFocusOnMount } from "../focus.ts"
 import { dayNumber, dayOfNumber, shortDay } from "../progress/reading.ts"
+import { linkProps } from "../router.ts"
 
 // Scores: the Profile's Score Estimates with the Total, and the Official
 // Scores that calibrate them.
@@ -29,6 +30,14 @@ const blankForm = (today = "") => ({ takenOn: today, kind: "practice-exam" as Of
 type Form = ReturnType<typeof blankForm>
 
 const sectionNames: Readonly<Record<string, string>> = { quant: "Quantitative", verbal: "Verbal", di: "Data Insights" }
+
+// How far an estimate is from the Study Plan's target (decision 82).
+const targetText = (score: number, target: number | undefined) =>
+  target === undefined
+    ? ""
+    : score >= target
+    ? `; on or past your target of ${target}`
+    : `; ${target - score} below your target of ${target}`
 
 const listed = (names: ReadonlyArray<string>) =>
   names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`
@@ -168,6 +177,7 @@ export const ScoresPage = ({ onSessionLost, onStopped }: Props) => {
                     <span className="score-facts">
                       likely {estimates.total.low} to {estimates.total.high}, on the 205 to 805 scale
                       {estimates.total.calibrated ? "" : ", not yet calibrated"}
+                      {targetText(estimates.total.score, estimates.target?.total)}
                     </span>
                   </li>
                 )}
@@ -178,12 +188,19 @@ export const ScoresPage = ({ onSessionLost, onStopped }: Props) => {
                     <span className="score-facts">
                       likely {each.low} to {each.high}
                       {each.calibrated ? "" : ", not yet calibrated"}
+                      {targetText(each.score, estimates.target?.section)}
                     </span>
                   </li>
                 ))}
               </ul>
               {estimates.total === null && (
                 <p className="hint">The Total shows once all three Sections have an estimate.</p>
+              )}
+              {estimates.target !== null && (
+                <p className="hint measure">
+                  Your targets come from your <a {...linkProps("/plan/settings")}>Study Plan</a>: a Total of{" "}
+                  {estimates.target.total} takes about {estimates.target.section} in each Section.
+                </p>
               )}
             </>
           )}
@@ -282,7 +299,9 @@ const Trend = ({ trend }: { readonly trend: ScoreTrendView }) => {
   const days = [...new Set([...trend.sections.flatMap((each) => each.points.map((point) => point.day)), ...trend.total.map((point) => point.day)])]
     .toSorted()
   if (days.length === 0) return null
-  const domain = [dayNumber(days[0]!), Math.max(dayNumber(days.at(-1)!), dayNumber(days[0]!) + 1)] as const
+  // The days span the estimates and every Official Score, so each is marked.
+  const spanned = [...days, ...trend.official.map((score) => score.takenOn)].toSorted()
+  const domain = [dayNumber(spanned[0]!), Math.max(dayNumber(spanned.at(-1)!), dayNumber(spanned[0]!) + 1)] as const
   const label = (x: number) => shortDay(dayOfNumber(x))
   const sections: ReadonlyArray<LineSeries> = trend.sections.map((each) => ({
     id: each.section.id,
@@ -303,7 +322,13 @@ const Trend = ({ trend }: { readonly trend: ScoreTrendView }) => {
     const last = latest(each.points)
     return last === undefined ? "" : `${each.section.name} ${last.score}`
   }).filter((text) => text !== "").join(", ")
-  const official = trend.official.filter((score) => dayNumber(score.takenOn) >= domain[0] && dayNumber(score.takenOn) <= domain[1])
+  const official = trend.official
+  const target = trend.target
+  const sectionGuides: ReadonlyArray<Guide> = target === null
+    ? []
+    : [{ id: "target", y: target.section, label: `Your target, ${target.section} in each Section` }]
+  const totalGuides: ReadonlyArray<Guide> = target === null ? [] : [{ id: "target", y: target.total, label: `Your target, ${target.total}` }]
+  const targetKey = (label: string) => ({ id: "target", label, tone: "guide" as const, dashed: true })
   return (
     <section className="group" aria-labelledby="trend-title">
       <h2 id="trend-title">Score trend</h2>
@@ -319,8 +344,11 @@ const Trend = ({ trend }: { readonly trend: ScoreTrendView }) => {
               title="Sections, 60 to 90"
               chart={
                 <LineChart
-                  description={`Section Score Estimates from ${calendarDay(days[0]!)} to ${calendarDay(days.at(-1)!)}; latest ${sectionWords}.`}
+                  description={`Section Score Estimates from ${calendarDay(days[0]!)} to ${calendarDay(days.at(-1)!)}; latest ${sectionWords}.${
+                    target === null ? "" : ` Your target is ${target.section} in each Section.`
+                  }`}
                   series={sections}
+                  guides={sectionGuides}
                   xDomain={domain}
                   xSteps={DaySteps}
                   yDomain={[60, 90]}
@@ -328,7 +356,7 @@ const Trend = ({ trend }: { readonly trend: ScoreTrendView }) => {
                   yTicks={SectionTicks}
                 />
               }
-              legend={<Legend series={sections} />}
+              legend={<Legend series={target === null ? sections : [...sections, targetKey(`Target, ${target.section}`)]} />}
               numbers={
                 <table className="data-table">
                   <thead>
@@ -362,9 +390,11 @@ const Trend = ({ trend }: { readonly trend: ScoreTrendView }) => {
                   <LineChart
                     description={`Total Score Estimates; latest ${latest(trend.total)?.score}.${
                       official.length === 0 ? "" : ` Official Scores: ${official.map((score) => `${score.total} on ${calendarDay(score.takenOn)}`).join(", ")}.`
-                    }`}
+                    }${target === null ? "" : ` Your target is ${target.total}.`}`}
                     series={[total]}
+                    guides={totalGuides}
                     markers={official.map((score) => ({
+                      id: score.id,
                       x: dayNumber(score.takenOn),
                       y: score.total,
                       label: `${OfficialScoreKindNames[score.kind]}: ${score.total} on ${calendarDay(score.takenOn)}`
@@ -376,7 +406,12 @@ const Trend = ({ trend }: { readonly trend: ScoreTrendView }) => {
                     yTicks={TotalTicks}
                   />
                 }
-                legend={official.length === 0 ? undefined : <p className="hint">Ringed in yellow: your Official Scores.</p>}
+                legend={
+                  <>
+                    {target !== null && <Legend series={[total, targetKey(`Target, ${target.total}`)]} />}
+                    {official.length > 0 && <p className="hint">Marked in yellow: your Official Scores.</p>}
+                  </>
+                }
                 numbers={
                   <table className="data-table">
                     <thead>
