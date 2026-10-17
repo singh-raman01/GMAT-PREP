@@ -61,9 +61,11 @@ const TotalOrder = ["quant", "verbal", "di"] as const
 
 export class Mocks extends Context.Service<Mocks, {
   options(profileId: string): Effect.Effect<MockOptions>
+  // planItemId: the Study Plan item it is started from, if any.
   start(
     caller: Caller,
-    order: ReadonlyArray<string>
+    order: ReadonlyArray<string>,
+    planItemId?: string
   ): Effect.Effect<MockView, MockOrderInvalid | MockReserveTooSmall | SectionalRunning | MockRunning>
   list(profileId: string): Effect.Effect<ReadonlyArray<MockSummary>>
   get(caller: Caller, id: SessionId): Effect.Effect<MockView, MockNotFound>
@@ -297,7 +299,7 @@ export class Mocks extends Context.Service<Mocks, {
 
       // One Mock or Sectional runs at a time, and a Mock starts only when
       // every Section passes the start check.
-      const start = (caller: Caller, order: ReadonlyArray<string>) =>
+      const start = (caller: Caller, order: ReadonlyArray<string>, planItemId?: string) =>
         Effect.gen(function*() {
           const problems = orderProblems(order)
           if (problems.length > 0) return yield* new MockOrderInvalid({ problems })
@@ -321,7 +323,8 @@ export class Mocks extends Context.Service<Mocks, {
             elapsedMs: 0,
             clockSavedAt: null,
             holder: caller.device ?? null,
-            createdAt: now
+            createdAt: now,
+            planItemId: planItemId ?? null
           }).pipe(Effect.orDie)
           const mock = yield* own(caller.profileId, id).pipe(Effect.orDie)
           yield* saveConfig(id, yield* beginNext(mock, config))

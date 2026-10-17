@@ -13,7 +13,7 @@ import {
 import { joinedKey } from "../../api/keys.ts"
 import { Named, SessionId } from "../../api/Practice.ts"
 import { SectionMinutes } from "../../api/Sectionals.ts"
-import { studyDays } from "../../api/studyDay.ts"
+import { studyDaysUnder } from "../../api/studyDay.ts"
 import { targetSecondsFor } from "../../api/targetTimes.ts"
 import { sectionOf } from "../../api/taxonomyRules.ts"
 import { Db } from "../db/Database.ts"
@@ -31,7 +31,7 @@ import { type RatedFact, type ScopeAbility, scopeAbilities, scopeKey } from "./a
 import { type Answered, answeredOf } from "./answers.ts"
 import { frequenciesOf } from "./frequency.ts"
 import { endingOf, mistakeWeeksOf, pacesOf, pacingOf, studyDaysOf, type TimedAnswer } from "./views.ts"
-import { mixesOf, weakAreasOf } from "./weakAreas.ts"
+import { mixesOf, trapsOf, weakAreasOf } from "./weakAreas.ts"
 
 // The Learner's analytics (docs/design.md, "Analytics"), worked out on read
 // from the Profile's own facts.
@@ -44,8 +44,27 @@ const MistakeWeeks = 12
 // A Weak Area's remedy serves this many Questions.
 const RemedySize = 10
 
+// What the Study Plan reads of the analytics (decision 83): each Section's
+// Ability and Rated Responses, and the Weak Areas, highest Priority first,
+// with what their remedies need.
+export interface PlanAnalytics {
+  readonly sections: ReadonlyArray<{ readonly id: string; readonly ability: number | null; readonly rated: number }>
+  readonly weakAreas: ReadonlyArray<{
+    readonly kind: "skill" | "questionType"
+    readonly id: string
+    readonly name: string
+    readonly section: string
+    readonly priority: number
+    readonly ability: number
+    readonly slow: boolean
+    readonly topMistake: string | null
+    readonly topTrap: string | null
+  }>
+}
+
 export class Analytics extends Context.Service<Analytics, {
   weakAreas(profileId: string): Effect.Effect<WeakAreasView>
+  planAnalytics(profileId: string): Effect.Effect<PlanAnalytics>
   skillMap(profileId: string): Effect.Effect<SkillMapView>
   timing(profileId: string): Effect.Effect<TimingView>
   mistakes(profileId: string): Effect.Effect<MistakeTrendView>
@@ -78,13 +97,18 @@ export class Analytics extends Context.Service<Analytics, {
               servings.map((row) => ({ questionId: row.questionId, sessionId: row.sessionId, timed: row.timed, at: row.servedAt, order: row.rowid }))
             ))).filter((answer) => answer.ended)
           if (clock === undefined || history.length === 0) {
-            return { abilities: [] as ReadonlyArray<ScopeAbility>, sectionAbility: new Map<string, number>(), rated: 0 }
+            return {
+              abilities: [] as ReadonlyArray<ScopeAbility>,
+              sectionAbility: new Map<string, number>(),
+              rated: 0,
+              ratedBySection: new Map<string, number>()
+            }
           }
           const missing = [...new Set(history.map((answer) => answer.questionId))].filter((id) => !known.has(id))
           const read = missing.length === 0 ? new Map<string, QuestionSummary>() : yield* run(questionSummaries(missing))
           const summaries = { get: (id: string) => known.get(id) ?? read.get(id) }
           const overrides = yield* settings.targetTimes
-          const dayOf = studyDays(clock.timeZone, clock.rolloverHour)
+          const dayOf = studyDaysUnder(clock.rules)
           const today = dayOf(clock.now)
           const sectionAbility = new Map(
             [...new Set(history.map((answer) => answer.section))].map((section) => [section, sectionFit(history, section, clock).ability] as const)
@@ -104,7 +128,9 @@ export class Analytics extends Context.Service<Analytics, {
               pace: targetMs > 0 ? answer.timeSpentMs / targetMs : 1
             }]
           })
-          return { abilities: scopeAbilities(facts, sectionAbility), sectionAbility, rated: facts.length }
+          const ratedBySection = new Map<string, number>()
+          for (const fact of facts) ratedBySection.set(fact.section, (ratedBySection.get(fact.section) ?? 0) + 1)
+          return { abilities: scopeAbilities(facts, sectionAbility), sectionAbility, rated: facts.length, ratedBySection }
         })
 
       const scopeView = (ability: ScopeAbility) =>
@@ -146,12 +172,13 @@ export class Analytics extends Context.Service<Analytics, {
           )
         )
 
-      const weakAreas = (profileId: string) =>
+      // The Weak Areas, ranked, with what went wrong in their misses.
+      const rankedFor = (profileId: string) =>
         Effect.gen(function*() {
           const history = yield* errorLog.history(profileId)
-          const { abilities, rated } = yield* abilitiesFor(profileId, history.summaries)
+          const found = yield* abilitiesFor(profileId, history.summaries)
           const frequencies = frequenciesOf(yield* bank)
-          const mixes = mixesOf(history.misses.flatMap(({ miss, mistakeTypes }) => {
+          const misses = history.misses.flatMap(({ miss, mistakeTypes }) => {
             const question = history.summaries.get(miss.questionId)
             if (question === undefined) return []
             return [{
@@ -161,11 +188,41 @@ export class Analytics extends Context.Service<Analytics, {
               kinds: [
                 ...mistakeTypes.filter((kind): kind is string => kind !== null),
                 ...miss.reasons.filter((reason) => reason !== "wrong")
-              ]
+              ],
+              traps: [...new Set(miss.parts.flatMap((part) => (part.trapPattern === null ? [] : [part.trapPattern])))]
             }]
-          }))
+          })
+          return { ...found, frequencies, areas: weakAreasOf(found.abilities, frequencies, mixesOf(misses), trapsOf(misses)) }
+        })
+
+      const planAnalytics = (profileId: string) =>
+        Effect.gen(function*() {
+          const { areas, sectionAbility, ratedBySection } = yield* rankedFor(profileId)
+          return {
+            sections: taxonomy.sections.map((section) => ({
+              id: section.id,
+              ability: sectionAbility.get(section.id) ?? null,
+              rated: ratedBySection.get(section.id) ?? 0
+            })),
+            weakAreas: areas.map((area) => ({
+              kind: area.kind,
+              id: area.id,
+              name: named(area.id).name,
+              section: area.ability.sections[0] ?? sectionOf(area.id),
+              priority: area.priority,
+              ability: area.ability.fit.ability,
+              slow: area.ability.slow,
+              topMistake: area.topMistake,
+              topTrap: area.topTrap
+            }))
+          } satisfies PlanAnalytics
+        })
+
+      const weakAreas = (profileId: string) =>
+        Effect.gen(function*() {
+          const { abilities, rated, frequencies, areas } = yield* rankedFor(profileId)
           return new WeakAreasView({
-            areas: weakAreasOf(abilities, frequencies, mixes).map((area) =>
+            areas: areas.map((area) =>
               new WeakAreaView({
                 ability: scopeView(area.ability),
                 frequency: area.frequency,
@@ -358,7 +415,7 @@ export class Analytics extends Context.Service<Analytics, {
           })
         })
 
-      return Analytics.of({ weakAreas, skillMap, timing, mistakes, study })
+      return Analytics.of({ weakAreas, planAnalytics, skillMap, timing, mistakes, study })
     })
   )
 }

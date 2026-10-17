@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm"
 import { Effect } from "effect"
-import { studyDays } from "../../api/studyDay.ts"
+import { type DayRule, studyDaysUnder } from "../../api/studyDay.ts"
 import { Db } from "../db/Database.ts"
 import { difficulty, questions, responses, servedQuestions, sessions } from "../db/schema.ts"
 import { currentDifficulty, isCorrect, keysOf, mergeTargets, paperSeenBy, readSelection } from "../practice/history.ts"
@@ -141,14 +141,13 @@ export const ratedHistory = (profileId: string, known?: ReadonlyArray<ServingFac
 
 export interface StudyClock {
   readonly now: number
-  readonly timeZone: string
-  readonly rolloverHour: number
+  readonly rules: ReadonlyArray<DayRule>
 }
 
 // A Section's Ability from its Rated Responses, each weighted by how many
 // Study Days ago it was given.
 export const sectionFit = (history: ReadonlyArray<RatedAnswer>, section: string, clock: StudyClock): AbilityFit => {
-  const dayOf = studyDays(clock.timeZone, clock.rolloverHour)
+  const dayOf = studyDaysUnder(clock.rules)
   const today = dayOf(clock.now)
   return fitAbility(
     history.filter((answer) => answer.section === section).map((answer) => ({

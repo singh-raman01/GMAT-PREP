@@ -22,6 +22,7 @@ import { PaperMarksHandlers } from "./paperMarks.ts"
 import { PracticeHandlers } from "./practice.ts"
 import { RetriesHandlers } from "./retries.ts"
 import { AnalyticsHandlers } from "./analytics.ts"
+import { PlanHandlers } from "./plan.ts"
 import { ScoresHandlers } from "./scores.ts"
 import { SectionalsHandlers } from "./sectionals.ts"
 
@@ -137,6 +138,7 @@ export const ApiRoutes = HttpApiBuilder.layer(Api).pipe(
     ErrorLogHandlers,
     RetriesHandlers,
     AnalyticsHandlers,
+    PlanHandlers,
     CuratorHandlers,
     BooksHandlers,
     ReviewHandlers,

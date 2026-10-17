@@ -61,3 +61,72 @@ export const studyDayStart = (day: number, timeZone: string, rolloverHour: numbe
   }
   return from
 }
+
+// A Profile's rule for Study Days from a moment on (decision 92): its time
+// zone and rollover hour. The first holds from always; each later one from
+// the rollover after it was set.
+export interface DayRule {
+  readonly from: number
+  readonly timeZone: string
+  readonly rolloverHour: number
+}
+
+const ruleAt = (rules: ReadonlyArray<DayRule>, millis: number) => {
+  let index = rules.length - 1
+  while (index > 0 && rules[index]!.from > millis) index -= 1
+  return index
+}
+
+// The Study Day of many moments under a Profile's rules. After a change the
+// day never goes back: a zone behind the old one holds the day after the
+// last one ended until its own date catches up, so no day repeats.
+export const studyDaysUnder = (rules: ReadonlyArray<DayRule>) => {
+  const under = rules.map((rule) => studyDays(rule.timeZone, rule.rolloverHour))
+  if (rules.length === 1) return under[0]!
+  const floors = new Map<number, number>()
+  const floorOf = (index: number): number => {
+    let floor = floors.get(index)
+    if (floor === undefined) {
+      floor = dayOf(rules[index]!.from - 1) + 1
+      floors.set(index, floor)
+    }
+    return floor
+  }
+  const dayOf = (millis: number): number => {
+    const index = ruleAt(rules, millis)
+    const raw = under[index]!(millis)
+    return index === 0 ? raw : Math.max(raw, floorOf(index))
+  }
+  return dayOf
+}
+
+// The calendar date of many moments in the time zone in effect then.
+export const calendarDaysUnder = (rules: ReadonlyArray<DayRule>) => {
+  const under = rules.map((rule) => studyDays(rule.timeZone, 0))
+  return (millis: number) => under[ruleAt(rules, millis)]!(millis)
+}
+
+// When a Study Day begins under a Profile's rules: the first moment whose
+// Study Day it is, or the next day's start for a day a change skipped.
+export const studyDayStartUnder = (rules: ReadonlyArray<DayRule>, day: number): number => {
+  const dayOf = studyDaysUnder(rules)
+  let before = (day - 3) * DayMs
+  let from = (day + 4) * DayMs
+  while (from - before > 1) {
+    const middle = Math.floor((before + from) / 2)
+    if (dayOf(middle) >= day) from = middle
+    else before = middle
+  }
+  return from
+}
+
+// The next rollover after a moment: when a change made then takes effect.
+export const nextRolloverUnder = (rules: ReadonlyArray<DayRule>, millis: number) =>
+  studyDayStartUnder(rules, studyDaysUnder(rules)(millis) + 1)
+
+// When a calendar date begins in the time zone in effect at its middle, as
+// for an Official Score's date.
+export const calendarDayStartUnder = (rules: ReadonlyArray<DayRule>, day: number) => {
+  const rule = rules[ruleAt(rules, day * DayMs + DayMs / 2)]!
+  return studyDayStart(day, rule.timeZone, 0)
+}

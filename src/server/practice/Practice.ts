@@ -61,6 +61,7 @@ import {
   keysOf,
   mergeTargets,
   publishedPool,
+  withTrapPatterns,
   readSelection,
   seenBy
 } from "./history.ts"
@@ -171,7 +172,12 @@ const stateOf = (session: { readonly status: string }) =>
 export class Practice extends Context.Service<Practice, {
   options(profileId: string): Effect.Effect<PracticeOptions>
   preview(profileId: string, choice: PracticeChoice): Effect.Effect<PracticePreview, FiltersInvalid | BookNotFound>
-  start(caller: Caller, choice: PracticeChoice): Effect.Effect<PracticeView, FiltersInvalid | BookNotFound | NoQuestionsMatch>
+  // planItemId: the Study Plan item it is started from, if any.
+  start(
+    caller: Caller,
+    choice: PracticeChoice,
+    planItemId?: string
+  ): Effect.Effect<PracticeView, FiltersInvalid | BookNotFound | NoQuestionsMatch>
   list(profileId: string): Effect.Effect<ReadonlyArray<PracticeSummary>>
   get(caller: Caller, id: SessionId): Effect.Effect<PracticeView, PracticeNotFound>
   answer(
@@ -205,7 +211,8 @@ export class Practice extends Context.Service<Practice, {
     caller: Caller,
     items: ReadonlyArray<RetryItem>,
     timed: boolean,
-    slow: ReadonlySet<string>
+    slow: ReadonlySet<string>,
+    planItemId?: string
   ): Effect.Effect<PracticeView>
 }>()("gmat-prep/server/Practice") {
   static readonly layer = Layer.effect(
@@ -230,6 +237,7 @@ export class Practice extends Context.Service<Practice, {
         )
 
       const sectionIds = new Set(taxonomy.sections.map((section) => section.id))
+      const trapIds = new Set(taxonomy.sections.flatMap((section) => section.trapPatterns.map((pattern) => pattern.id)))
       const typeSection = new Map(
         taxonomy.sections.flatMap((section) => section.questionTypes.map((type) => [type.id, section.id] as const))
       )
@@ -249,6 +257,9 @@ export class Practice extends Context.Service<Practice, {
           problems.push(`${names.named(filters.questionType!).name} is not in ${names.named(filters.section).name}.`)
         }
         if (filters.skill !== undefined && !skillIds.has(filters.skill)) problems.push(`There is no Skill ${filters.skill}.`)
+        if (filters.trapPattern !== undefined && !trapIds.has(filters.trapPattern)) {
+          problems.push(`There is no Trap Pattern ${filters.trapPattern}.`)
+        }
         return problems
       }
 
@@ -305,7 +316,7 @@ export class Practice extends Context.Service<Practice, {
           if (choice.kind === "filters") {
             const problems = filterProblems(choice)
             if (problems.length > 0) return yield* new FiltersInvalid({ problems })
-            const pool = yield* run(publishedPool)
+            const pool = choice.trapPattern === undefined ? yield* run(publishedPool) : yield* run(withTrapPatterns(yield* run(publishedPool)))
             const picked = pickByFilters(pool.filter((question) => !held.has(question.id)), history, choice, salt)
             // Under missed, counted whatever their status, which would say
             // how an answer went.
@@ -317,6 +328,7 @@ export class Practice extends Context.Service<Practice, {
                 ? choice.section === undefined ? "Every Section" : names.named(choice.section).name
                 : names.named(choice.questionType).name,
               ...(choice.skill === undefined ? [] : [names.named(choice.skill).name]),
+              ...(choice.trapPattern === undefined ? [] : [names.named(choice.trapPattern).name]),
               ...(choice.band === undefined ? [] : [bandNames[choice.band]]),
               ...(statusWords[choice.status] === undefined ? [] : [statusWords[choice.status]])
             ]
@@ -620,7 +632,8 @@ export class Practice extends Context.Service<Practice, {
         config: PracticeConfig,
         id: string,
         timed: boolean,
-        allowance?: (position: number) => number
+        allowance?: (position: number) => number,
+        planItemId?: string
       ) =>
         Effect.gen(function*() {
           const limitMs = timed ? yield* limitFor(config.planned, allowance) : null
@@ -637,7 +650,8 @@ export class Practice extends Context.Service<Practice, {
               elapsedMs: 0,
               clockSavedAt: timed ? now : null,
               holder: caller.device ?? null,
-              createdAt: now
+              createdAt: now,
+              planItemId: planItemId ?? null
             }).pipe(Effect.orDie)
             yield* serve(id, 0, config.planned[0]!, timed ? 0 : null)
             return yield* own(caller.profileId, id).pipe(Effect.orDie)
@@ -742,7 +756,7 @@ export class Practice extends Context.Service<Practice, {
           })
         })
 
-      const start = (caller: Caller, choice: PracticeChoice) =>
+      const start = (caller: Caller, choice: PracticeChoice, planItemId?: string) =>
         Effect.gen(function*() {
           const id = crypto.randomUUID()
           const chosen = yield* plan(caller.profileId, choice, yield* saltFor(caller.profileId))
@@ -763,7 +777,7 @@ export class Practice extends Context.Service<Practice, {
             places: chosen.plan.places,
             heldForMocks: chosen.plan.heldForMocks,
             unavailable: [...chosen.plan.unavailable, ...chosen.plan.inSectionItems]
-          }, id, choice.timed === true)
+          }, id, choice.timed === true, undefined, planItemId)
         }).pipe(oneAtATime)
 
       const list = (profileId: string) =>
@@ -1072,7 +1086,13 @@ export class Practice extends Context.Service<Practice, {
         Effect.forever(wake.await.pipe(Effect.andThen(Effect.sleep(TickMs)), Effect.andThen(tickAll)))
       )
 
-      const startRetries = (caller: Caller, items: ReadonlyArray<RetryItem>, timed: boolean, slow: ReadonlySet<string>) =>
+      const startRetries = (
+        caller: Caller,
+        items: ReadonlyArray<RetryItem>,
+        timed: boolean,
+        slow: ReadonlySet<string>,
+        planItemId?: string
+      ) =>
         begin(caller, {
           title: timed ? "Retries, timed" : "Retries",
           choice: null,
@@ -1083,7 +1103,7 @@ export class Practice extends Context.Service<Practice, {
           heldForMocks: [],
           unavailable: [],
           retry: [...items]
-        }, crypto.randomUUID(), timed, (position) => (slow.has(items[position]!.entry) ? SlowFactor : 1)).pipe(oneAtATime)
+        }, crypto.randomUUID(), timed, (position) => (slow.has(items[position]!.entry) ? SlowFactor : 1), planItemId).pipe(oneAtATime)
 
       return Practice.of({
         startRetries,

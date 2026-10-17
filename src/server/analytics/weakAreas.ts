@@ -14,6 +14,10 @@ export interface WeakArea {
   readonly priority: number
   // Its misses' Mistake Types, Slow and Guessed among them, by count.
   readonly mix: ReadonlyMap<string, number>
+  // Its most common Mistake Type, and the most common Trap Pattern of the
+  // wrong options picked in its misses.
+  readonly topMistake: string | null
+  readonly topTrap: string | null
   readonly remedy: Remedy
 }
 
@@ -35,42 +39,64 @@ export interface MissFact {
   readonly primarySkill: string | null
   readonly secondarySkills: ReadonlyArray<string>
   readonly kinds: ReadonlyArray<string>
+  // The Trap Patterns of the wrong options picked.
+  readonly traps?: ReadonlyArray<string>
 }
 
-// Each Skill's and Question Type's misses, kind by kind, keyed as scopes are.
-export const mixesOf = (misses: ReadonlyArray<MissFact>): ReadonlyMap<string, ReadonlyMap<string, number>> => {
-  const mixes = new Map<string, Map<string, number>>()
+type Counts = ReadonlyMap<string, ReadonlyMap<string, number>>
+
+// Each Skill's and Question Type's misses, counted by what pick gives,
+// keyed as scopes are.
+const countedBy = (misses: ReadonlyArray<MissFact>, pick: (miss: MissFact) => ReadonlyArray<string>): Counts => {
+  const counts = new Map<string, Map<string, number>>()
   for (const miss of misses) {
     const scopes = new Set([
       scopeKey("questionType", miss.questionType),
       ...[miss.primarySkill, ...miss.secondarySkills].flatMap((skill) => (skill === null ? [] : [scopeKey("skill", skill)]))
     ])
     for (const key of scopes) {
-      const mix = mixes.get(key) ?? new Map<string, number>()
-      for (const kind of miss.kinds) mix.set(kind, (mix.get(kind) ?? 0) + 1)
-      mixes.set(key, mix)
+      const count = counts.get(key) ?? new Map<string, number>()
+      for (const kind of pick(miss)) count.set(kind, (count.get(kind) ?? 0) + 1)
+      counts.set(key, count)
     }
   }
-  return mixes
+  return counts
 }
+
+// Each Skill's and Question Type's misses, kind by kind.
+export const mixesOf = (misses: ReadonlyArray<MissFact>): Counts => countedBy(misses, (miss) => miss.kinds)
+
+// Each Skill's and Question Type's misses, Trap Pattern by Trap Pattern.
+export const trapsOf = (misses: ReadonlyArray<MissFact>): Counts => countedBy(misses, (miss) => miss.traps ?? [])
+
+// The most common Mistake Type, Taxonomy order breaking a tie.
+export const topMistakeOf = (mix: ReadonlyMap<string, number>) =>
+  [...mix].filter(([kind]) => MistakeOrder.includes(kind))
+    .toSorted((a, b) => b[1] - a[1] || MistakeOrder.indexOf(a[0]) - MistakeOrder.indexOf(b[0]))[0]?.[0] ?? null
+
+// The most common Trap Pattern, the first by id breaking a tie.
+export const topTrapOf = (traps: ReadonlyMap<string, number>) =>
+  [...traps].toSorted((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))[0]?.[0] ?? null
 
 // Timed when the Skill is slow or its most common Mistake Type is one that
 // practice on the clock remedies.
 export const remedyOf = (slow: boolean, mix: ReadonlyMap<string, number>): Remedy => {
-  const top = [...mix].filter(([kind]) => MistakeOrder.includes(kind))
-    .toSorted((a, b) => b[1] - a[1] || MistakeOrder.indexOf(a[0]) - MistakeOrder.indexOf(b[0]))[0]
-  return { timed: slow || (top !== undefined && TimedRemedies.has(top[0])) }
+  const top = topMistakeOf(mix)
+  return { timed: slow || (top !== null && TimedRemedies.has(top)) }
 }
 
 export const weakAreasOf = (
   abilities: ReadonlyArray<ScopeAbility>,
   frequencies: Frequencies,
-  mixes: ReadonlyMap<string, ReadonlyMap<string, number>>
+  mixes: Counts,
+  traps: Counts = new Map()
 ): ReadonlyArray<WeakArea> =>
   abilities.filter((ability) => ability.enough && ability.gap > 0).map((ability) => {
     const frequency = (ability.kind === "skill" ? frequencies.skills : frequencies.questionTypes).get(ability.id) ?? 0
     const mix = mixes.get(scopeKey(ability.kind, ability.id)) ?? new Map<string, number>()
     return {
+      topMistake: topMistakeOf(mix),
+      topTrap: topTrapOf(traps.get(scopeKey(ability.kind, ability.id)) ?? new Map()),
       kind: ability.kind,
       id: ability.id,
       ability,

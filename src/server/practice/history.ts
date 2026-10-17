@@ -2,7 +2,7 @@ import { and, asc, eq, gte, inArray, isNotNull, max, sql } from "drizzle-orm"
 import { Effect, Schema } from "effect"
 import { PartChoice, type Selection } from "../../api/Practice.ts"
 import { Db } from "../db/Database.ts"
-import { bookmarks, books, difficulty, parts, questions, responses, servedQuestions, sessions, sources } from "../db/schema.ts"
+import { bookmarks, books, difficulty, optionNotes, parts, questions, responses, servedQuestions, sessions, sources } from "../db/schema.ts"
 import { chosenQuestions, decodeConfig, SectionKinds } from "../sections/config.ts"
 import { marksAndPages, paperSeenOf } from "./paperSeen.ts"
 import type { History, PoolQuestion } from "./selection.ts"
@@ -223,6 +223,19 @@ export const publishedPool = Effect.gen(function*() {
     stimulusId: row.stimulusId
   }))
 })
+
+// The pool with the Trap Patterns each Question's options carry, for a
+// choice that names one.
+export const withTrapPatterns = (pool: ReadonlyArray<PoolQuestion>) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const rows = yield* db.selectDistinct({ questionId: parts.questionId, trapPattern: optionNotes.trapPattern })
+      .from(optionNotes).innerJoin(parts, eq(parts.id, optionNotes.partId))
+      .where(isNotNull(optionNotes.trapPattern))
+    const byQuestion = new Map<string, Array<string>>()
+    for (const row of rows) byQuestion.set(row.questionId, [...(byQuestion.get(row.questionId) ?? []), row.trapPattern!])
+    return pool.map((question): PoolQuestion => ({ ...question, trapPatterns: byQuestion.get(question.id) ?? [] }))
+  })
 
 // One Question's current Difficulty.
 export const difficultyOf = (questionId: string) =>

@@ -1,9 +1,10 @@
 import { and, desc, eq, lt, sql } from "drizzle-orm"
 import { Effect } from "effect"
 import type { BlueprintSection } from "../../api/blueprint.ts"
-import { studyDayStart } from "../../api/studyDay.ts"
+import { calendarDayStartUnder } from "../../api/studyDay.ts"
 import { Db } from "../db/Database.ts"
-import { officialScores, profiles, scoreEstimates } from "../db/schema.ts"
+import { dayRulesOf } from "../profiles/days.ts"
+import { officialScores, scoreEstimates } from "../db/schema.ts"
 import { calibratedLine, type ScoreLine } from "./scale.ts"
 
 // The score lines Official Scores calibrate (docs/design.md, "Ratings and
@@ -28,14 +29,13 @@ export const calibrationOf = (profileId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
     const official = yield* db.select().from(officialScores).where(eq(officialScores.profileId, profileId))
-    const [profile] = official.length === 0 ? [] : yield* db.select({ timeZone: profiles.timeZone }).from(profiles)
-      .where(eq(profiles.id, profileId))
+    const rules = official.length === 0 ? undefined : yield* dayRulesOf(profileId)
     const used = new Map<string, Array<BlueprintSection>>(official.map((score) => [score.id, []]))
     const points = new Map<BlueprintSection, Array<{ readonly ability: number; readonly score: number }>>(
       Sections.map((section) => [section, []])
     )
-    for (const score of profile === undefined ? [] : official) {
-      const dayEnds = studyDayStart(dayNumber(score.takenOn) + 1, profile!.timeZone, 0)
+    for (const score of rules === undefined ? [] : official) {
+      const dayEnds = calendarDayStartUnder(rules!, dayNumber(score.takenOn) + 1)
       for (const section of Sections) {
         const [before] = yield* db.select({ ability: scoreEstimates.ability }).from(scoreEstimates)
           .where(and(

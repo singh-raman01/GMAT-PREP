@@ -16,6 +16,7 @@ import m13 from "./20261016201610_mocks_and_scores/migration.sql" with { type: "
 import m14 from "./20261016213358_error_log/migration.sql" with { type: "text" }
 import m15 from "./20261016225109_mistake_labels_response/migration.sql" with { type: "text" }
 import m16 from "./20261016230538_retry_ladder/migration.sql" with { type: "text" }
+import m17 from "./20261017020031_study_plan/migration.sql" with { type: "text" }
 
 export const bundledMigrations: ReadonlyArray<{ readonly name: string; readonly sql: string }> = [
   { name: "20261016072200_init", sql: m0 },
@@ -35,4 +36,5 @@ export const bundledMigrations: ReadonlyArray<{ readonly name: string; readonly 
   { name: "20261016213358_error_log", sql: m14 },
   { name: "20261016225109_mistake_labels_response", sql: m15 },
   { name: "20261016230538_retry_ladder", sql: m16 },
+  { name: "20261017020031_study_plan", sql: m17 },
 ]

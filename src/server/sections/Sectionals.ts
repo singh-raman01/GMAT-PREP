@@ -91,9 +91,11 @@ const sorted = (selection: Selection) => selection.toSorted((a, b) => a.part - b
 
 export class Sectionals extends Context.Service<Sectionals, {
   options(profileId: string): Effect.Effect<SectionalOptions>
+  // planItemId: the Study Plan item it is started from, if any.
   start(
     caller: Caller,
-    section: string
+    section: string,
+    planItemId?: string
   ): Effect.Effect<SectionalView, UnknownSection | ReserveTooSmall | SectionalRunning | MockRunning>
   list(profileId: string): Effect.Effect<ReadonlyArray<SectionalSummary>>
   get(caller: Caller, id: SessionId): Effect.Effect<SectionalView, SectionalNotFound>
@@ -660,7 +662,7 @@ export class Sectionals extends Context.Service<Sectionals, {
 
       // A new Section, held by the caller's device, with its first Question
       // served: a Sectional, or one of a Mock's Sections.
-      const begin = (caller: Caller, section: string, mock: SectionalConfig["mock"]) =>
+      const begin = (caller: Caller, section: string, mock: SectionalConfig["mock"], planItemId?: string) =>
         Effect.gen(function*() {
           const blueprint = yield* settings.blueprint
           const id = crypto.randomUUID()
@@ -687,7 +689,8 @@ export class Sectionals extends Context.Service<Sectionals, {
               elapsedMs: 0,
               clockSavedAt: now,
               holder: caller.device ?? null,
-              createdAt: now
+              createdAt: now,
+              planItemId: planItemId ?? null
             }).pipe(Effect.orDie)
             const session = yield* own(caller.profileId, id).pipe(Effect.orDie)
             yield* serveNext(session, config, 0)
@@ -697,7 +700,7 @@ export class Sectionals extends Context.Service<Sectionals, {
         })
 
       // One Sectional or Mock runs at a time.
-      const start = (caller: Caller, section: string) =>
+      const start = (caller: Caller, section: string, planItemId?: string) =>
         Effect.gen(function*() {
           if (!taxonomy.sections.some((each) => each.id === section)) return yield* new UnknownSection({ section })
           const active = yield* running(caller.profileId)
@@ -706,7 +709,7 @@ export class Sectionals extends Context.Service<Sectionals, {
           if (mock !== undefined) return yield* new MockRunning({ id: SessionId.make(mock) })
           const ready = yield* readiness(caller.profileId, section)
           if (!ready.ready) return yield* new ReserveTooSmall({ readiness: ready })
-          return yield* after(caller, yield* begin(caller, section, undefined))
+          return yield* after(caller, yield* begin(caller, section, undefined, planItemId))
         }).pipe(oneAtATime)
 
       const list = (profileId: string) =>
