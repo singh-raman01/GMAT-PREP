@@ -135,8 +135,8 @@ export const RetriesPanel = ({ onFailure }: { readonly onFailure: (failure: { re
       {view.waiting > 0 && (
         <p className="hint">
           {view.waiting === 1
-            ? "1 more step waits until its Question can be served again."
-            : `${view.waiting} more steps wait until their Questions can be served again.`}
+            ? `1${view.due.length === 0 ? "" : " more"} step waits until its Question can be served again.`
+            : `${view.waiting}${view.due.length === 0 ? "" : " more"} steps wait until their Questions can be served again.`}
         </p>
       )}
       {problem !== undefined && <p className="problem" role="alert">{problem}</p>}

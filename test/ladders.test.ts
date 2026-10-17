@@ -170,4 +170,43 @@ describe("An entry's Retry Ladder", () => {
     )
     expect(where(ladders, "q1")).toMatchObject({ status: "open", step: 1 })
   })
+
+  test("after a Key Override, only the first step-1 miss starts the run; the next is step 1 missed", () => {
+    const own = [{ entry: "q1", step: 1 as const, questionId: "q1" }]
+    const ladders = run(
+      [miss("q1", 2, "r1"), miss("q1", 4, "r2")],
+      [retrySet("r1", own, true, 2 * Day), retrySet("r2", own, true, 4 * Day), retrySet("r3", own, true, 6 * Day)],
+      [response("r1", "q1", 2, "A"), response("r2", "q1", 4, "A"), response("r3", "q1", 6, "C")]
+    )
+    const ladder = ladders.get("q1")!.ladder
+    expect([ladder.startDay, ladder.step, ladder.dueDay]).toEqual([2, 2, 9])
+    expect(ladder.history.map((each) => [each.step, each.day, each.outcome])).toEqual([[1, 4, "missed"], [1, 6, "passed"]])
+  })
+
+  test("in one set, each Response goes to the item whose Question it answered, and an entry takes one step", () => {
+    // X merged into q1: two items of one set now count for q1, answered once.
+    const merged = (id: string) => (id === "q2" ? "q1" : id)
+    const one = run(
+      [miss("q1", 0), miss("q1", 2, "r1")],
+      [retrySet("r1", [{ entry: "q2", step: 1, questionId: "q2" }, { entry: "q1", step: 1, questionId: "q1" }], true, 2 * Day)],
+      [response("r1", "q1", 2, "A")],
+      [],
+      merged
+    )
+    expect(one.get("q1")!.ladder.history.map((each) => [each.step, each.outcome])).toEqual([[1, "missed"]])
+    // A Sibling s1 answered right keeps its own answer when it is later
+    // merged into another item's Question, answered wrong in the same set.
+    const sibling = (id: string) => (id === "s1" ? "q2" : id)
+    const ladders = run(
+      [miss("q1", 0), miss("q2", 1), miss("q2", 7, "r2")],
+      [
+        retrySet("r1", [{ entry: "q1", step: 1, questionId: "q1" }], true, 2 * Day),
+        retrySet("r2", [{ entry: "q1", step: 2, questionId: "s1" }, { entry: "q2", step: 1, questionId: "q2" }], true, 7 * Day)
+      ],
+      [response("r1", "q1", 2, "C"), response("r2", "s1", 7, "C"), response("r2", "q2", 7, "A")],
+      [],
+      sibling
+    )
+    expect(where(ladders, "q1")).toEqual({ status: "open", step: 3, due: 21 })
+  })
 })
