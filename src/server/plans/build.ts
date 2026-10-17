@@ -138,8 +138,9 @@ export interface LessonState {
   // Minutes to read it all and take its check, and to read its methods.
   readonly minutes: number
   readonly methodsMinutes: number
-  // Whether the Learner has done it since this version was approved: the
-  // whole Lesson by finishing its check, the methods by marking them read.
+  // Whether the Learner has done this version: the whole Lesson by
+  // finishing its check in full, the methods by marking any part read or by
+  // finishing the check.
   readonly done: boolean
   readonly methodsDone: boolean
 }

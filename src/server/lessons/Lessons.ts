@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, inArray, max, sql } from "drizzle-orm"
-import { Clock, Context, Effect, Layer, Option, Semaphore } from "effect"
+import { Clock, Context, Effect, Layer, Option, Schema, Semaphore } from "effect"
 import { type JobView, LlmNotConfigured } from "../../api/Jobs.ts"
 import {
   CuratorLessonRow,
@@ -19,12 +19,15 @@ import {
   NothingToWrite
 } from "../../api/Lessons.ts"
 import { Named, NoQuestionsMatch, type PracticeView, SessionId } from "../../api/Practice.ts"
+import { studyDaysUnder } from "../../api/studyDay.ts"
 import { Db } from "../db/Database.ts"
-import { jobs, lessons, lessonViews, responses, sessions } from "../db/schema.ts"
+import { jobs, lessons, lessonViews, planItems, planVersions, responses, sessions } from "../db/schema.ts"
 import { JobStore } from "../jobs/JobStore.ts"
 import { namesOf, practiceQuestion, storedQuestions } from "../practice/content.ts"
 import { heldBySections, isCorrect, keysOf, readSelection } from "../practice/history.ts"
+import { dayOfNumber } from "../plans/build.ts"
 import { type Caller, Practice } from "../practice/Practice.ts"
+import { dayRulesOf, DefaultRules } from "../profiles/days.ts"
 import { ApiKeyStore } from "../settings/ApiKeyStore.ts"
 import { missingSettings, Settings } from "../settings/Settings.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
@@ -73,6 +76,11 @@ const settledAt = (row: LessonRow) => (row.status === "draft" ? row.createdAt : 
 
 // The states of a job that has not finished.
 const Unfinished = ["queued", "running", "paused"]
+
+// The Lesson a plan item names, as the plan stored it.
+const decodePlannedLesson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({
+  lesson: Schema.optional(Schema.NullOr(Schema.Struct({ subject: Schema.String, part: Schema.String })))
+})))
 
 export class Lessons extends Context.Service<Lessons, {
   readonly overview: Effect.Effect<CuratorLessonsView>
@@ -363,16 +371,35 @@ export class Lessons extends Context.Service<Lessons, {
 
       // Records the view with the worked examples the page is sent, as those
       // are what it makes Seen (decision 99).
+      // A plan item named with a Lesson counts only when it is this
+      // Profile's Lesson item for today, on this subject and part; any other
+      // is dropped, so it can start nothing in the plan.
+      const planItemFor = (profileId: string, planItemId: string | undefined, subjectId: string, part: LessonPart) =>
+        Effect.gen(function*() {
+          if (planItemId === undefined) return null
+          const [row] = yield* db.select({ day: planItems.day, item: planItems.item, kind: planItems.kind, status: planItems.status })
+            .from(planItems).innerJoin(planVersions, eq(planVersions.id, planItems.versionId))
+            .where(and(eq(planItems.id, planItemId), eq(planVersions.profileId, profileId)))
+            .pipe(Effect.orDie)
+          if (row === undefined || row.kind !== "lesson" || row.status !== "planned") return null
+          const lesson = Option.getOrUndefined(decodePlannedLesson(row.item))?.lesson
+          if (lesson == null || lesson.subject !== subjectId || lesson.part !== part) return null
+          const rules = (yield* run(dayRulesOf(profileId))) ?? DefaultRules
+          const today = dayOfNumber(studyDaysUnder(rules)(yield* Clock.currentTimeMillis))
+          return row.day === today ? planItemId : null
+        })
+
       const record = (
         profileId: string,
         subjectId: string,
         kind: "opened" | "read",
         part: LessonPart,
-        planItemId: string | undefined
+        named: string | undefined
       ) =>
         Effect.gen(function*() {
           const row = yield* approvedOf(subjectId)
           if (row === undefined) return yield* new NoLesson()
+          const planItemId = yield* planItemFor(profileId, named, subjectId, part)
           const open = yield* openFor(row, profileId)
           const body = yield* bodyOf(row, part, open)
           yield* db.insert(lessonViews).values({
@@ -381,17 +408,18 @@ export class Lessons extends Context.Service<Lessons, {
             lessonId: row.id,
             kind,
             part,
-            planItemId: planItemId ?? null,
+            planItemId,
             viewedAt: yield* Clock.currentTimeMillis,
             shownExamples: JSON.stringify(body.examples.map((example) => example.question.id))
           }).pipe(Effect.orDie)
           return yield* viewOf(row, profileId, open, body)
         })
 
-      const check = (caller: Caller, subjectId: string, planItemId: string | undefined) =>
+      const check = (caller: Caller, subjectId: string, named: string | undefined) =>
         Effect.gen(function*() {
           const row = yield* approvedOf(subjectId)
           if (row === undefined) return yield* new NoLesson()
+          const planItemId = (yield* planItemFor(caller.profileId, named, subjectId, "whole")) ?? undefined
           const ids = checkIdsOf(row, yield* openFor(row, caller.profileId))
           if (ids.length === 0) return yield* new NoQuestionsMatch({ heldForMocks: 0, unavailable: 0, inSection: 0 })
           const name = subjectOf.get(subjectId)?.name ?? subjectId
