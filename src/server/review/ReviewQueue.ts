@@ -37,10 +37,12 @@ import {
   UnsureCodes
 } from "../books/bankWrites.ts"
 import { Db } from "../db/Database.ts"
+import { partReasonPrefix } from "../generation/items.ts"
 import {
   approaches,
   bookmarks,
   books,
+  generationBatches,
   goldenQuestions,
   keyOverrides,
   optionNotes,
@@ -166,6 +168,20 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
             .orderBy(asc(sources.createdAt), asc(sql`${sources}.rowid`))
           const goldenRows = yield* db.select({ questionId: goldenQuestions.questionId }).from(goldenQuestions)
             .where(inArray(goldenQuestions.questionId, [...ids]))
+          const batchIds = [...new Set(rows.flatMap((row) => (row.batchId === null ? [] : [row.batchId])))]
+          const batchRows = batchIds.length === 0 ? [] : yield* db.select({
+            id: generationBatches.id,
+            number: generationBatches.number
+          }).from(generationBatches).where(inArray(generationBatches.id, batchIds))
+          // An MSR set's Questions in the order they were written, to tell
+          // them apart.
+          const setRows = batchIds.length === 0 ? [] : yield* db.select({
+            id: questions.id,
+            batchId: questions.batchId,
+            item: questions.batchItem
+          }).from(questions)
+            .where(and(inArray(questions.batchId, batchIds), eq(questions.questionType, "di.msr")))
+            .orderBy(asc(questions.createdAt), asc(sql`${questions}.rowid`))
           return new Map(rows.map((row) => {
             const own = partRows.filter((each) => each.questionId === row.id)
             const positionOf = (partId: string) => own.find((part) => part.id === partId)?.position ?? 0
@@ -198,6 +214,14 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
               status: row.status as QuestionStatus,
               bookLabel: row.bookLabel,
               explanation: explained?.explanation ?? null,
+              generated: row.batchId === null ? null : {
+                batch: batchRows.find((batch) => batch.id === row.batchId)?.number ?? 0,
+                item: row.batchItem ?? 0,
+                question: row.questionType === "di.msr"
+                  ? setRows.filter((each) => each.batchId === row.batchId && each.item === row.batchItem)
+                    .findIndex((each) => each.id === row.id) + 1
+                  : null
+              },
               sources: mine.map((source) =>
                 new SourceView({
                   bookId: BookId.make(source.bookId),
@@ -553,9 +577,22 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
             yield* db.update(parts).set({ key, keyBasis: "override" }).where(eq(parts.id, part.id)).pipe(Effect.orDie)
             const [question] = yield* db.select().from(questions).where(eq(questions.id, questionId)).pipe(Effect.orDie)
             // The override settles questions about this Part's key: another
-            // Book's key for another Part still holds the Question.
+            // Book's key for another Part still holds the Question. A
+            // Generated Question's disagreement about this Part is settled
+            // too, since the Curator has read its words; a Two-Part
+            // Analysis's columns are read together, so theirs only once both
+            // are overridden.
+            const prefix = partReasonPrefix(part.kind as PartKind, position)
+            const siblings = yield* db.select({ position: parts.position, kind: parts.kind, keyBasis: parts.keyBasis })
+              .from(parts).where(eq(parts.questionId, questionId)).pipe(Effect.orDie)
+            const settled = part.kind !== "column-choice" || siblings.every((each) =>
+              each.kind !== "column-choice" || each.position === position || each.keyBasis === "override"
+            )
             const kept = [
-              ...readLinkReasons(question?.linkReasons ?? "[]").filter((each) => !KeyCodes.has(each.code)),
+              ...readLinkReasons(question?.linkReasons ?? "[]").filter((each) =>
+                !KeyCodes.has(each.code) &&
+                !(settled && each.code === "predicate-disagreement" && each.detail.startsWith(prefix))
+              ),
               ...yield* sourceKeyReasons(questionId).pipe(Effect.provideService(Db, db), Effect.orDie)
             ]
             yield* db.update(questions).set({

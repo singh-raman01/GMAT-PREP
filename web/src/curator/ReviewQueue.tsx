@@ -44,7 +44,10 @@ const ReasonLabels: Record<ReasonCode, string> = {
   "option-notes": "Option notes",
   "teaching-text": "Teaching text",
   "difficulty": "Difficulty",
-  "not-enriched": "Not enriched"
+  "not-enriched": "Not enriched",
+  "predicate-disagreement": "Predicates disagree",
+  "inference": "Inference to confirm",
+  "inference-unconfirmed": "Inference unconfirmed"
 }
 
 const RepeatCodes: ReadonlySet<ReasonCode> = new Set(["near-match", "same-text-other-key"])
@@ -98,6 +101,12 @@ const namesOf = (taxonomy: TaxonomyView | undefined): Names => {
 // What an item is, in a few words: its first Source, or its page.
 const itemName = (item: ReviewItemView) => {
   if (item.page !== null) return `${item.page.bookTitle}, page ${item.page.number}`
+  const generated = item.question?.generated
+  if (generated !== null && generated !== undefined) {
+    return generated.question === null
+      ? `Generated batch ${generated.batch}, item ${generated.item}`
+      : `Generated batch ${generated.batch}, set ${generated.item}, question ${generated.question}`
+  }
   const first = item.question?.sources[0]
   return first === undefined ? "A Question" : `${first.bookTitle}: ${first.set}, question ${first.number}`
 }
@@ -329,8 +338,12 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
 }
 
 const sourceText = (question: QuestionView) =>
-  question.sources.map((source) => `${source.bookTitle}, ${source.set}, question ${source.number}, page ${source.page}`)
-    .join("; ")
+  question.generated !== null
+    ? question.generated.question === null
+      ? `Generated in batch ${question.generated.batch}, item ${question.generated.item}`
+      : `Generated in batch ${question.generated.batch}, set ${question.generated.item}, question ${question.generated.question}`
+    : question.sources.map((source) => `${source.bookTitle}, ${source.set}, question ${source.number}, page ${source.page}`)
+      .join("; ")
 
 const OptionNote = ({ note, names }: { readonly note: OptionNoteView; readonly names: Names }) => (
   <span className="option-note">
@@ -576,17 +589,19 @@ const ReviewItem = (
   return (
     <li className="review-item">
       {title}
-      <p className="review-source">
-        {sourceText(question)}
-        {first !== undefined && (
-          <>
-            {". "}
-            <a href={`${bookFilePath(first.bookId)}#page=${first.page}`} target="_blank" rel="noopener">
-              Open page {first.page}
-            </a>
-          </>
-        )}
-      </p>
+      {question.generated === null && (
+        <p className="review-source">
+          {sourceText(question)}
+          {first !== undefined && (
+            <>
+              {". "}
+              <a href={`${bookFilePath(first.bookId)}#page=${first.page}`} target="_blank" rel="noopener">
+                Open page {first.page}
+              </a>
+            </>
+          )}
+        </p>
+      )}
       {item.reasons.length === 0
         ? <p className="review-clear">No problems found. Check it against the book, then publish it.</p>
         : <Reasons reasons={item.reasons} />}

@@ -3,10 +3,10 @@ import { Clock, Effect } from "effect"
 import { fitsSlot, groupOf } from "../../api/blueprint.ts"
 import { bandOf, type DifficultyBand } from "../../api/difficulty.ts"
 import { Db } from "../db/Database.ts"
-import { books, jobs, questions, sources, stimuli } from "../db/schema.ts"
+import { books, generationBatches, jobs, questions, sources, stimuli } from "../db/schema.ts"
 
 // The Mock Reserve (ADR 0008): a quarter of each Section's Questions from
-// each Book, held back for Mocks. Membership is decided per unit, so an RC
+// each Book and each generation batch, held back for Mocks. Membership is decided per unit, so an RC
 // passage's or an MSR set's Questions stay together, and only units that fit
 // a Section Blueprint slot can join. Each Question Type and Difficulty Band
 // gets its share, and within one the units are taken in the order of their
@@ -91,7 +91,9 @@ export const reserveDecisions = (units: ReadonlyArray<ReserveUnit>): ReadonlyMap
       .toSorted((a, b) => a.hash.localeCompare(b.hash))
     let added = 0
     for (const unit of open) {
-      const joins = added + unit.size <= quota
+      // A unit joins when that brings its stratum nearer its share, so a set
+      // of three can fill a share of two rather than leave it empty.
+      const joins = Math.abs(added + unit.size - quota) < Math.abs(added - quota)
       if (joins) added += unit.size
       decisions.set(unit.id, joins)
     }
@@ -99,21 +101,29 @@ export const reserveDecisions = (units: ReadonlyArray<ReserveUnit>): ReadonlyMap
   return decisions
 }
 
+// Where the Questions being decided came from: a Book, or a generation batch.
+export type ReserveOrigin = { readonly bookId: string } | { readonly batchId: string }
+
 // Decides the Reserve for a Book's published Questions not decided yet: the
 // Questions the Book itself brought, not those it only added a Source to.
 // A passage's published Questions are one unit, and one published after the
-// passage was decided, in this Book or another, takes its decision.
-export const assignReserve = (bookId: string) =>
+// passage was decided, in this Book or another, takes its decision. A
+// generation batch's Questions are shared out with every batch's decided
+// before, so small batches add up to a quarter.
+export const assignReserve = (bookId: string) => assignReserveFor({ bookId })
+
+// The same for a Book's or a generation batch's Questions.
+export const assignReserveFor = (origin: ReserveOrigin) =>
   Effect.gen(function*() {
     const db = yield* Db
-    return yield* db.transaction(() => decideReserve(bookId))
+    return yield* db.transaction(() => decideReserve(origin))
   })
 
-const decideReserve = (bookId: string) =>
+const decideReserve = (origin: ReserveOrigin) =>
   Effect.gen(function*() {
     const db = yield* Db
     const now = yield* Clock.currentTimeMillis
-    const rows = yield* db.select({
+    const fields = {
       id: questions.id,
       section: questions.section,
       questionType: questions.questionType,
@@ -122,10 +132,22 @@ const decideReserve = (bookId: string) =>
       reserve: questions.reserve,
       stimulusId: questions.stimulusId,
       stimulusHash: stimuli.normalizedHash
-    }).from(questions)
-      .innerJoin(sources, and(eq(sources.questionId, questions.id), eq(sources.bookId, bookId), eq(sources.merged, false)))
-      .leftJoin(stimuli, eq(stimuli.id, questions.stimulusId))
-      .where(eq(questions.status, "published"))
+    }
+    const rows = "bookId" in origin
+      ? yield* db.select(fields).from(questions)
+        .innerJoin(
+          sources,
+          and(eq(sources.questionId, questions.id), eq(sources.bookId, origin.bookId), eq(sources.merged, false))
+        )
+        .leftJoin(stimuli, eq(stimuli.id, questions.stimulusId))
+        .where(eq(questions.status, "published"))
+      : yield* db.select(fields).from(questions)
+        .leftJoin(stimuli, eq(stimuli.id, questions.stimulusId))
+        .where(and(
+          isNotNull(questions.batchId),
+          eq(questions.status, "published"),
+          or(eq(questions.batchId, origin.batchId), isNotNull(questions.reserve))
+        ))
     // Every Question about these passages, from any Book: a passage decided
     // anywhere keeps that decision, released or not, and a slot would take
     // the Questions that count in it.
@@ -134,7 +156,8 @@ const decideReserve = (bookId: string) =>
       stimulusId: questions.stimulusId,
       status: questions.status,
       reserve: questions.reserve,
-      releasedAt: questions.releasedAt
+      releasedAt: questions.releasedAt,
+      batchId: questions.batchId
     }).from(questions).where(inArray(questions.stimulusId, passageIds))
     const passageDecision = new Map<string, { readonly reserve: boolean; readonly released: boolean }>()
     const passageSize = new Map<string, number>()
@@ -191,9 +214,11 @@ const decideReserve = (bookId: string) =>
 // The Questions a passage's size counts: those published, and those decided
 // before that are being checked again, as after a Key Override. A Question
 // waiting for its first decision, such as a near match the Curator has not
-// settled, counts once it is published.
-const countsInPassage = (row: { readonly status: string; readonly reserve: boolean | null }) =>
-  row.status === "published" || (row.status !== "withdrawn" && row.reserve !== null)
+// settled, counts once it is published. A generated set is written whole, so
+// its Questions count until withdrawn, as an inference held for the Curator.
+const countsInPassage = (
+  row: { readonly status: string; readonly reserve: boolean | null; readonly batchId: string | null }
+) => row.status === "published" || (row.status !== "withdrawn" && (row.reserve !== null || row.batchId !== null))
 
 // Releases each passage in the Reserve whose Questions, from every Book, no
 // longer fit a Blueprint slot, as one that gained Questions from a later
@@ -210,7 +235,10 @@ export const releaseUnfitting = Effect.gen(function*() {
   }).from(questions)
     .where(and(
       inArray(questions.stimulusId, held),
-      or(eq(questions.status, "published"), and(ne(questions.status, "withdrawn"), isNotNull(questions.reserve)))
+      or(
+        eq(questions.status, "published"),
+        and(ne(questions.status, "withdrawn"), or(isNotNull(questions.reserve), isNotNull(questions.batchId)))
+      )
     ))
     .groupBy(questions.stimulusId)
   const unfitting = passages.filter((passage) => !fitsSlot(passage.questionType, passage.size))
@@ -223,8 +251,9 @@ export const releaseUnfitting = Effect.gen(function*() {
 })
 
 // Decides the Reserve for every Book whose run has ended, finished or not,
-// with published Questions not decided yet, such as one another Book's run
-// or a refresh published. A Book whose run goes on decides at its end.
+// and every generation batch whose job has, with published Questions not
+// decided yet, such as one another Book's run or a refresh published. A
+// Book whose run goes on, or a batch, decides at its end.
 export const assignUndecided = Effect.gen(function*() {
   const db = yield* Db
   const rows = yield* db.selectDistinct({ bookId: sources.bookId }).from(sources)
@@ -239,6 +268,16 @@ export const assignUndecided = Effect.gen(function*() {
     ))
   let joined = 0
   for (const row of rows) joined += yield* assignReserve(row.bookId)
+  // And for every generation batch whose job has ended.
+  const batches = yield* db.selectDistinct({ batchId: generationBatches.id }).from(questions)
+    .innerJoin(generationBatches, eq(generationBatches.id, questions.batchId))
+    .leftJoin(jobs, eq(jobs.id, generationBatches.jobId))
+    .where(and(
+      eq(questions.status, "published"),
+      isNull(questions.reserve),
+      or(isNull(jobs.id), notInArray(jobs.status, ["queued", "running", "paused"]))
+    ))
+  for (const batch of batches) joined += yield* assignReserveFor({ batchId: batch.batchId })
   yield* db.transaction(() => releaseUnfitting)
   return joined
 })

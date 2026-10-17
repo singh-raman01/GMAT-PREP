@@ -1,11 +1,11 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm"
 import { Effect, Option, Schema } from "effect"
 import { Db } from "../db/Database.ts"
-import { books, jobs, questions, sources } from "../db/schema.ts"
+import { books, generationBatches, jobs, questions, sources } from "../db/schema.ts"
 
 // Drafts are Questions waiting for enrichment and the Publish Gate. Each is
-// checked by the extraction of a Book it has a Source in, while that runs, or
-// by a refresh job that names it. Every change that makes a draft queues one
+// checked by the extraction of a Book it has a Source in, while that runs, by
+// the job generating its batch, or by a refresh job that names it. Every change that makes a draft queues one
 // of these in the same transaction. A draft is stranded when its job was
 // cancelled or failed: it waits for the Curator to ask for a check.
 
@@ -32,12 +32,16 @@ export const drafts = Effect.gen(function*() {
     .innerJoin(books, eq(books.id, sources.bookId))
     .innerJoin(jobs, eq(jobs.id, books.jobId))
     .where(and(eq(jobs.kind, "book-extract"), inArray(jobs.status, ["queued", "running", "paused"])))
+  const generating = yield* db.select({ questionId: questions.id, status: jobs.status }).from(questions)
+    .innerJoin(generationBatches, eq(generationBatches.id, questions.batchId))
+    .innerJoin(jobs, eq(jobs.id, generationBatches.jobId))
+    .where(and(eq(questions.status, "draft"), inArray(jobs.status, ["queued", "running", "paused"])))
   const refreshes = yield* db.select({ params: jobs.params, checkpoint: jobs.checkpoint, status: jobs.status }).from(jobs)
     .where(and(eq(jobs.kind, "question-refresh"), inArray(jobs.status, ["queued", "running", "paused"])))
   const active = new Set<string>()
   const waiting = new Set<string>()
   const cover = (id: string, status: string) => (status === "paused" ? waiting : active).add(id)
-  for (const row of extracting) cover(row.questionId, row.status)
+  for (const row of [...extracting, ...generating]) cover(row.questionId, row.status)
   for (const refresh of refreshes) {
     const ids = Option.match(decodeParams(refresh.params), { onNone: () => [], onSome: (params) => params.questionIds })
     const done = refresh.checkpoint === null

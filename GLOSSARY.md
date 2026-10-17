@@ -77,7 +77,7 @@ _Avoid_: duplicate
 A Question taken from a Book, carrying that Book's answer key.
 
 **Generated Question**:
-A Question the app wrote from its own Dataset, with its answer key computed from that Dataset.
+A Question the app wrote from its own Dataset, with its answer key computed from that Dataset; an MSR statement inferred from text is keyed by the generator and confirmed by the solves and the Curator.
 
 **Dataset**:
 The typed table or series behind a Data Insights Question. Its chart and its answer key both come from it.

@@ -9,6 +9,7 @@ import {
   tagOutput
 } from "../src/server/books/enrichment.ts"
 import { readingOutputs } from "../src/server/books/readings.ts"
+import { ColumnsTranslation, GeneratorOutputs, StatementTranslation } from "../src/server/generation/prompts.ts"
 import { surveyReply } from "../src/server/books/survey.ts"
 import { ConnectionTestReply } from "../src/server/jobs/kinds/connectionTest.ts"
 import { strictJsonSchema } from "../src/server/llm/jsonSchema.ts"
@@ -116,7 +117,10 @@ describe("Strict JSON Schema", () => {
       ]),
       SolveOutput,
       solvePartsOutput(statements),
-      approachesPartsOutput(taxonomy, statements)
+      approachesPartsOutput(taxonomy, statements),
+      ...Object.values(GeneratorOutputs),
+      StatementTranslation,
+      ColumnsTranslation
     ]
     for (const output of outputs) {
       expect(() => strictJsonSchema(output as Schema.Codec<unknown, unknown>)).not.toThrow()

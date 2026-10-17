@@ -25,6 +25,9 @@ export const ReasonCode = Schema.Literals([
   "near-match",
   // Another Source of the Question gives another key.
   "source-key",
+  // A Generated Question's statement whose two predicates, the generator's
+  // and a second reading of its words, give different results.
+  "predicate-disagreement",
   // Found by the Publish Gate after enrichment.
   "tags",
   "solver-disagreement",
@@ -36,6 +39,11 @@ export const ReasonCode = Schema.Literals([
   "difficulty",
   // Enrichment has not run on it, as for a Question from before the gate.
   "not-enriched",
+  // A generated statement that is an inference from text, which code cannot
+  // check: its three solves agree with its key, and the Curator decides.
+  "inference",
+  // The same, but its solves do not all agree with its key.
+  "inference-unconfirmed",
   // A page, not a Question.
   "unread-page"
 ])
@@ -47,9 +55,10 @@ export class ReviewReason extends Schema.Class<ReviewReason>("gmat-prep/api/Revi
 }) {}
 
 // Reasons the Curator may publish past, having checked the Question: that
-// the key stands though a solver disagreed, or that the Difficulty estimate
-// and the Book Label differ. Publishing never changes the key.
-export const PublishableReasons: ReadonlySet<ReasonCode> = new Set(["solver-disagreement", "difficulty"])
+// the key stands though a solver disagreed, that the Difficulty estimate and
+// the Book Label differ, or that a generated inference from text, which its
+// solves agree with, is right. Publishing never changes the key.
+export const PublishableReasons: ReadonlySet<ReasonCode> = new Set(["solver-disagreement", "difficulty", "inference"])
 
 export const QuestionStatus = Schema.Literals(["draft", "held", "published", "withdrawn"])
 export type QuestionStatus = typeof QuestionStatus.Type
@@ -92,7 +101,10 @@ export class KeyOverrideView extends Schema.Class<KeyOverrideView>("gmat-prep/ap
   createdAt: Schema.Number
 }) {}
 
-export const KeyBasis = Schema.Literals(["book", "computed", "override"])
+// Where a Part's key comes from: the Book, code reading a Generated
+// Question's Dataset, the generator for an inference from text, or the
+// Curator.
+export const KeyBasis = Schema.Literals(["book", "computed", "generator", "override"])
 
 // One way a Question is answered: a choice of five, a statement's pair, a
 // menu in a sentence, or a column of a Two-Part Analysis.
@@ -124,6 +136,9 @@ export class QuestionView extends Schema.Class<QuestionView>("gmat-prep/api/Ques
   // The explanation its Approaches are written with, as the Book prints it.
   explanation: Schema.NullOr(Schema.String),
   sources: Schema.Array(SourceView),
+  // A Generated Question's batch and its item's place in it.
+  // A Generated Question's batch and item; for an MSR set, its place in the set.
+  generated: Schema.NullOr(Schema.Struct({ batch: Schema.Int, item: Schema.Int, question: Schema.NullOr(Schema.Int) })),
   // What enrichment gave it: Skill ids, the Difficulty estimate, the
   // independent solves' answers, its Approaches and its wrong-option notes.
   primarySkill: Schema.NullOr(Schema.String),

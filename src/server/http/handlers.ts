@@ -6,7 +6,7 @@ import { CurrentProfile, NotUnlocked, ProfileCookie, ProfileSession } from "../.
 import { Profiles } from "../profiles/Profiles.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { WorkerSupervisor } from "../worker/WorkerSupervisor.ts"
-import { BankHandlers, BooksHandlers, GoldenHandlers, ReviewHandlers } from "./books.ts"
+import { BankHandlers, BooksHandlers, GenerationHandlers, GoldenHandlers, ReviewHandlers } from "./books.ts"
 import { CuratorHandlers, CuratorSessionLive } from "./curatorHandlers.ts"
 import { PracticeHandlers } from "./practice.ts"
 
@@ -119,7 +119,8 @@ export const ApiRoutes = HttpApiBuilder.layer(Api).pipe(
     BooksHandlers,
     ReviewHandlers,
     GoldenHandlers,
-    BankHandlers
+    BankHandlers,
+    GenerationHandlers
   ]),
   Layer.provide([ProfileSessionLive, CuratorSessionLive])
 )
