@@ -53,6 +53,7 @@ OPT_ALL_LOCAL=0
 OPT_NO_BROWSER=0
 OPT_NO_TEST=0
 OPT_YES=0
+OPT_SCAN=0
 OPT_JSON_MODE=""
 OPT_CLOUD_BASE_URL=""
 GIVEN_OPTIONS=""
@@ -229,6 +230,10 @@ Options:
   --stop                  stop the app and tunnel an earlier run started
   --server NAME           the server's host name (asked on the first run)
   --address IP            the server's address, if it cannot be found
+  --scan                  look for the server on this Mac's whole network
+                          (up to 254 addresses) when it is not on an iPhone
+                          hotspot; on a hotspot only its 14 addresses are
+                          tried, and elsewhere nothing is scanned without it
   --ssh-port N            the server's SSH port (default 22)
   --admin-user NAME       your own SSH login on the server, used to install
                           this Mac's tunnel key and read the API key
@@ -302,6 +307,10 @@ parse_args() {
         ;;
       --pair)
         OPT_PAIR=1
+        shift
+        ;;
+      --scan)
+        OPT_SCAN=1
         shift
         ;;
       --reconfigure)
@@ -485,12 +494,19 @@ forward_has_llm_port() {
 
 # The forwarding options in an ssh or autossh command line, or nothing.
 forward_options() {
-  local line=$1 word="" next="" out="" rest="" letter="" i=0
+  local line=$1
   set -f
   # shellcheck disable=SC2086 # split into words without globbing (set -f)
   set -- $line
   set +f
+  [ $# -gt 0 ] || return 0
   shift
+  forward_options_args "$@"
+}
+
+# The forwarding options among the arguments of an ssh command, or nothing.
+forward_options_args() {
+  local word="" next="" out="" rest="" letter="" i=0
   for word in "$@"; do
     if [ -n "$next" ]; then
       case "$next" in
@@ -564,20 +580,73 @@ EOF
   if [ "$found" = 0 ]; then info "No SSH tunnel processes."; fi
 }
 
-# LaunchAgents that run ssh or autossh keep old tunnels coming back.
+# The ProgramArguments of a LaunchAgent, one per line, from its plutil -p
+# dump.
+plist_program_args() {
+  printf '%s\n' "$1" | awk '
+    /"ProgramArguments" => \[/ { inside = 1; next }
+    inside && /^[[:space:]]*\]/ { exit }
+    inside && /^[[:space:]]*[0-9]+ => "/ {
+      line = $0
+      sub(/^[[:space:]]*[0-9]+ => "/, "", line)
+      sub(/"[[:space:]]*$/, "", line)
+      gsub(/\\"/, "\"", line)
+      print line
+    }'
+}
+
+# Whether a LaunchAgent's arguments (one per line) run ssh or autossh,
+# directly or through "sh -c"; prints its forwarding options.
+launch_agent_forwards() {
+  local args=$1 first="" prog="" cmd=""
+  first=$(printf '%s\n' "$args" | sed -n 1p)
+  prog=$(basename "${first:-none}")
+  case "$prog" in
+    ssh | autossh)
+      # One argument per line, so an argument with spaces stays whole.
+      local IFS='
+'
+      set -f
+      # shellcheck disable=SC2086 # split on newlines only, without globbing
+      set -- $args
+      set +f
+      shift
+      forward_options_args "$@"
+      return 0
+      ;;
+    sh | bash | zsh | dash)
+      cmd=$(printf '%s\n' "$args" | awk 'found { print; exit } $0 == "-c" || $0 == "-lc" { found = 1 }')
+      cmd=${cmd#exec }
+      case "$(basename "$(printf '%s' "$cmd" | awk '{print $1}')")" in
+        ssh | autossh)
+          forward_options "$cmd"
+          return 0
+          ;;
+      esac
+      ;;
+  esac
+  return 1
+}
+
+# LaunchAgents that run ssh or autossh keep old tunnels coming back. One
+# defaults to yes only when its own forwarding arguments name a port only LLM
+# tools use.
 stop_old_launch_agents() {
-  local plist="" label="" args="" backup="" found=0
+  local plist="" label="" dump="" args="" opts="" default="" backup="" found=0
   [ "$IS_MAC" = 1 ] || return 0
   for plist in "$HOME"/Library/LaunchAgents/*.plist; do
     [ -f "$plist" ] || continue
-    args=$(plutil -p "$plist" 2>/dev/null || true)
-    case "$args" in *'"ssh'* | *'/ssh"'* | *autossh*) ;; *) continue ;; esac
+    dump=$(plutil -p "$plist" 2>/dev/null || true)
+    args=$(plist_program_args "$dump")
+    opts=$(launch_agent_forwards "$args") || continue
     label=$(/usr/libexec/PlistBuddy -c 'Print :Label' "$plist" 2>/dev/null || basename "$plist" .plist)
     case "$label" in *gmat-prep*) continue ;; esac
     found=1
     say "LaunchAgent $label ($plist) runs ssh:"
-    printf '%s\n' "$args" | sed -n '/ProgramArguments/,/]/p' | sed 's/^/    /'
-    if confirm "Stop it and move its file to the backup folder, so it does not start at login?" "$(if forward_has_llm_port "$args"; then printf y; else printf n; fi)"; then
+    printf '%s\n' "$args" | sed 's/^/    /'
+    default=n
+    if [ -n "$opts" ] && forward_has_llm_port "$opts"; then default=y; fi
+    if confirm "Stop it and move its file to the backup folder, so it does not start at login?" "$default"; then
       launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || launchctl unload "$plist" 2>/dev/null || true
       backup="$CONFIG_DIR/backup/$(date +%Y%m%d-%H%M%S)"
       mkdir -p "$backup"
@@ -650,10 +719,43 @@ EOF
   if [ "$found" = 0 ]; then info "No forwarding lines in ~/.ssh/config."; fi
 }
 
+# The first version of this script kept its copies next to the file it
+# edited, as NAME.backup-YYYYMMDD-HHMMSS. In ~/.ssh/config.d an "Include
+# config.d/*" line reads those copies, so the forwarding they hold stays on.
+# Copies whose original holds this script's marker are moved to the backup
+# folder, after asking; others are not touched.
+move_earlier_ssh_backups() {
+  local f="" orig="" found="" dest=""
+  for f in "$HOME"/.ssh/config.d/*.backup-*; do
+    [ -f "$f" ] || continue
+    case "${f##*.backup-}" in [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]) ;; *) continue ;; esac
+    orig=${f%.backup-*}
+    [ -f "$orig" ] || continue
+    grep -q '^# disabled by start-gmat-prep-mac.sh: ' "$orig" 2>/dev/null || continue
+    found="$found$f
+"
+  done
+  [ -n "$found" ] || return 0
+  say "Copies an earlier version of this script left in ~/.ssh/config.d, where an Include line reads them and keeps their forwarding on:"
+  printf '%s' "$found" | sed 's/^/    /'
+  confirm "Move them to the backup folder ($CONFIG_DIR/backup/ssh)?" y || return 0
+  dest="$CONFIG_DIR/backup/ssh/$(date +%Y%m%d-%H%M%S)-earlier"
+  mkdir -p "$dest"
+  chmod 700 "$CONFIG_DIR/backup" "$CONFIG_DIR/backup/ssh" "$dest" 2>/dev/null || true
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    mv "$f" "$dest/"
+  done <<EOF
+$found
+EOF
+  info "Moved them to $dest."
+}
+
 stop_old_forwarding() {
   step "2. Old SSH tunnels on this Mac"
   stop_old_tunnel_processes
   stop_old_launch_agents
+  move_earlier_ssh_backups
   comment_out_forward_lines
 }
 
@@ -754,19 +856,44 @@ port_answers() {
   fi
 }
 
-# Addresses on this Mac's network with the SSH port open, into
+# Whether an address is on an iPhone hotspot, 172.20.10.0/28.
+is_hotspot_addr() {
+  case "$1" in 172.20.10.[0-9] | 172.20.10.1[0-5]) return 0 ;; esac
+  return 1
+}
+
+# The network to look for the server on, as "address prefix": the hotspot's
+# /28 when this Mac is on one; with --scan, the Mac's own network, a /24 at
+# most around its address; otherwise nothing, since probing every address
+# of a shared network is a port scan.
+scan_range() {
+  local net="" addr="" prefix=""
+  net=$(local_network || true)
+  [ -n "$net" ] || return 0
+  addr=${net% *}
+  prefix=${net#* }
+  if is_hotspot_addr "$addr"; then
+    printf '%s 28\n' "$addr"
+  elif [ "$OPT_SCAN" = 1 ]; then
+    if [ "$prefix" -lt 24 ]; then prefix=24; fi
+    printf '%s %s\n' "$addr" "$prefix"
+  fi
+}
+
+# Addresses on the network scan_range picks with the SSH port open, into
 # $WORK_DIR/scan. Runs in the main shell, so the probe of the server counts
 # against the SSH rate limit.
 scan_network() {
   local net="" addr="" prefix="" ip=0 mask=0 first=0 last=0 n=0 count=0 own="" results=""
   results="$WORK_DIR/scan"
   : >"$results"
-  net=$(local_network || true)
-  [ -n "$net" ] || return 0
+  net=$(scan_range)
+  if [ -z "$net" ]; then
+    info "This Mac is not on an iPhone hotspot (172.20.10.0/28), so it does not scan this network for the server. Give the server's address with --address IP, or pass --scan to look on this network."
+    return 0
+  fi
   addr=${net% *}
   prefix=${net#* }
-  # Larger networks are scanned around this Mac's address only.
-  if [ "$prefix" -lt 22 ]; then prefix=24; fi
   ip=$(ip_to_int "$addr")
   mask=$(((0xffffffff << (32 - prefix)) & 0xffffffff))
   first=$(((ip & mask) + 1))
@@ -825,7 +952,7 @@ locate_server() {
 
 find_server() {
   [ -n "$(pinned_key)" ] || die "The server's host key is not pinned yet; run with --pair."
-  locate_server || die "The server was not found. Check that it is on, on the same hotspot, and that sshd runs; or give its address with --address IP."
+  locate_server || die "The server was not found. Check that it is on, on the same hotspot, and that sshd runs; or give its address with --address IP (or pass --scan on a network that is not an iPhone hotspot)."
 }
 
 # First pairing: finds candidate servers, shows their host keys, and pins the
@@ -855,7 +982,7 @@ pin_host_key() {
       [ -n "$key" ] && candidates="$candidates $candidate=$key"
     done
   fi
-  [ -n "$candidates" ] || die "No SSH server was found. Check the server is on and on the same network, or pass --address IP."
+  [ -n "$candidates" ] || die "No SSH server was found. Check the server is on and on the same network, or pass --address IP (or --scan on a network that is not an iPhone hotspot)."
   for candidate in $candidates; do
     key=${candidate#*=}
     fp=$(key_fingerprint "$key")
