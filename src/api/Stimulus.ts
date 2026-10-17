@@ -25,6 +25,8 @@ export class StimulusTab extends Schema.Class<StimulusTab>("gmat-prep/api/Stimul
 }) {}
 
 export class StimulusView extends Schema.Class<StimulusView>("gmat-prep/api/StimulusView")({
+  // The Stimulus, so a screen can tell one from the next.
+  id: Schema.String,
   kind: StimulusKind,
   ...ContentFields,
   // For tabs, each tab in order; empty otherwise.

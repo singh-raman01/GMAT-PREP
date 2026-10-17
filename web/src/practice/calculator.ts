@@ -150,8 +150,8 @@ export const press = (before: CalculatorState, key: Key): CalculatorState => {
 export const keyOf = (key: string): Key | undefined => {
   if (/^[0-9]$/.test(key)) return { _tag: "Digit", digit: key }
   switch (key) {
+    // A comma is a thousands separator, not a point, so it does nothing.
     case ".":
-    case ",":
       return { _tag: "Point" }
     case "+":
     case "-":
@@ -166,7 +166,12 @@ export const keyOf = (key: string): Key | undefined => {
     case "Backspace":
       return { _tag: "Backspace" }
     case "Escape":
+    case "c":
+    case "C":
       return { _tag: "Clear" }
+    case "x":
+    case "X":
+      return { _tag: "Operator", operator: "*" }
     case "Delete":
       return { _tag: "ClearEntry" }
     default:

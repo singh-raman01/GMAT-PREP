@@ -43,6 +43,8 @@ const TwoChoiceRows = ({ parts, picks, onPick, disabled, keys }: PartsProps) => 
       <tbody>
         {parts.map((part) => {
           const key = keys?.get(part.position)
+          // Each choice is described by its statement, which follows it.
+          const statement = `${name}-statement-${part.position}`
           return (
             <tr
               key={part.position}
@@ -58,6 +60,7 @@ const TwoChoiceRows = ({ parts, picks, onPick, disabled, keys }: PartsProps) => 
                       value={option.label}
                       checked={picks[part.position] === option.label}
                       disabled={disabled}
+                      aria-describedby={statement}
                       onChange={() => onPick(part.position, option.label)}
                     />
                     <span className={shared ? "visually-hidden" : undefined}>
@@ -70,7 +73,7 @@ const TwoChoiceRows = ({ parts, picks, onPick, disabled, keys }: PartsProps) => 
                   )}
                 </td>
               ))}
-              <th scope="row" className="statement">
+              <th scope="row" id={statement} className="statement">
                 <RichInline source={part.prompt ?? ""} />
               </th>
             </tr>
@@ -81,18 +84,26 @@ const TwoChoiceRows = ({ parts, picks, onPick, disabled, keys }: PartsProps) => 
   )
 }
 
-// Sentences with a menu where each blank is.
-const Blanks = ({ parts, picks, onPick, disabled, keys }: PartsProps) => (
+// Sentences with a menu where each blank is. Each menu is described by its
+// sentence, with a gap where the menu is.
+const Blanks = ({ parts, picks, onPick, disabled, keys }: PartsProps) => {
+  const name = useId()
+  return (
   <div className="blanks">
     {parts.map((part) => {
       const [before, after] = (part.prompt ?? "{{blank}}").split("{{blank}}")
       const key = keys?.get(part.position)
       const keyText = part.options.find((option) => option.label === key)?.text
+      const sentence = `${name}-sentence-${part.position}`
       return (
         <p key={part.position} className="blank-sentence">
+          <span id={sentence} className="visually-hidden">
+            <RichInline source={(part.prompt ?? "").replace("{{blank}}", "…")} />
+          </span>
           <RichInline source={before ?? ""} />{" "}
           <select
             aria-label={`Blank ${part.position + 1}`}
+            aria-describedby={sentence}
             value={picks[part.position] ?? ""}
             disabled={disabled}
             onChange={(event) => onPick(part.position, event.target.value)}
@@ -110,7 +121,8 @@ const Blanks = ({ parts, picks, onPick, disabled, keys }: PartsProps) => (
       )
     })}
   </div>
-)
+  )
+}
 
 // Two columns over one list: one choice in each column, which may be the
 // same option.
@@ -121,7 +133,11 @@ const ColumnGrid = ({ parts, picks, onPick, disabled, keys }: PartsProps) => {
     <table className="column-grid">
       <thead>
         <tr>
-          {parts.map((part) => <th key={part.position} scope="col" className="choice-head">{part.prompt}</th>)}
+          {parts.map((part) => (
+            <th key={part.position} scope="col" className="choice-head">
+              <RichInline source={part.prompt ?? `Column ${part.position + 1}`} />
+            </th>
+          ))}
           <th scope="col" className="statement-head">Option</th>
         </tr>
       </thead>
@@ -141,7 +157,9 @@ const ColumnGrid = ({ parts, picks, onPick, disabled, keys }: PartsProps) => {
                       disabled={disabled}
                       onChange={() => onPick(part.position, option.label)}
                     />
-                    <span className="visually-hidden">{`${part.prompt ?? `Column ${part.position + 1}`}: ${option.text}`}</span>
+                    <span className="visually-hidden">
+                      <RichInline source={part.prompt ?? `Column ${part.position + 1}`} />: <RichInline source={option.text} />
+                    </span>
                   </label>
                   {key !== undefined && (
                     <Flag isKey={key === option.label} isPick={picks[part.position] === option.label} />

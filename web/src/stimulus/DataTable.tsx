@@ -24,14 +24,17 @@ export const DataTable = (
     readonly caption?: string
   }
 ) => {
-  const [by, setBy] = useState<SortBy>()
+  const [chosen, setBy] = useState<SortBy>()
+  // A sort that does not fit these columns, as one chosen for another table,
+  // is no sort.
+  const by = chosen !== undefined && dataset.columns[chosen.column]?.type === chosen.type ? chosen : undefined
   const rows = useMemo(() => (by === undefined ? [...dataset.rows] : sortRows(dataset.rows, by)), [dataset, by])
   const status = useId()
   const sortBy = (column: number) => {
     const type = dataset.columns[column]!.type
-    setBy((current) =>
-      current?.column === column
-        ? { ...current, direction: current.direction === "ascending" ? "descending" : "ascending" }
+    setBy(
+      by?.column === column
+        ? { ...by, direction: by.direction === "ascending" ? "descending" : "ascending" }
         : { column, type, direction: type === "text" || type === "date" ? "ascending" : "descending" }
     )
   }
@@ -53,7 +56,7 @@ export const DataTable = (
                   ? (
                     <button type="button" className="sort-button" onClick={() => sortBy(index)}>
                       {column.name}
-                      {column.unit !== "" && <span className="column-unit">{column.unit}</span>}
+                      {column.unit !== "" && <span className="column-unit">{` ${column.unit}`}</span>}
                       <span className="sort-mark" aria-hidden="true">
                         {by?.column === index ? (by.direction === "ascending" ? "▲" : "▼") : "↕"}
                       </span>
@@ -62,7 +65,7 @@ export const DataTable = (
                   : (
                     <>
                       {column.name}
-                      {column.unit !== "" && <span className="column-unit">{column.unit}</span>}
+                      {column.unit !== "" && <span className="column-unit">{` ${column.unit}`}</span>}
                     </>
                   )}
               </th>

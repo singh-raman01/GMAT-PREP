@@ -1,5 +1,5 @@
 import type { MapRangeInput, MapRole, TypeGroup } from "../../api/Books.ts"
-import { TypeGroupLabels } from "../../api/Books.ts"
+import { TypeGroupLabels, TypeGroupSections } from "../../api/Books.ts"
 import { setKey } from "../../api/bookMapRules.ts"
 import type { PageSurvey } from "./survey.ts"
 
@@ -58,6 +58,11 @@ export const sameChapter = (a: Chapter, b: Chapter) =>
 // Groups that may share a set: the same group, or a mixed page with any.
 const fits = (a: TypeGroup, b: TypeGroup) => a === b || a === "mixed" || b === "mixed"
 
+// Groups whose questions of one chapter share a set: the same group, or two
+// Data Insights groups.
+const sharesSet = (a: TypeGroup, b: TypeGroup) =>
+  a === b || (TypeGroupSections[a] === "di" && TypeGroupSections[b] === "di")
+
 interface Run {
   readonly role: MapRole
   readonly group: TypeGroup
@@ -89,8 +94,10 @@ const mostCommon = (labels: ReadonlyMap<string, number>): string | undefined => 
 // it; any other page ends it.
 //
 // Questions of one chapter and group share a set, named by the commonest
-// spelling of the chapter's title. Questions with no chapter are named after
-// their group, with their first page when another set has that name.
+// spelling of the chapter's title; so do a chapter's Data Insights questions
+// of every type, which a Focus book numbers on through the chapter and keys
+// in one answer key. Questions with no chapter are named after their group,
+// with their first page when another set has that name.
 //
 // Answer keys, explanations and difficulty labels take the set of the
 // questions of their chapter and a fitting group, the nearest earlier ones
@@ -129,14 +136,14 @@ export const assembleMap = (pages: ReadonlyArray<SurveyedPage>): ReadonlyArray<M
   const taken = new Map<string, TypeGroup>()
   questions.forEach((run, index) => {
     if (run.chapter === null) return
-    const earlier = questions.slice(0, index).find((other) => other.group === run.group && matches(run, other))
+    const earlier = questions.slice(0, index).find((other) => sharesSet(other.group, run.group) && matches(run, other))
     if (earlier !== undefined) {
       run.set = earlier.set
       return
     }
     const name = mostCommon(run.labels)!
     const owner = taken.get(setKey(name))
-    run.set = owner === undefined || owner === run.group ? name : `${name}, ${TypeGroupLabels[run.group]}`
+    run.set = owner === undefined || sharesSet(owner, run.group) ? name : `${name}, ${TypeGroupLabels[run.group]}`
     taken.set(setKey(run.set), run.group)
   })
   const unchaptered = questions.filter((run) => run.chapter === null)

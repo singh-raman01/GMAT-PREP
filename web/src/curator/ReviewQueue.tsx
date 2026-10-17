@@ -18,9 +18,10 @@ import { bandOf } from "../../../src/api/difficulty.ts"
 import { call, type Client } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
 import { linkProps } from "../router.ts"
-import { RichInline, RichText } from "../RichText.tsx"
+import { RichText } from "../RichText.tsx"
 import { afterStreamClosed, useJobEvents } from "./jobEvents.ts"
 import { StimulusDetails } from "../stimulus/StimulusPane.tsx"
+import { partName, PartsWithKeys } from "./QuestionParts.tsx"
 
 interface Props {
   readonly onLocked: () => void
@@ -235,14 +236,18 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
     setAnnouncement("The waiting Questions are being checked. Any that are held come here.")
   }
 
-  const changeKey = async (item: ReviewItemView, key: string, reason: string): Promise<string | undefined> => {
-    const result = await call((client) =>
-      client.review.overrideKey({ params: { id: item.id }, payload: { key: key as "A", reason } })
-    )
+  const changeKey = async (
+    item: ReviewItemView,
+    part: number,
+    key: string,
+    reason: string
+  ): Promise<string | undefined> => {
+    const result = await call((client) => client.review.overrideKey({ params: { id: item.id }, payload: { part, key, reason } }))
     if (result._tag === "Success") {
       leave(item.id)
       away.current.set(item.id, itemName(item))
-      setAnnouncement(`${itemName(item)}: the key is now ${key}. It is being checked again and comes back if it is held.`)
+      const which = (item.question?.parts.length ?? 1) > 1 ? `Part ${part + 1}'s key` : "the key"
+      setAnnouncement(`${itemName(item)}: ${which} is now ${key}. It is being checked again and comes back if it is held.`)
       void load()
       return undefined
     }
@@ -341,23 +346,14 @@ const QuestionBody = ({ question, names }: { readonly question: QuestionView; re
   <div className="question-body">
     {question.stimulus !== null && <StimulusDetails stimulus={question.stimulus} />}
     <RichText source={question.stem} />
-    <ol className="choices">
-      {question.options.map((option) => {
-        const note = question.optionNotes.find((each) => each.label === option.label)
-        return (
-          <li key={option.label} className={option.label === question.key ? "choice is-key" : "choice"}>
-            <span className="choice-letter">
-              {option.label === question.key ? <span className="mark">{option.label}</span> : option.label}
-            </span>
-            <span className="choice-text">
-              <RichInline source={option.text} />
-              {option.label === question.key && <span className="visually-hidden">(the key)</span>}
-              {note !== undefined && <OptionNote note={note} names={names} />}
-            </span>
-          </li>
-        )
-      })}
-    </ol>
+    <PartsWithKeys
+      parts={question.parts}
+      keys={question.parts.map((part) => part.key)}
+      extra={(part, label) => {
+        const note = question.optionNotes.find((each) => each.part === part && each.label === label)
+        return note === undefined ? null : <OptionNote note={note} names={names} />
+      }}
+    />
   </div>
 )
 
@@ -425,11 +421,14 @@ const KeyChange = (
     // Its text is in doubt, so nothing is written for it until that is settled.
     readonly unsure: boolean
     readonly about: { readonly "aria-describedby": string }
-    readonly onChange: (key: string, reason: string) => Promise<string | undefined>
+    readonly onChange: (part: number, key: string, reason: string) => Promise<string | undefined>
     readonly onCancel: () => void
   }
 ) => {
-  const ids = { choices: useId(), reason: useId() }
+  const ids = { choices: useId(), reason: useId(), part: useId() }
+  const [position, setPosition] = useState(0)
+  const part = question.parts[position] ?? question.parts[0]!
+  const several = question.parts.length > 1
   const [key, setKey] = useState<string>()
   const [reason, setReason] = useState("")
   const [problem, setProblem] = useState<string>()
@@ -441,16 +440,31 @@ const KeyChange = (
     if (reason.trim().length < 3) return setProblem("Say why the key changes, such as the Book's errata.")
     if (busy.current) return
     busy.current = true
-    const outcome = await onChange(key, reason.trim())
+    const outcome = await onChange(position, key, reason.trim())
     busy.current = false
     setProblem(outcome)
   }
   return (
     <form id={id} className="key-change" noValidate onSubmit={(event) => void submit(event)}>
+      {several && (
+        <div className="field">
+          <label htmlFor={ids.part}>Part</label>
+          <select
+            id={ids.part}
+            value={position}
+            onChange={(event) => {
+              setPosition(Number(event.target.value))
+              setKey(undefined)
+            }}
+          >
+            {question.parts.map((each, index) => <option key={index} value={index}>{partName(each, index)}</option>)}
+          </select>
+        </div>
+      )}
       <fieldset>
-        <legend ref={legend} tabIndex={-1}>The right answer</legend>
+        <legend ref={legend} tabIndex={-1}>{several ? `The right answer for Part ${position + 1}` : "The right answer"}</legend>
         <div className="key-choices">
-          {question.options.map((option) => (
+          {part.options.map((option) => (
             <label key={option.label} className="key-choice">
               <input
                 type="radio"
@@ -460,7 +474,8 @@ const KeyChange = (
                 onChange={() => setKey(option.label)}
               />
               {option.label}
-              {option.label === question.key && <span className="quiet"> (now)</span>}
+              {(several || part.kind !== "single-choice") && <span className="quiet"> {option.text}</span>}
+              {option.label === part.key && <span className="quiet"> (now)</span>}
             </label>
           ))}
         </div>
@@ -470,7 +485,7 @@ const KeyChange = (
         <textarea id={ids.reason} rows={2} maxLength={500} value={reason} onChange={(event) => setReason(event.target.value)} />
       </div>
       <p className="hint">
-        {key === undefined || key === question.key
+        {key === undefined || key === part.key
           ? "The key stays, now as your decision, and the Question goes through every check again."
           : unsure
           ? "The key changes. Approaches and wrong-choice notes wait until its text is no longer in doubt, so it comes back here."
@@ -490,7 +505,7 @@ const ReviewItem = (
     readonly item: ReviewItemView
     readonly names: Names
     readonly onAct: (item: ReviewItemView, action: Action) => Promise<ReadonlyArray<ReviewReason> | string | undefined>
-    readonly onChangeKey: (item: ReviewItemView, key: string, reason: string) => Promise<string | undefined>
+    readonly onChangeKey: (item: ReviewItemView, part: number, key: string, reason: string) => Promise<string | undefined>
   }
 ) => {
   const headingId = useId()
@@ -579,7 +594,8 @@ const ReviewItem = (
       {question.key === null && <p className="quiet">The Book gives no key for it.</p>}
       {override !== undefined && (
         <p className="quiet">
-          You changed the key from {override.previousKey ?? "none"} to {override.newKey}: {override.reason}
+          You changed {question.parts.length > 1 ? `Part ${override.part + 1}'s key` : "the key"} from{" "}
+          {override.previousKey ?? "none"} to {override.newKey}: {override.reason}
         </p>
       )}
       <Enrichment question={question} names={names} />
@@ -627,7 +643,7 @@ const ReviewItem = (
             Check again
           </button>
         )}
-        {question.options.length > 0 && (
+        {question.parts.some((part) => part.options.length > 0) && (
           <button
             ref={keyButton}
             type="button"
@@ -677,7 +693,7 @@ const ReviewItem = (
           question={question}
           unsure={item.reasons.some((reason) => UnsureCodes.has(reason.code))}
           about={about}
-          onChange={(key, reason) => onChangeKey(item, key, reason)}
+          onChange={(part, key, reason) => onChangeKey(item, part, key, reason)}
           onCancel={() => close(() => setChangingKey(false), keyButton)}
         />
       )}

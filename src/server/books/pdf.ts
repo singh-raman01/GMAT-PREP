@@ -1,5 +1,6 @@
 import { Effect, Schema } from "effect"
 import { getDocumentProxy, getResolvedPDFJS } from "unpdf"
+import type { Band } from "./figures.ts"
 
 // Reads a PDF's pages as text with pdf.js. Books are untrusted files, so
 // pdf.js runs without loading fonts, and only in the job worker, where a file
@@ -137,3 +138,40 @@ export const readPdfPages = (
     )
   )
 }
+
+interface PlacedItem {
+  readonly str?: string
+  readonly transform?: ReadonlyArray<number>
+  readonly height?: number
+}
+
+// Where a question sits on its page, as shares of the page's height from the
+// top: from the line that starts with its number to the line that starts the
+// next question below it, or the foot of the page. The whole page when its
+// number is not found at the start of a line.
+export const questionBand = (bytes: Uint8Array, page: number, number: number): Effect.Effect<Band, PdfUnreadable> =>
+  Effect.tryPromise({
+    try: async () => {
+      // pdf.js takes over the buffer it is given.
+      const pdf = await getDocumentProxy(bytes.slice(), { disableFontFace: true, useSystemFonts: false, verbosity: 0 })
+      try {
+        const handle = await pdf.getPage(page)
+        const height = handle.getViewport({ scale: 1 }).height
+        const starts = ((await handle.getTextContent()).items as ReadonlyArray<PlacedItem>).flatMap((item) => {
+          const found = /^\s*(\d+)\.(?:\s|$)/.exec(item.str ?? "")
+          const baseline = item.transform?.[5]
+          if (found === null || baseline === undefined || height <= 0) return []
+          const lineHeight = item.height ?? item.transform?.[3] ?? 0
+          return [{ number: Number(found[1]), top: Math.max(0, 1 - (baseline + lineHeight) / height) }]
+        }).toSorted((a, b) => a.top - b.top)
+        const own = starts.find((start) => start.number === number)
+        if (own === undefined) return { top: 0, bottom: 1 }
+        const next = starts.find((start) => start.top > own.top && start.number !== number)
+        // A little room above the question's first line, and none of the next one.
+        return { top: Math.max(0, own.top - 0.01), bottom: next === undefined ? 1 : Math.max(own.top + 0.02, next.top - 0.005) }
+      } finally {
+        await pdf.loadingTask.destroy()
+      }
+    },
+    catch: (cause) => new PdfUnreadable({ reason: "damaged", detail: String(cause).slice(0, 300) })
+  })

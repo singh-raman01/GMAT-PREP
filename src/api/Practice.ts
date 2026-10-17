@@ -2,6 +2,7 @@ import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
 import { BookId, BookNotFound } from "./Books.ts"
 import { DifficultyBand } from "./difficulty.ts"
+import { PartKind } from "./parts.ts"
 import { ProfileSession } from "./Profiles.ts"
 import { QuestionId } from "./Review.ts"
 import { StimulusView } from "./Stimulus.ts"
@@ -80,11 +81,7 @@ export class ItemRef extends Schema.Class<ItemRef>("gmat-prep/api/ItemRef")({
   reason: SkipReason
 }) {}
 
-// How a Part is answered: one of five options; a statement row with two
-// choices, such as Yes or No; a menu filling a blank in a sentence; or one
-// column of a two-column grid.
-export const PartKind = Schema.Literals(["single-choice", "two-choice", "dropdown", "column-choice"])
-export type PartKind = typeof PartKind.Type
+export { PartKind } from "./parts.ts"
 
 export class PracticePart extends Schema.Class<PracticePart>("gmat-prep/api/PracticePart")({
   position: Schema.Int,

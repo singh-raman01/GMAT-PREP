@@ -2022,6 +2022,11 @@ input.number-input {
   padding-top: 0.9rem;
 }
 
+/* The display above would otherwise show a hidden tab's panel. */
+.tab-panel[hidden] {
+  display: none;
+}
+
 /* The calculator: a display over a grid of keys, in the flow of the page so
    it never covers the Question. */
 .calculator {
@@ -2149,6 +2154,15 @@ input.number-input {
 .choice-label.with-text {
   gap: 0.4rem;
   justify-content: flex-start;
+}
+
+/* After answering, a cell's flag wraps under its choice, so a column stays
+   narrow on a small screen. */
+.choice-cell .answer-flag {
+  display: block;
+  white-space: normal;
+  font-size: var(--step--1);
+  line-height: 1.2;
 }
 
 .statement-rows tr[data-right] .statement,

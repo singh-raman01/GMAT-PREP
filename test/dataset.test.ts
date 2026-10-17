@@ -32,6 +32,15 @@ describe("Dataset cells", () => {
     expect(value("date", "the third week")).toEqual({ problem: "\"the third week\" is not a date." })
   })
 
+  test("a negative in brackets may hold its sign, and a date with a month past 12 is no date", () => {
+    expect(parseCell("currency", "($1,200)")).toEqual({ value: -1200 })
+    expect(parseCell("currency", "$(1,200)")).toEqual({ value: -1200 })
+    expect(parseCell("percent", "(3.5%)")).toEqual({ value: -3.5 })
+    expect(parseCell("date", "3/15/2019")).toEqual({ value: "2019-03-15" })
+    expect(parseCell("date", "15/3/2019")).toEqual({ problem: '"15/3/2019" is not a date.' })
+    expect(parseCell("date", "2019-13")).toEqual({ problem: '"2019-13" is not a date.' })
+  })
+
   test("a blank or a dash is a missing value of any type, and text has none", () => {
     expect(value("number", "")).toBeNull()
     expect(value("currency", "—")).toBeNull()

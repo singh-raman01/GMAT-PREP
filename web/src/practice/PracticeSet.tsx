@@ -402,6 +402,8 @@ const QuestionScreen = (
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (locked || event.altKey || event.ctrlKey || event.metaKey || isTyping(event.target)) return
+      // Keys typed in the calculator are its own.
+      if (event.target instanceof Element && event.target.closest(".calculator") !== null) return
       const label = event.key.toUpperCase()
       if (
         !answered && lettered !== undefined && label.length === 1 &&
@@ -495,7 +497,7 @@ const QuestionScreen = (
       </p>
       {question.stimulus === null ? work : (
         <div className="with-stimulus">
-          <StimulusPane stimulus={question.stimulus} position={current.position} />
+          <StimulusPane key={question.stimulus.id} stimulus={question.stimulus} position={current.position} />
           <div className="beside-stimulus">{work}</div>
         </div>
       )}

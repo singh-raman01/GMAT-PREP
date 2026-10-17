@@ -19,9 +19,12 @@ import {
   ReviewItemNotFound,
   ReviewItemNotOpen,
   ReviewItemView,
+  ReviewPart,
   ReviewReason,
   SourceView
 } from "../../api/Review.ts"
+import { joinedKey } from "../../api/keys.ts"
+import type { PartKind } from "../../api/parts.ts"
 import {
   KeyCodes,
   loadBank,
@@ -30,6 +33,7 @@ import {
   recheckSources,
   RepeatCodes,
   repeatOf,
+  sourceKeyReasons,
   UnsureCodes
 } from "../books/bankWrites.ts"
 import { Db } from "../db/Database.ts"
@@ -107,6 +111,7 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
   dismiss(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen>
   overrideKey(
     id: ReviewItemId,
+    part: number,
     key: string,
     reason: string
   ): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | KeyNotAnOption>
@@ -128,7 +133,8 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
           const rows = yield* db.select().from(questions).where(inArray(questions.id, [...ids]))
           const shown = yield* stimulusViews(rows.flatMap((row) => (row.stimulusId === null ? [] : [row.stimulusId])))
             .pipe(Effect.provideService(Db, db))
-          const partRows = yield* db.select().from(parts).where(and(inArray(parts.questionId, [...ids]), eq(parts.position, 0)))
+          const partRows = yield* db.select().from(parts).where(inArray(parts.questionId, [...ids]))
+            .orderBy(asc(parts.position))
           const partIds = partRows.map((part) => part.id)
           const optionRows = partIds.length === 0
             ? []
@@ -161,21 +167,34 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
           const goldenRows = yield* db.select({ questionId: goldenQuestions.questionId }).from(goldenQuestions)
             .where(inArray(goldenQuestions.questionId, [...ids]))
           return new Map(rows.map((row) => {
-            const part = partRows.find((each) => each.questionId === row.id)
+            const own = partRows.filter((each) => each.questionId === row.id)
+            const positionOf = (partId: string) => own.find((part) => part.id === partId)?.position ?? 0
+            const labelsOf = (partId: string) => optionRows.filter((option) => option.partId === partId).map((option) => option.label)
             const mine = sourceRows.filter((source) => source.questionId === row.id)
             // The Question's own Source first, as enrichment reads them.
             const explained = [...mine.filter((source) => !source.merged), ...mine.filter((source) => source.merged)]
               .find((source) => source.explanation !== null)
-            const choices = optionRows.filter((option) => option.partId === part?.id)
             return [row.id, new QuestionView({
               id: QuestionId.make(row.id),
               section: row.section,
               questionType: row.questionType,
               stimulus: row.stimulusId === null ? null : shown.get(row.stimulusId) ?? null,
               stem: row.stem,
-              options: choices.map((option) => ({ label: option.label, text: option.text })),
-              key: part?.key ?? null,
-              keyBasis: (part?.keyBasis ?? null) as "book" | "computed" | "override" | null,
+              parts: own.map((part) =>
+                new ReviewPart({
+                  position: part.position,
+                  kind: part.kind as PartKind,
+                  prompt: part.prompt,
+                  options: optionRows.filter((option) => option.partId === part.id)
+                    .map((option) => ({ label: option.label, text: option.text })),
+                  key: part.key,
+                  keyBasis: part.keyBasis as ReviewPart["keyBasis"]
+                })
+              ),
+              key: joinedKey(own.map((part) => part.key)),
+              keyBasis: own.some((part) => part.keyBasis === "override")
+                ? "override"
+                : (own[0]?.keyBasis ?? null) as ReviewPart["keyBasis"],
               status: row.status as QuestionStatus,
               bookLabel: row.bookLabel,
               explanation: explained?.explanation ?? null,
@@ -202,16 +221,18 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
                   answer: approach.answer
                 })
               ),
-              optionNotes: noteRows.filter((note) => note.partId === part?.id).map((note) =>
+              optionNotes: noteRows.filter((note) => own.some((part) => part.id === note.partId)).map((note) =>
                 new OptionNoteView({
-                  label: choices[note.position]?.label ?? "?",
+                  part: positionOf(note.partId),
+                  label: labelsOf(note.partId)[note.position] ?? "?",
                   trapNote: note.trapNote,
                   mistakeType: note.mistakeType,
                   trapPattern: note.trapPattern
                 })
               ),
-              keyOverrides: overrideRows.filter((override) => override.partId === part?.id).map((override) =>
+              keyOverrides: overrideRows.filter((override) => own.some((part) => part.id === override.partId)).map((override) =>
                 new KeyOverrideView({
+                  part: positionOf(override.partId),
                   previousKey: override.previousKey,
                   newKey: override.newKey,
                   reason: override.reason,
@@ -432,10 +453,9 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
       // Bookmarks; the related one is checked again if its Sources now
       // disagree. A Key Override goes with the Sources it settled; a
       // golden-set approval, which is of the Question's own item, goes.
-      const keyOf = (questionId: string) =>
-        db.select({ id: parts.id, key: parts.key, keyBasis: parts.keyBasis }).from(parts)
-          .where(and(eq(parts.questionId, questionId), eq(parts.position, 0)))
-          .pipe(Effect.orDie, Effect.map((rows) => rows[0]))
+      const partsOf = (questionId: string) =>
+        db.select({ id: parts.id, position: parts.position, key: parts.key, keyBasis: parts.keyBasis }).from(parts)
+          .where(eq(parts.questionId, questionId)).orderBy(asc(parts.position)).pipe(Effect.orDie)
 
       const merge = (id: ReviewItemId) =>
         Effect.gen(function*() {
@@ -449,17 +469,24 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
               return yield* new ReviewItemNotOpen({ item: yield* viewOf(row) })
             }
             if (targetStatus === "draft") return yield* new MergeTargetChecking()
-            const mine = yield* keyOf(row.questionId!)
-            const theirs = yield* keyOf(target)
-            if (mine?.keyBasis === "override" && mine.key !== null && mine.key !== theirs?.key) {
-              return yield* new KeysDiffer({ key: mine.key, relatedKey: theirs?.key ?? null })
+            const mine = yield* partsOf(row.questionId!)
+            const theirs = yield* partsOf(target)
+            const overridden = mine.filter((part) => part.keyBasis === "override" && part.key !== null)
+            const differs = overridden.find((part) => part.key !== theirs[part.position]?.key)
+            if (differs !== undefined) {
+              return yield* new KeysDiffer({
+                key: joinedKey(mine.map((part) => part.key)) ?? differs.key!,
+                relatedKey: joinedKey(theirs.map((part) => part.key))
+              })
             }
-            // The Curator's key, the same as the related Question's, now
-            // settles the Sources it joins.
-            if (mine?.keyBasis === "override" && theirs !== undefined) {
-              yield* db.update(keyOverrides).set({ partId: theirs.id }).where(eq(keyOverrides.partId, mine.id))
+            // The Curator's key for a Part, the same as the related
+            // Question's, now settles the Sources it joins.
+            for (const part of overridden) {
+              const other = theirs[part.position]
+              if (other === undefined) continue
+              yield* db.update(keyOverrides).set({ partId: other.id }).where(eq(keyOverrides.partId, part.id))
                 .pipe(Effect.orDie)
-              yield* db.update(parts).set({ keyBasis: "override" }).where(eq(parts.id, theirs.id)).pipe(Effect.orDie)
+              yield* db.update(parts).set({ keyBasis: "override" }).where(eq(parts.id, other.id)).pipe(Effect.orDie)
             }
             yield* db.update(sources).set({ questionId: target, merged: true })
               .where(eq(sources.questionId, row.questionId!)).pipe(Effect.orDie)
@@ -502,13 +529,13 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
       // Approaches and wrong-option notes, and its tags, Difficulty estimate
       // and solver runs are kept. Either way it goes back through the
       // Publish Gate, in a job.
-      const overrideKey = (id: ReviewItemId, key: string, reason: string) =>
+      const overrideKey = (id: ReviewItemId, position: number, key: string, reason: string) =>
         Effect.gen(function*() {
           const row = yield* inTransaction(Effect.gen(function*() {
             const row = yield* openItem(id, isQuestion)
             const questionId = row.questionId!
             const [part] = yield* db.select().from(parts)
-              .where(and(eq(parts.questionId, questionId), eq(parts.position, 0))).pipe(Effect.orDie)
+              .where(and(eq(parts.questionId, questionId), eq(parts.position, position))).pipe(Effect.orDie)
             const choices = part === undefined
               ? []
               : (yield* db.select({ label: options.label }).from(options).where(eq(options.partId, part.id))
@@ -525,7 +552,12 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
             }).pipe(Effect.orDie)
             yield* db.update(parts).set({ key, keyBasis: "override" }).where(eq(parts.id, part.id)).pipe(Effect.orDie)
             const [question] = yield* db.select().from(questions).where(eq(questions.id, questionId)).pipe(Effect.orDie)
-            const kept = readLinkReasons(question?.linkReasons ?? "[]").filter((each) => !KeyCodes.has(each.code))
+            // The override settles questions about this Part's key: another
+            // Book's key for another Part still holds the Question.
+            const kept = [
+              ...readLinkReasons(question?.linkReasons ?? "[]").filter((each) => !KeyCodes.has(each.code)),
+              ...yield* sourceKeyReasons(questionId).pipe(Effect.provideService(Db, db), Effect.orDie)
+            ]
             yield* db.update(questions).set({
               linkReasons: JSON.stringify(kept),
               status: "draft",

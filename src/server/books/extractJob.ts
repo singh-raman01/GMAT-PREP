@@ -21,9 +21,15 @@ import {
   recordSkip,
   retireStale
 } from "./bankWrites.ts"
+import { renderChart } from "../charts/charts.ts"
+import type { FigureSource } from "../stimuli/stimuli.ts"
+import { BookFiles } from "./BookFiles.ts"
 import { enrichQuestion } from "./enrichment.ts"
-import { linkSet } from "./linking.ts"
-import { type PageReading, readPage, readsGroup, storedReading } from "./readings.ts"
+import { FigureFiles } from "./FigureFiles.ts"
+import { drawBand } from "./figures.ts"
+import { type Candidate, contents, datasetOfDraft, linkSet, type Reason } from "./linking.ts"
+import { questionBand } from "./pdf.ts"
+import { type PageReading, readingUsable, readPage, readsGroup, storedReading } from "./readings.ts"
 
 // Extraction for one Book Map version: every page of the ranges it can read
 // is read once in its role, one page a step, then each question set is
@@ -123,9 +129,17 @@ const readStep = (jobId: string, params: typeof Params.Type, stepsDone: number) 
     for (const [page, detail] of loaded.unread) {
       if (!held.has(page)) yield* holdUnreadPage(params.bookId, page, detail)
     }
-    const done = yield* db.select({ page: pageReadings.page, role: pageReadings.role, group: pageReadings.group })
-      .from(pageReadings).where(eq(pageReadings.bookId, params.bookId)).pipe(Effect.orDie)
-    const read = new Set(done.map((row) => `${row.page}|${row.role}|${row.group}`))
+    const done = yield* db.select({
+      page: pageReadings.page,
+      role: pageReadings.role,
+      group: pageReadings.group,
+      items: pageReadings.items,
+      promptVersion: pageReadings.promptVersion
+    }).from(pageReadings).where(eq(pageReadings.bookId, params.bookId)).pipe(Effect.orDie)
+    const taxonomy = (yield* Taxonomy).view
+    const read = new Set(
+      done.filter((row) => readingUsable(row, taxonomy)).map((row) => `${row.page}|${row.role}|${row.group}`)
+    )
     const left = loaded.plan.filter((entry) => !read.has(`${entry.page}|${entry.role}|${entry.group}`))
     const stepsTotal = stepsDone + left.length + loaded.sets.length + 1
     const next = left[0]
@@ -156,6 +170,33 @@ const readingsOf = (bookId: string, set: { readonly ranges: ReadonlyArray<MapRan
       }
     }
     return found.toSorted((a, b) => a.page - b.page)
+  })
+
+// Before an item is linked: each chart it draws must draw, and a figure its
+// text does not hold is kept as the band of its page it sits in (ADR 0006).
+// A page that cannot be drawn leaves the figure without an image; the
+// Question is held for its figure either way.
+const prepare = (bookId: string, candidate: Candidate, pdf: Effect.Effect<Uint8Array>) =>
+  Effect.gen(function*() {
+    const checks: Array<Reason> = []
+    for (const content of contents(candidate.stimulus)) {
+      if (content.kind !== "chart") continue
+      const failed = yield* renderChart(content.spec, datasetOfDraft(content.table)).pipe(
+        Effect.as(undefined),
+        Effect.catchTag("ChartRenderFailed", (error) => Effect.succeed(error.detail))
+      )
+      if (failed !== undefined) checks.push({ code: "render", detail: `The chart does not draw: ${failed}` })
+    }
+    if (candidate.stimulus?.kind !== "figure") return { checks }
+    const bytes = yield* pdf
+    const band = yield* questionBand(bytes, candidate.page, candidate.number).pipe(
+      Effect.orElseSucceed(() => ({ top: 0, bottom: 1 }))
+    )
+    const drawn = yield* Effect.result(drawBand(bytes, candidate.page, band))
+    if (drawn._tag === "Failure") return { checks }
+    const file = yield* (yield* FigureFiles).keep(drawn.success)
+    const figure: FigureSource = { bookId, page: candidate.page, top: band.top, bottom: band.bottom, file }
+    return { checks, figure }
   })
 
 const linkStep = (params: typeof Params.Type, setsLinked: number, stepsDone: number) =>
@@ -225,6 +266,9 @@ const linkStep = (params: typeof Params.Type, setsLinked: number, stepsDone: num
         return loaded
       })
     const passages = yield* loadPassages
+    // The Book's file, read once and only when a figure needs drawing.
+    const files = yield* BookFiles
+    const pdf = yield* Effect.cached(files.read(loaded.book.fileHash))
     const counts: Record<Linked, number> = { created: 0, merged: 0, relinked: 0, unchanged: 0, skipped: 0 }
     for (const item of linked) {
       const reader = readers.get(item.page)
@@ -232,6 +276,7 @@ const linkStep = (params: typeof Params.Type, setsLinked: number, stepsDone: num
         counts[yield* recordSkip(params.bookId, set.name, params.mapVersion, item)] += 1
         continue
       }
+      const prepared = yield* prepare(params.bookId, item, pdf)
       const bank = yield* bankFor(item.section)
       // Questions of other Books the item sent back to the Publish Gate,
       // such as those a repaired passage settles, get a job of their own,
@@ -243,7 +288,9 @@ const linkStep = (params: typeof Params.Type, setsLinked: number, stepsDone: num
             set: set.name,
             mapVersion: params.mapVersion,
             candidate: item,
-            origin: { model: reader?.model ?? "", promptVersion: reader?.promptVersion ?? "" }
+            origin: { model: reader?.model ?? "", promptVersion: reader?.promptVersion ?? "" },
+            checks: prepared.checks,
+            ...(prepared.figure === undefined ? {} : { figure: prepared.figure })
           }, bank, passages)
           if (outcome.sentBack.length === 0) return outcome
           const inBook = yield* db.selectDistinct({ id: sources.questionId }).from(sources)

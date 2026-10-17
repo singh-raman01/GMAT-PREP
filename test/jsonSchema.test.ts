@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Schema } from "effect"
-import { approachesOutput, SolveOutput, tagOutput } from "../src/server/books/enrichment.ts"
+import {
+  approachesOutput,
+  approachesPartsOutput,
+  type QuestionText,
+  SolveOutput,
+  solvePartsOutput,
+  tagOutput
+} from "../src/server/books/enrichment.ts"
 import { readingOutputs } from "../src/server/books/readings.ts"
 import { surveyReply } from "../src/server/books/survey.ts"
 import { ConnectionTestReply } from "../src/server/jobs/kinds/connectionTest.ts"
@@ -10,6 +17,21 @@ import { parseTaxonomy } from "../src/server/taxonomy/Taxonomy.ts"
 // Strict structured outputs refuse a schema with an optional property, a
 // non-object root or keywords they do not know, so every output schema is
 // sent in the form they accept.
+
+// A Table Analysis Question with two statements, for the schemas of
+// Questions with several Parts.
+const statements: QuestionText = {
+  questionType: "di.ta",
+  stimulus: { label: "The table", text: "Region | Sales\nNorth | 1,200" },
+  stem: "For each statement, choose Yes if it is true.",
+  parts: ["North sold the most.", "Every region grew."].map((prompt) => ({
+    kind: "two-choice" as const,
+    prompt,
+    options: [{ label: "A", text: "Yes" }, { label: "B", text: "No" }]
+  })),
+  key: "A,B",
+  explanation: null
+}
 
 describe("Strict JSON Schema", () => {
   test("every property is required, and one that may be missing accepts null instead", () => {
@@ -88,11 +110,13 @@ describe("Strict JSON Schema", () => {
       ConnectionTestReply,
       surveyReply([3, 4, 5]),
       ...readingOutputs(taxonomy),
-      ...["quant.ps", "di.ds", "verbal.cr-assumption"].flatMap((questionType) => [
+      ...["quant.ps", "di.ds", "verbal.cr-assumption", "di.ta", "di.gi", "di.tpa", "di.msr"].flatMap((questionType) => [
         tagOutput(taxonomy, questionType),
         approachesOutput(taxonomy, questionType)
       ]),
-      SolveOutput
+      SolveOutput,
+      solvePartsOutput(statements),
+      approachesPartsOutput(taxonomy, statements)
     ]
     for (const output of outputs) {
       expect(() => strictJsonSchema(output as Schema.Codec<unknown, unknown>)).not.toThrow()

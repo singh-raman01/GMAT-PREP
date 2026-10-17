@@ -81,7 +81,9 @@ export type TpaItem = typeof TpaItem.Type
 export const MsrSource = Schema.Struct({
   // The tab's title, such as Email 1.
   title: Schema.String,
-  kind: Schema.Literals(["text", "table"]),
+  // A figure is a graph, chart or picture whose values the page's words do
+  // not give.
+  kind: Schema.Literals(["text", "table", "figure"]),
   text: Schema.String,
   table: Schema.NullOr(TableReading),
   // The numbers of the questions about the set it belongs to.
@@ -188,14 +190,14 @@ ${writing}
 Do not answer the questions, and do not add, fix or reword anything.`
   },
   msr: {
-    promptVersion: "read-msr-page@1",
+    promptVersion: "read-msr-page@2",
     output: MsrReading,
     system: `You transcribe GMAT Multi-Source Reasoning sets from a page of a prep book, exactly as printed, so they can be shown on screen. A set is two or three sources, shown as tabs, with questions about them.
 
 ${continuing}
 
 Give:
-- sources: each source that starts on the page, with its title as the book prints it on the tab, such as "Email 1"; kind, "text" or "table"; text, the source's words (for a table, any words printed with it); table, the table as data for a table source, else null (${tables}); and questions, the numbers of the questions about its set.
+- sources: each source that starts on the page, with its title as the book prints it on the tab, such as "Email 1"; kind, "text", "table", or "figure" for a graph, chart or picture whose values the page's words do not give; text, the source's words (for a table or a figure, any words printed with it); table, the table as data for a table source, else null (${tables}); and questions, the numbers of the questions about its set.
 - questions: each question that starts on the page, with its number; stem, the question without its number or choices; and either options, its five choices with their letters A to E, for a question with one answer, or statements, each statement to judge, with pair, the two answers each takes, such as "Yes" and "No". Leave the other empty. difficulty: "easy", "medium" or "hard" when printed, otherwise null.
 
 ${writing}
@@ -203,7 +205,7 @@ ${writing}
 Do not answer the questions, and do not add, fix or reword anything.`
   },
   ir: {
-    promptVersion: "read-ir-page@1",
+    promptVersion: "read-ir-page@2",
     output: IrReading,
     system: `You transcribe Integrated Reasoning questions from a page of an older GMAT prep book, exactly as printed, so they can be shown on screen. Each question is one of four kinds; read it as its kind:
 - ta, Table Analysis: a table and statements, each answered with one of a pair such as Yes and No.
@@ -216,7 +218,7 @@ ${continuing}
 For ta questions give number, intro, table (${tables}), pair, statements and difficulty.
 For gi questions give number, intro, chart and figure (${charts}), statements with {{blank}} and their options, and difficulty.
 For tpa questions give number, stem, columns, options and difficulty.
-For msr give sources (title, kind "text" or "table", text, table or null, and the numbers of the questions about its set) and questions (number, stem, and either options A to E or statements with their pair, and difficulty).
+For msr give sources (title, kind "text", "table" or "figure" for a graph or picture whose values the words do not give, text, table or null, and the numbers of the questions about its set) and questions (number, stem, and either options A to E or statements with their pair, and difficulty).
 Give difficulty as "easy", "medium" or "hard" when printed, otherwise null. Leave a kind the page does not hold empty.
 
 ${writing}
