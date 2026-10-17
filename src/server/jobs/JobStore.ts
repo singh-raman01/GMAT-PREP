@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, sql } from "drizzle-orm"
+import { and, desc, eq, gt, gte, sql } from "drizzle-orm"
 import { Cause, Clock, Context, Effect, Layer, Option, Schema } from "effect"
 import {
   JobId,
@@ -132,6 +132,8 @@ export class JobStore extends Context.Service<JobStore, {
   // The server's side.
   create<P, C>(kind: JobKind<P, C>, params: P, spendCap: number): Effect.Effect<JobView>
   readonly list: Effect.Effect<ReadonlyArray<JobView>>
+  // Every job changed since a moment, however many, the latest first.
+  changedSince(millis: number): Effect.Effect<ReadonlyArray<JobView>>
   pause(id: JobId): Effect.Effect<JobView, JobNotFound | JobNotChangeable>
   resume(id: JobId, spendCap: number | undefined): Effect.Effect<JobView, JobNotFound | JobNotChangeable | SpendCapTooLow>
   cancel(id: JobId): Effect.Effect<JobView, JobNotFound | JobNotChangeable>
@@ -164,6 +166,12 @@ export class JobStore extends Context.Service<JobStore, {
         Effect.map((rows) => rows.map(view)),
         Effect.orDie
       )
+
+      const changedSince = (millis: number) =>
+        db.select().from(jobs).where(gte(jobs.updatedAt, millis)).orderBy(desc(jobs.createdAt)).pipe(
+          Effect.map((rows) => rows.map(view)),
+          Effect.orDie
+        )
 
       // Applies a change decided from the row as read. The update holds only
       // if nothing changed since the read, such as the worker claiming the
@@ -403,6 +411,7 @@ export class JobStore extends Context.Service<JobStore, {
         heartbeatStopped,
         create,
         list,
+        changedSince,
         pause,
         resume,
         cancel,

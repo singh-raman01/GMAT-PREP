@@ -2760,8 +2760,9 @@ input[type="date"] {
   width: 100%;
 }
 
-/* A date field needs more room than a column gives it, once two fit. */
-@media (min-width: 23rem) {
+/* A date field needs more room than a column gives it, once two fit: two
+   9.5rem columns, their 1.25rem gap and the page's 1rem gutters. */
+@media (min-width: 22.25rem) {
   .filter-grid .field-date {
     grid-column: span 2;
   }

@@ -118,6 +118,12 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
   const cursor = useRef<string | undefined>(undefined)
   // Counted up as each page lands, so counts asked for before it are dropped.
   const pages = useRef(0)
+  // Counted up at each label change, so a page asked for before one has its
+  // counts asked for again.
+  const edits = useRef(0)
+  // The request whose first page is on screen: Show more waits for it, as
+  // the cursor belongs to it.
+  const landed = useRef(0)
   const [open, setOpen] = useState<string>()
   const [more, setMore] = useState(false)
   // The filters start open on a wide screen, folded on a narrow one.
@@ -138,16 +144,33 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
       const last = result.success.entries.at(-1)
       cursor.current = last === undefined ? undefined : cursorOf(last)
       pages.current++
+      landed.current = mine
       setLog(result.success)
       setEntries(result.success.entries)
     })
   }, [filters, handle])
 
+  // The counts, from the pages' cursor, without moving the list. A page that
+  // lands first may carry counts from before a label change, so they are
+  // asked for again from its cursor.
+  const recount = useCallback(() => {
+    const mine = request.current
+    const page = pages.current
+    const after = cursor.current
+    const query = { ...filters, ...(after === undefined ? {} : { after }), limit: 0 }
+    void call((client) => client.errorLog.list({ query })).then((result) => {
+      if (mine !== request.current || result._tag === "Failure") return
+      if (page !== pages.current) return recount()
+      setLog((current) => (current === undefined ? current : { ...current, ...result.success, entries: current.entries }))
+    })
+  }, [filters])
+
   const showMore = async () => {
-    if (more) return
+    if (more || landed.current !== request.current) return
     setMore(true)
     const mine = request.current
     const after = cursor.current
+    const edited = edits.current
     const result = await call((client) => client.errorLog.list({ query: { ...filters, ...(after === undefined ? {} : { after }) } }))
     setMore(false)
     if (mine !== request.current) return
@@ -157,6 +180,8 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
     pages.current++
     setLog(result.success)
     setEntries((current) => [...current, ...result.success.entries])
+    // A label changed while the page was on its way: its counts may be older.
+    if (edited !== edits.current) recount()
   }
 
   // A label changed in an open entry: the entry shows it at once, and the
@@ -164,15 +189,9 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
   // matches the filters.
   const changed = useCallback((entry: ErrorLogEntry) => {
     setEntries((current) => current.map((each) => (each.questionId === entry.questionId ? entry : each)))
-    const mine = request.current
-    const page = pages.current
-    const after = cursor.current
-    const query = { ...filters, ...(after === undefined ? {} : { after }), limit: 0 }
-    void call((client) => client.errorLog.list({ query })).then((result) => {
-      if (mine !== request.current || page !== pages.current || result._tag === "Failure") return
-      setLog((current) => (current === undefined ? current : { ...current, ...result.success, entries: current.entries }))
-    })
-  }, [filters])
+    edits.current++
+    recount()
+  }, [recount])
 
   const set = (key: keyof Filters, value: string) =>
     setFilters((current) => {
