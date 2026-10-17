@@ -101,9 +101,9 @@ A Question you missed comes back on a Retry Ladder: 2 Study Days later the Quest
 
 ## Progress
 
-Progress shows how your practice is going, from your timed answers to Questions you had not seen, in five views:
+Progress shows how your practice is going, in five views:
 
-- Weak Areas: the Skills and Question Types that cost you the most points, ranked by how far each sits below your level in its Section times how often the exam asks it. Each says how slow your right answers are and what went wrong, and has a button that starts 10 Questions on it, timed when pace is the problem.
+- Weak Areas: from your timed first answers to Questions you had not seen, the Skills and Question Types that cost you the most points, ranked by how far each sits below your level in its Section times how often the exam asks it. Each says how slow your right answers are and what went wrong, and has a button that starts 10 Questions on it, timed when pace is the problem.
 - Skill map: every Skill and Question Type against your level, your Weak Areas marked, and those without 8 timed answers yet said so.
 - Timing: your pace against the Target Time by Question Type and by Strategy, how you do on a Section's last 5 Questions, and each Mock's pacing against an even pace.
 - Mistakes: each Mistake Type and Trap Pattern per 100 Questions, week by week.
