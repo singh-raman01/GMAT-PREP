@@ -16,7 +16,7 @@ import {
   NoLesson,
   NothingToWrite
 } from "../../api/Lessons.ts"
-import { NoQuestionsMatch, type PracticeView, SessionId } from "../../api/Practice.ts"
+import { Named, NoQuestionsMatch, type PracticeView, SessionId } from "../../api/Practice.ts"
 import { Db } from "../db/Database.ts"
 import { lessons, lessonViews, responses, sessions } from "../db/schema.ts"
 import { JobStore } from "../jobs/JobStore.ts"
@@ -98,8 +98,8 @@ export class Lessons extends Context.Service<Lessons, {
           id: subject.id,
           name: subject.name,
           description: subject.description,
-          section: names.named(subject.section.id),
-          topic: subject.topic === null ? null : names.named(subject.topic.id)
+          section: new Named({ id: subject.section.id, name: subject.section.name }),
+          topic: subject.topic === null ? null : new Named({ id: subject.topic.id, name: subject.topic.name })
         })
 
       // A subject the Taxonomy no longer has is shown by its id.

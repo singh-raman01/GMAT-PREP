@@ -5,6 +5,7 @@ import type { Debrief, MissedPartView, MistakesView, PracticePart, ResponseView,
 import { call } from "../api.ts"
 import { spokenDuration } from "../format.ts"
 import { useLessonOn } from "../lessons/available.ts"
+import { lessonPath } from "../lessons/paths.ts"
 import { RichText } from "../RichText.tsx"
 import { linkProps } from "../router.ts"
 import { reportUnsaved } from "../unsaved.ts"
@@ -155,7 +156,7 @@ const LessonLink = ({ skill }: { readonly skill: Debrief["skill"] }) => {
   if (lesson === undefined) return null
   return (
     <p className="debrief-lesson">
-      <a className="button button-quiet" {...linkProps(`/lessons/${lesson.subject.id}`)}>
+      <a className="button button-quiet" {...linkProps(lessonPath(lesson.subject.id))}>
         Read the Lesson on {lesson.subject.name}
       </a>
     </p>

@@ -9,6 +9,7 @@ import { useReading } from "../progress/reading.ts"
 import { RichInline, RichText } from "../RichText.tsx"
 import { linkProps, navigate } from "../router.ts"
 import { StimulusDetails } from "../stimulus/StimulusPane.tsx"
+import { lessonPath } from "./paths.ts"
 
 // Lessons (docs/design.md, decisions 93 to 102): the approved ones by
 // Section, and one Lesson to read, whole or its methods alone, with its
@@ -65,7 +66,7 @@ export const LessonsIndex = ({ onSessionLost, onStopped }: Props) => {
                 <ul className="set-list">
                   {group.items.map((item) => (
                     <li key={item.id}>
-                      <a className="set-name" {...linkProps(`/lessons/${item.subject.id}`)}>{item.subject.name}</a>
+                      <a className="set-name" {...linkProps(lessonPath(item.subject.id))}>{item.subject.name}</a>
                       <span className="set-facts">{minutesText(item.minutes)} to read, then a 5-Question check.</span>
                     </li>
                   ))}
@@ -135,7 +136,7 @@ export const LessonContent = ({ lesson, part }: { readonly lesson: LessonView; r
         <>
           <Methods lesson={lesson} />
           <p className="hint measure">
-            <a {...linkProps(`/lessons/${lesson.subject.id}`)}>Read the whole Lesson</a>, with its rules, traps and worked examples.
+            <a {...linkProps(lessonPath(lesson.subject.id))}>Read the whole Lesson</a>, with its rules, traps and worked examples.
           </p>
         </>
       )

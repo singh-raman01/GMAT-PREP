@@ -14,6 +14,7 @@ import { SectionalsHome } from "./sectionals/SectionalsHome.tsx"
 import { ProfilePicker } from "./ProfilePicker.tsx"
 import { PlanPage } from "./plan/PlanPage.tsx"
 import { LessonPage, LessonsIndex } from "./lessons/LessonPage.tsx"
+import { lessonOfPath } from "./lessons/paths.ts"
 import { ProgressPage } from "./progress/ProgressPage.tsx"
 import { linkProps, usePath } from "./router.ts"
 import { TaxonomyBrowser } from "./TaxonomyBrowser.tsx"
@@ -161,7 +162,7 @@ const LearnerArea = ({ path, onSessionLost, onStopped }: {
   if (mockId !== undefined) {
     return <MockScreen key={mockId} id={mockId} onSessionLost={onSessionLost} onStopped={onStopped} />
   }
-  const lesson = /^\/lessons\/([^/]+)(\/methods)?$/.exec(path)
+  const lesson = lessonOfPath(path)
   const page = path === "/taxonomy"
     ? "taxonomy"
     : path === "/sectionals"
@@ -212,13 +213,13 @@ const LearnerArea = ({ path, onSessionLost, onStopped }: {
         : page === "plan"
         ? <PlanPage path={path} onSessionLost={onSessionLost} onStopped={onStopped} />
         : page === "lessons"
-        ? lesson === null
+        ? lesson === undefined
           ? <LessonsIndex onSessionLost={onSessionLost} onStopped={onStopped} />
           : (
             <LessonPage
               key={path}
-              subject={decodeURIComponent(lesson[1]!)}
-              part={lesson[2] === undefined ? "whole" : "methods"}
+              subject={lesson.subjectId}
+              part={lesson.part}
               onSessionLost={onSessionLost}
               onStopped={onStopped}
             />
