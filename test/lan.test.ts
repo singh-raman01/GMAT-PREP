@@ -1,13 +1,18 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Ref } from "effect"
+import { Effect, identity, Ref } from "effect"
 import { Cookies, HttpClient, HttpClientRequest } from "effect/http"
 import { HttpApiClient } from "effect/http-api"
 import { TestClock } from "effect/testing"
+import { writeFileSync } from "node:fs"
+import { join } from "node:path"
 import { Api } from "../src/api/Api.ts"
+import { InstallExportPath } from "../src/api/Exports.ts"
 import { RefusedHeader } from "../src/api/Lan.ts"
 import { Db } from "../src/server/db/Database.ts"
-import { devices, lanMode } from "../src/server/db/schema.ts"
+import { curatorUnlocks, devices, lanMode, profileUnlocks } from "../src/server/db/schema.ts"
 import { Snapshots } from "../src/server/snapshots/Snapshots.ts"
+import { readTar } from "../src/server/snapshots/tar.ts"
+import { curatorBrowser, passphrase } from "./bookFlow.ts"
 import { openBrowser, runWithWorkers, tempDataDir, TestNetwork, TestRemoteHeader, type WorkerTestServices } from "./harness.ts"
 
 // LAN mode (decisions 119 to 125): off by default; in LAN mode another
@@ -41,7 +46,9 @@ const device = (remote: string) =>
         const response = yield* client.execute(request.pipe(HttpClientRequest.setHeader(TestRemoteHeader, remote)))
         return { status: response.status, refused: response.headers[RefusedHeader] }
       })
-    return { api, raw }
+    // Its Cookie header, for a request written by hand.
+    const cookie = Ref.get(jar).pipe(Effect.map((cookies) => Cookies.toCookieHeader(cookies)))
+    return { api, raw, cookie }
   })
 
 const curator = Effect.gen(function*() {
@@ -229,4 +236,65 @@ describe("LAN mode", () => {
       expect((yield* tablet.raw(HttpClientRequest.get("/api/profiles"))).status).toBe(200)
       expect((yield* phone.raw(HttpClientRequest.get("/api/profiles"))).status).toBe(403)
     })))
+})
+
+describe("Moving the install", () => {
+  test("leaves LAN mode, the paired devices and every unlock out of the archive, so the computer it moves to starts closed", async () => {
+    const moved = tempDataDir()
+    const old = await run(Effect.gen(function*() {
+      yield* network
+      const host = yield* curatorBrowser
+      yield* host.api.curatorLan.setMode({ payload: { on: true } })
+      const tablet = yield* device(Tablet)
+      yield* tablet.api.pairing.pair({ payload: { code: (yield* host.api.curatorLan.makeCode()).code, name: "Tablet" } })
+      yield* tablet.api.curatorAccess.unlock({ payload: { passphrase } })
+      const priya = yield* (yield* openBrowser).profiles.create({ payload: { name: "Priya", pin: "2468", timeZone: "UTC" } })
+      yield* tablet.api.profiles.unlock({ params: { id: priya.id }, payload: { pin: "2468" } })
+      yield* host.api.curatorData.exportInstall()
+      const response = yield* (yield* HttpClient.HttpClient).execute(
+        HttpClientRequest.get(InstallExportPath).pipe(HttpClientRequest.setHeader("cookie", host.cookie))
+      )
+      const database = readTar(new Uint8Array(yield* response.arrayBuffer))[0]!
+      expect(database.name).toBe("gmat-prep.sqlite")
+      // Not a row of them, and not one of the token hashes this install
+      // trusts, is in the archive's database.
+      const db = yield* Db
+      const trusted = [
+        ...(yield* db.select().from(devices)).map((row) => row.tokenHash),
+        ...(yield* db.select().from(curatorUnlocks)).map((row) => row.tokenHash),
+        ...(yield* db.select().from(profileUnlocks)).map((row) => row.tokenHash)
+      ]
+      expect(trusted.length).toBeGreaterThanOrEqual(4)
+      const bytes = Buffer.from(database.content)
+      expect(trusted.filter((hash) => bytes.includes(hash))).toEqual([])
+      yield* Effect.sync(() => writeFileSync(join(moved, "gmat-prep.sqlite"), database.content))
+      // This computer stays as it was.
+      expect(yield* host.api.curatorLan.view()).toMatchObject({ on: true, devices: [{ name: "Tablet", revokedAt: null }] })
+      expect((yield* tablet.raw(HttpClientRequest.get("/api/profiles"))).status).toBe(200)
+      return { tablet: yield* tablet.cookie, host: host.cookie }
+    }))
+    await runWithWorkers(Effect.gen(function*() {
+      yield* network
+      const client = yield* HttpClient.HttpClient
+      const send = (path: string, cookie: string, remote?: string) =>
+        client.execute(
+          HttpClientRequest.get(path).pipe(
+            HttpClientRequest.setHeader("cookie", cookie),
+            remote === undefined ? identity : HttpClientRequest.setHeader(TestRemoteHeader, remote)
+          )
+        ).pipe(Effect.map((response) => ({ status: response.status, refused: response.headers[RefusedHeader] })))
+      // The Curator's unlock from the other computer opens nothing here.
+      expect(yield* send("/api/curator/snapshots", old.host)).toEqual({ status: 401, refused: undefined })
+      // The passphrase and the Profiles move; LAN mode and the devices do not.
+      const host = yield* openBrowser
+      yield* host.curatorAccess.unlock({ payload: { passphrase } })
+      expect(yield* host.curatorLan.view()).toMatchObject({ on: false, devices: [] })
+      expect((yield* host.profiles.list()).map((profile) => profile.name)).toEqual(["Priya"])
+      // The tablet's old cookie lets it in neither while LAN mode is off nor
+      // once it is on.
+      expect(yield* send("/api/profiles", old.tablet, Tablet)).toEqual({ status: 403, refused: "lan-off" })
+      yield* host.curatorLan.setMode({ payload: { on: true } })
+      expect(yield* send("/api/profiles", old.tablet, Tablet)).toEqual({ status: 403, refused: "not-paired" })
+    }), undefined, moved)
+  })
 })

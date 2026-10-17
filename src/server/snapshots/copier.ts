@@ -1,6 +1,6 @@
 import { Context, Effect, Layer, Schema } from "effect"
 import { bundledMigrations } from "../db/migrations/index.gen.ts"
-import { checkDatabase, copyDatabase, type CopiedFile, hashFile, migrateDatabase, type MigrateOutcome } from "./files.ts"
+import { checkDatabase, copyDatabase, type CopiedFile, forgetAccess, hashFile, migrateDatabase, type MigrateOutcome } from "./files.ts"
 
 // Work on database files away from the server's requests (decision 111): a
 // snapshot of a large database takes seconds, which the server must not
@@ -19,6 +19,9 @@ export class SnapshotCopier extends Context.Service<SnapshotCopier, {
   // Brings a database file to this build's schema.
   migrate(file: string, now: number): Effect.Effect<MigrateOutcome, SnapshotWorkFailed>
   hash(file: string): Effect.Effect<string, SnapshotWorkFailed>
+  // Leaves out of a copy who may reach this computer, for the install's
+  // archive, and gives the file's size.
+  forgetAccess(file: string): Effect.Effect<number, SnapshotWorkFailed>
 }>()("gmat-prep/server/SnapshotCopier") {}
 
 const failed = (cause: unknown) => new SnapshotWorkFailed({ detail: cause instanceof Error ? cause.message : String(cause) })
@@ -29,7 +32,8 @@ export const SnapshotCopierInProcess = Layer.succeed(
     copy: (from, to) => Effect.tryPromise({ try: () => copyDatabase(from, to), catch: failed }),
     check: (file, quick) => Effect.try({ try: () => checkDatabase(file, quick), catch: failed }),
     migrate: (file, now) => Effect.try({ try: () => migrateDatabase(file, bundledMigrations, now), catch: failed }),
-    hash: (file) => Effect.tryPromise({ try: () => hashFile(file), catch: failed })
+    hash: (file) => Effect.tryPromise({ try: () => hashFile(file), catch: failed }),
+    forgetAccess: (file) => Effect.try({ try: () => forgetAccess(file), catch: failed })
   })
 )
 
@@ -57,7 +61,8 @@ export const SnapshotCopierProcess = Layer.succeed(
     copy: (from, to) => runCommand<CopiedFile>(["snapshot-copy", from, to]),
     check: (file, quick) => runCommand<string>(["snapshot-check", file, quick ? "quick" : "full"]),
     migrate: (file, now) => runCommand<MigrateOutcome>(["snapshot-migrate", file, String(now)]),
-    hash: (file) => runCommand<string>(["snapshot-hash", file])
+    hash: (file) => runCommand<string>(["snapshot-hash", file]),
+    forgetAccess: (file) => runCommand<number>(["export-forget-access", file])
   })
 )
 
@@ -72,6 +77,8 @@ export const fileCommand = async (args: ReadonlyArray<string>) => {
       ? checkDatabase(first!, second === "quick")
       : command === "snapshot-migrate"
       ? migrateDatabase(first!, bundledMigrations, Number(second))
+      : command === "export-forget-access"
+      ? forgetAccess(first!)
       : await hashFile(first!)
     process.stdout.write(JSON.stringify(answer))
     process.exit(0)

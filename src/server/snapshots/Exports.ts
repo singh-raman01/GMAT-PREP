@@ -13,7 +13,7 @@ import { type TarEntry, writeTar } from "./tar.ts"
 
 // Exports (decisions 113 and 114): a Profile's rows as JSON for the
 // Learner, and the whole install as one archive for the Curator to move to
-// another computer.
+// another computer, without who may reach this one (decision 119).
 
 const ExportFolder = "exports"
 const ArchivePattern = /^gmat-prep-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z\.tar$/
@@ -139,9 +139,10 @@ export class Exports extends Context.Service<Exports, {
           })
         yield* Effect.sync(() => mkdirSync(folder, { recursive: true }))
         return yield* Effect.gen(function*() {
-          const copied = yield* copier.copy(databaseFile(dataDir), database).pipe(Effect.mapError((failure) => fail(failure.detail)))
+          yield* copier.copy(databaseFile(dataDir), database).pipe(Effect.mapError((failure) => fail(failure.detail)))
+          const size = yield* copier.forgetAccess(database).pipe(Effect.mapError((failure) => fail(failure.detail)))
           const entries: ReadonlyArray<TarEntry> = [
-            { name: "gmat-prep.sqlite", path: database, size: copied.size, modified: now },
+            { name: "gmat-prep.sqlite", path: database, size, modified: now },
             ...filesOf("books", /^[0-9a-f]{64}\.pdf$/),
             ...filesOf("figures", /^[0-9a-f]{64}\.png$/)
           ]

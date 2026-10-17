@@ -166,6 +166,7 @@ export const main = () => {
     case "snapshot-check":
     case "snapshot-migrate":
     case "snapshot-hash":
+    case "export-forget-access":
       return void fileCommand(process.argv.slice(process.argv.indexOf(command)))
     default:
       return BunRuntime.runMain(runServer)

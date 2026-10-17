@@ -19,7 +19,7 @@ The role that feeds Books in and decides what enters the Question Bank. It acts 
 _Avoid_: admin, owner
 
 **Paired device**:
-A phone or tablet let in to use GMAT prep over the local network in LAN mode, with a code shown on the computer it runs on. It can be revoked.
+A phone or tablet let in to use GMAT prep over the local network in LAN mode, with a code shown on the computer it runs on. It can be revoked, and it pairs again if the install moves to another computer.
 _Avoid_: client, remote
 
 **Question Bank**:

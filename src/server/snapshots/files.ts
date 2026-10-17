@@ -30,6 +30,27 @@ export const copyDatabase = async (from: string, to: string): Promise<CopiedFile
   return { size: statSync(to).size, sha256: await hashFile(to) }
 }
 
+// Who may reach the computer a database is on: LAN mode, the paired devices
+// and every unlock.
+const AccessTables: ReadonlyArray<string> = ["lan_mode", "devices", "curator_unlocks", "profile_unlocks"]
+
+// Leaves out of a copy of the database who may reach the computer it came
+// from, so the computer it moves to starts with LAN mode off, no device
+// paired and no one unlocked (decision 119). The rows are overwritten as they
+// go, so their token hashes leave the file too. Gives the file's size.
+export const forgetAccess = (file: string) => {
+  const db = new Database(file)
+  try {
+    db.run("PRAGMA secure_delete = ON")
+    db.transaction(() => {
+      for (const table of AccessTables) db.run(`DELETE FROM "${table}"`)
+    })()
+  } finally {
+    db.close()
+  }
+  return statSync(file).size
+}
+
 // SQLite's full check of a database: "ok", or the problems it found.
 export const checkDatabase = (file: string, quick = false) => {
   const db = new Database(file, { readonly: true })
