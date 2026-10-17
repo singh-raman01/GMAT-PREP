@@ -3,6 +3,7 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
 import { BookId } from "./Books.ts"
 import { CuratorSession } from "./Curator.ts"
 import { PartKind } from "./parts.ts"
+import { SnapshotFailed } from "./Snapshots.ts"
 import { StimulusView } from "./Stimulus.ts"
 
 // The Review Queue: Questions held for the Curator, each with every reason,
@@ -300,7 +301,7 @@ export class ReviewApi extends HttpApiGroup.make("review")
         key: OptionLabel,
         reason: KeyOverrideReason
       }),
-      error: [ReviewItemNotFound, ReviewItemNotOpen, KeyNotAnOption]
+      error: [ReviewItemNotFound, ReviewItemNotOpen, KeyNotAnOption, SnapshotFailed]
     })
   )
   .middleware(CuratorSession)

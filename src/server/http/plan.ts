@@ -4,8 +4,25 @@ import { HttpApiBuilder } from "effect/http-api"
 import { Api } from "../../api/Api.ts"
 import { CurrentProfile } from "../../api/Profiles.ts"
 import { Plans } from "../plans/Plans.ts"
+import { Profiles } from "../profiles/Profiles.ts"
+import { Exports } from "../snapshots/Exports.ts"
 import type { Caller } from "../practice/Practice.ts"
 import { DeviceHeader } from "./practice.ts"
+
+// The signed-in Profile's own data: its export, and deleting it.
+export const SessionDataHandlers = HttpApiBuilder.group(
+  Api,
+  "sessionData",
+  Effect.fn(function*(handlers) {
+    const exports = yield* Exports
+    const profiles = yield* Profiles
+    const profile = CurrentProfile.pipe(Effect.map((current) => current.id))
+    return handlers.handleAll({
+      export: () => profile.pipe(Effect.flatMap(exports.profile)),
+      remove: ({ payload }) => profile.pipe(Effect.flatMap((id) => profiles.removeOwn(id, payload.pin)))
+    })
+  })
+)
 
 // The signed-in Profile's Study Plan and Daily Log.
 export const PlanHandlers = HttpApiBuilder.group(

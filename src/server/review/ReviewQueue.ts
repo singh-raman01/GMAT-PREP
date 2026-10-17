@@ -57,6 +57,8 @@ import {
 import { SolverRuns } from "../books/enrichment.ts"
 import { JobStore } from "../jobs/JobStore.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
+import { SnapshotFailed } from "../../api/Snapshots.ts"
+import { Snapshots } from "../snapshots/Snapshots.ts"
 import { runGate } from "./gate.ts"
 import { QuestionRefresh, RefreshCap } from "./refreshJob.ts"
 import { assignUndecided, releaseUnfitting } from "./reserve.ts"
@@ -120,7 +122,7 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
     part: number,
     key: string,
     reason: string
-  ): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | KeyNotAnOption>
+  ): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | KeyNotAnOption | SnapshotFailed>
   checkAgain(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen>
   readonly drafts: Effect.Effect<DraftsView>
   readonly checkDrafts: Effect.Effect<DraftsView>
@@ -129,6 +131,7 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
     ReviewQueue,
     Effect.gen(function*() {
       const db = yield* Db
+      const snapshots = yield* Snapshots
       const store = yield* JobStore
       const taxonomy = (yield* Taxonomy).view
       const oneAtATime = (yield* Semaphore.make(1)).withPermits(1)
@@ -563,6 +566,9 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
       // Publish Gate, in a job.
       const overrideKey = (id: ReviewItemId, position: number, key: string, reason: string) =>
         Effect.gen(function*() {
+          // A new key judges every past Response to the Question again, so a
+          // snapshot comes first (decision 118).
+          yield* snapshots.take("pre-rescore")
           const row = yield* inTransaction(Effect.gen(function*() {
             const row = yield* openItem(id, isQuestion)
             const questionId = row.questionId!

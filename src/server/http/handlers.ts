@@ -13,6 +13,7 @@ import {
   GoldenHandlers,
   OverviewHandlers,
   ReviewHandlers,
+  CuratorDataHandlers,
   SiblingsHandlers,
   SnapshotsHandlers
 } from "./books.ts"
@@ -23,7 +24,7 @@ import { PaperMarksHandlers } from "./paperMarks.ts"
 import { PracticeHandlers } from "./practice.ts"
 import { RetriesHandlers } from "./retries.ts"
 import { AnalyticsHandlers } from "./analytics.ts"
-import { PlanHandlers } from "./plan.ts"
+import { PlanHandlers, SessionDataHandlers } from "./plan.ts"
 import { CuratorLessonsHandlers, LessonsHandlers } from "./lessons.ts"
 import { CuratorTutorHandlers, TutorHandlers } from "./tutor.ts"
 import { ScoresHandlers } from "./scores.ts"
@@ -153,6 +154,8 @@ export const ApiRoutes = HttpApiBuilder.layer(Api).pipe(
     SiblingsHandlers,
     OverviewHandlers,
     SnapshotsHandlers,
+    CuratorDataHandlers,
+    SessionDataHandlers,
     CuratorLessonsHandlers,
     CuratorTutorHandlers
   ]),
