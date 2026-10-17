@@ -3,7 +3,9 @@ import { Clock, Effect } from "effect"
 import { Db } from "../db/Database.ts"
 import { difficulty, profiles, scoreEstimates } from "../db/schema.ts"
 import { ratedCounts, ratedHistory, sectionFit, type StudyClock } from "./history.ts"
-import { nextDifficulty, scoreEstimate } from "./model.ts"
+import { nextDifficulty } from "./model.ts"
+import { scoreLinesOf } from "./OfficialScores.ts"
+import { type ScoreLine, sectionEstimateOn, UncalibratedLine } from "./scale.ts"
 
 // The Profile's clock for Study Days: now, in its time zone and rollover
 // hour. Undefined when the Profile is gone.
@@ -20,14 +22,16 @@ export const studyClockOf = (profileId: string) =>
 // A timed Session's Rated Responses, once it ends, each in turn: one moves
 // its Question's Difficulty by the Profile's Section Ability before it, from
 // the Sessions that ended earlier and the answers before it in this one, and
-// gives the Section a new Score Estimate. Timed Practice Sets, Sectionals
-// and Mock Sections all end this way.
+// gives the Section a new Score Estimate. Timed Practice Sets and Sectionals
+// are rated when they end; a Mock's Sections when the Mock ends, in the
+// order they were taken.
 export const rateSession = (session: { readonly id: string; readonly profileId: string }) =>
   Effect.gen(function*() {
     const db = yield* Db
     const clock = yield* studyClockOf(session.profileId)
     if (clock === undefined) return
     const history = yield* ratedHistory(session.profileId)
+    const lines: Readonly<Record<string, ScoreLine>> = yield* scoreLinesOf(session.profileId)
     const mine = history.filter((each) => each.sessionId === session.id).toSorted((a, b) => a.seq - b.seq)
     let counted = history.filter((each) => each.ended && each.sessionId !== session.id)
     for (const rated of mine) {
@@ -42,7 +46,7 @@ export const rateSession = (session: { readonly id: string; readonly profileId: 
         { ...rated, difficulty: value }
       ]
       const fit = sectionFit(counted, rated.section, clock)
-      const estimate = scoreEstimate(fit)
+      const estimate = sectionEstimateOn(lines[rated.section] ?? UncalibratedLine, fit)
       yield* db.insert(scoreEstimates).values({
         id: crypto.randomUUID(),
         profileId: session.profileId,

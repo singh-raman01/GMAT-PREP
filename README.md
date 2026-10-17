@@ -82,6 +82,16 @@ Choose Sectionals for one Section on its own, as on the exam: 45 minutes, adapti
 
 A Sectional starts only when the Questions held back for Mocks that you have not seen come to at least twice what the Section asks of each group; the page says what is missing otherwise. The Curator sets how many Questions each group gets, and the sizes of reading passages and Multi-Source Reasoning sets, under Settings, Section Blueprint.
 
+## Take a Mock
+
+Choose Mocks for the whole exam: the three Sections in the order you pick, each run as a Sectional is, with one optional 10-minute break. The break begins as soon as the first Section closes; go on within its first minute to keep it for after the second Section instead. When a break runs out, the next Section starts on its own. A closed Section shows nothing until the Mock is over, and your Score Estimates wait for it too; then the report gives the Total with its likely range, each Section's score and report, and any time lost to an Interruption or Questions you had seen before. A Mock starts only when every Section passes the start check a Sectional uses, and while it runs no Sectional starts. If you take a Section over in another tab or on another device, the rest of the Mock goes with it.
+
+Under Done on paper, mark the Books, or the pages of them, you worked through on paper. Pages are counted as the PDF counts them, from its first page. Their Questions count as seen: Mocks and Sectionals use them only when unseen ones run out, Practice Sets can use them, and answers to them never move your Score Estimates.
+
+## Scores
+
+Scores shows each Section's Score Estimate, and the Total once all three have one. Enter an Official Score from an official practice exam or the GMAT itself to calibrate them: each one is matched with your estimates as they stood that day, so it calibrates only the Sections you had an estimate for by then. One shifts each Section's scale to match it, and two or more fit it, as long as your estimates on those days were far enough apart to say how the scale runs.
+
 ## Check it
 
 ```sh

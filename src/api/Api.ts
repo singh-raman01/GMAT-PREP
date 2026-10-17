@@ -6,10 +6,13 @@ import { CuratorAccessApi, CuratorSessionApi } from "./Curator.ts"
 import { GenerationApi } from "./Generation.ts"
 import { GoldenApi } from "./Golden.ts"
 import { JobsApi } from "./Jobs.ts"
+import { MocksApi } from "./Mocks.ts"
+import { PaperMarksApi } from "./PaperMarks.ts"
 import { PracticeApi } from "./Practice.ts"
 import { SectionalsApi } from "./Sectionals.ts"
 import { ProfilesApi, SessionApi } from "./Profiles.ts"
 import { ReviewApi } from "./Review.ts"
+import { ScoresApi } from "./Scores.ts"
 import { SettingsApi } from "./Settings.ts"
 import { TaxonomyApi } from "./Taxonomy.ts"
 
@@ -38,6 +41,9 @@ export class Api extends HttpApi.make("gmat-prep")
   .add(TaxonomyApi)
   .add(PracticeApi)
   .add(SectionalsApi)
+  .add(MocksApi)
+  .add(ScoresApi)
+  .add(PaperMarksApi)
   .add(CuratorAccessApi)
   .add(CuratorSessionApi)
   .add(SettingsApi)

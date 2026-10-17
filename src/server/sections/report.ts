@@ -1,5 +1,6 @@
 import { SectionalReport, SectionalResult } from "../../api/Sectionals.ts"
 import { isCorrect, type PartKey, readSelection } from "../practice/history.ts"
+import type { ScoreLine } from "../ratings/scale.ts"
 import { editPoints, sectionScoreOf } from "./score.ts"
 
 // A Section's report (docs/design.md, "Ratings and scores"). Its Questions'
@@ -32,32 +33,38 @@ export const judge = (questionId: string, answers: ReadonlyArray<AnswerFact>, ke
 }
 
 // The score, its range and the points Review & Edit made, from the results
-// at their kept Difficulty.
-export const scored = (results: ReadonlyArray<SectionalResult>, unreached: number) => {
+// at their kept Difficulty, on the score line kept with them.
+export const scored = (results: ReadonlyArray<SectionalResult>, unreached: number, line: ScoreLine) => {
   const finalAnswers = results.map((result) => ({ difficulty: result.difficulty, correct: result.correct }))
   const firstAnswers = results.map((result) => ({
     difficulty: result.difficulty,
     correct: result.change === null ? result.correct : result.change.wasCorrect
   }))
-  const section = sectionScoreOf(finalAnswers, unreached)
+  const section = sectionScoreOf(finalAnswers, unreached, line)
   return {
     score: section.estimate.score,
     low: section.estimate.low,
     high: section.estimate.high,
+    calibrated: section.estimate.calibrated,
     ability: section.fit.ability,
     standardError: section.fit.standardError,
-    editPoints: editPoints(firstAnswers, finalAnswers, unreached)
+    editPoints: editPoints(firstAnswers, finalAnswers, unreached, line)
   }
 }
 
 // The kept report as it reads now. When a key has changed since, every
 // number that follows from it is worked out again and the report says so.
-export const rescore = (report: SectionalReport, answers: ReadonlyArray<AnswerFact>, keys: Keys): SectionalReport => {
+export const rescore = (
+  report: SectionalReport,
+  answers: ReadonlyArray<AnswerFact>,
+  keys: Keys,
+  line: ScoreLine
+): SectionalReport => {
   const results = report.results.map((result) => {
     const now = judge(result.questionId, answers, keys)
     const same = now.correct === result.correct && now.change?.wasCorrect === result.change?.wasCorrect
     return same ? result : new SectionalResult({ ...result, ...now })
   })
   if (results.every((result, index) => result === report.results[index])) return report
-  return new SectionalReport({ ...report, ...scored(results, report.unreached), results, rescored: true })
+  return new SectionalReport({ ...report, ...scored(results, report.unreached, line), results, rescored: true })
 }

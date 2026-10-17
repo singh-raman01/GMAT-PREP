@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm"
 import { Cause, Clock, Context, Effect, Latch, Layer, Semaphore } from "effect"
-import { type Blueprint, type GroupId, groupOf, groupsOf, sectionCount } from "../../api/blueprint.ts"
+import { type GroupId, groupOf, groupsOf, sectionCount } from "../../api/blueprint.ts"
 import { bandOf } from "../../api/difficulty.ts"
 import {
   Named,
@@ -16,6 +16,7 @@ import { QuestionId } from "../../api/Review.ts"
 import {
   GroupStockView,
   MaxChanges,
+  MockRunning,
   ReserveTooSmall,
   ReviewEntry,
   SectionalHeldElsewhere,
@@ -44,23 +45,35 @@ import {
   keysOf,
   lastSeenBy,
   mergeTargets,
+  paperSeenBy,
   publishedPool,
   readSelection
 } from "../practice/history.ts"
+import { scoreLinesOf } from "../ratings/OfficialScores.ts"
 import { ratedAmong } from "../ratings/rated.ts"
 import { rateSession } from "../ratings/rateSession.ts"
+import { type ScoreLine, UncalibratedLine } from "../ratings/scale.ts"
 import { Settings } from "../settings/Settings.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { nextUnit, openSlots, sectionEstimate, sectionStock, seededRandom, type Unit } from "./adaptive.ts"
-import { decodeConfig, encodeConfig, passedOf, type SectionalConfig, servedUnitsOf } from "./config.ts"
+import {
+  decodeConfig,
+  encodeConfig,
+  lineOf,
+  passedOf,
+  SectionKinds,
+  type SectionalConfig,
+  servedUnitsOf
+} from "./config.ts"
 import { judge, rescore, scored } from "./report.ts"
 
 // Sectionals: one Section alone under Mock rules (docs/design.md,
 // "Sessions"). The next unit is chosen after each Response, adaptively; a
 // Question must be answered before the next appears and there is no going
 // back. When time remains after the last Question, Review & Edit allows up
-// to three changed answers. The Section is scored, and Difficulty and
-// Ability move, only when it closes.
+// to three changed answers. The Section is scored only when it closes, and
+// Difficulty and Ability move then for a Sectional, and for a Mock's
+// Sections when the Mock ends.
 
 type SessionRow = typeof sessions.$inferSelect
 type ResponseRow = typeof responses.$inferSelect
@@ -77,7 +90,10 @@ const sorted = (selection: Selection) => selection.toSorted((a, b) => a.part - b
 
 export class Sectionals extends Context.Service<Sectionals, {
   options(profileId: string): Effect.Effect<SectionalOptions>
-  start(caller: Caller, section: string): Effect.Effect<SectionalView, UnknownSection | ReserveTooSmall | SectionalRunning>
+  start(
+    caller: Caller,
+    section: string
+  ): Effect.Effect<SectionalView, UnknownSection | ReserveTooSmall | SectionalRunning | MockRunning>
   list(profileId: string): Effect.Effect<ReadonlyArray<SectionalSummary>>
   get(caller: Caller, id: SessionId): Effect.Effect<SectionalView, SectionalNotFound>
   answer(
@@ -99,6 +115,11 @@ export class Sectionals extends Context.Service<Sectionals, {
   ): Effect.Effect<SectionalView, SectionalNotFound | SectionalOutOfStep | SelectionInvalid | SectionalHeldElsewhere>
   finish(caller: Caller, id: SessionId): Effect.Effect<SectionalView, SectionalNotFound | SectionalHeldElsewhere>
   claim(caller: Caller, id: SessionId): Effect.Effect<SectionalView, SectionalNotFound>
+  // For Mocks: each Section's start check, the Sectional running if any,
+  // and a new Section of a Mock, held by the caller's device.
+  readinessAll(profileId: string): Effect.Effect<ReadonlyArray<SectionReadiness>>
+  runningSectional(profileId: string): Effect.Effect<string | undefined>
+  beginMockSection(caller: Caller, section: string, mock: { readonly id: string; readonly place: number }): Effect.Effect<SessionId>
 }>()("gmat-prep/server/Sectionals") {
   static readonly layer = Layer.effect(
     Sectionals,
@@ -123,7 +144,7 @@ export class Sectionals extends Context.Service<Sectionals, {
 
       const own = (profileId: string, id: string) =>
         db.select().from(sessions)
-          .where(and(eq(sessions.id, id), eq(sessions.profileId, profileId), eq(sessions.kind, "sectional")))
+          .where(and(eq(sessions.id, id), eq(sessions.profileId, profileId), inArray(sessions.kind, SectionKinds)))
           .pipe(
             Effect.orDie,
             Effect.flatMap((rows) => (rows[0] === undefined ? Effect.fail(new SectionalNotFound()) : Effect.succeed(rows[0])))
@@ -137,6 +158,17 @@ export class Sectionals extends Context.Service<Sectionals, {
         db.select().from(responses).where(eq(responses.sessionId, sessionId)).orderBy(asc(responses.seq)).pipe(
           Effect.orDie
         )
+
+      // Whether a closed Section shows its results: a Sectional at once, a
+      // Mock's Section once the Mock is over.
+      const revealed = (session: SessionRow, config: SectionalConfig) =>
+        Effect.gen(function*() {
+          if (session.status !== "finished") return false
+          if (config.mock === undefined) return true
+          const [mock] = yield* db.select({ status: sessions.status }).from(sessions)
+            .where(eq(sessions.id, config.mock.id)).pipe(Effect.orDie)
+          return mock?.status === "finished"
+        })
 
       const saveConfig = (sessionId: string, config: SectionalConfig) =>
         db.update(sessions).set({ config: encodeConfig(config) }).where(eq(sessions.id, sessionId)).pipe(Effect.orDie)
@@ -153,6 +185,7 @@ export class Sectionals extends Context.Service<Sectionals, {
           const published = (yield* run(publishedPool))
             .filter((question) => question.section === section && question.reserve !== null)
           const lastSeen = yield* run(lastSeenBy(profileId))
+          const paperSeen = yield* run(paperSeenBy(profileId))
           const units = new Map<string, { group: GroupId; members: Array<(typeof published)[number]> }>()
           for (const question of published) {
             const group = groupOf(question.questionType)
@@ -177,7 +210,7 @@ export class Sectionals extends Context.Service<Sectionals, {
               lastSeenAt: seenAt.length === 0 ? null : Math.max(...seenAt)
             }
           })
-          return { units: pool, lastSeen }
+          return { units: pool, lastSeen, paperSeen }
         })
 
       const readiness = (profileId: string, section: string) =>
@@ -320,7 +353,7 @@ export class Sectionals extends Context.Service<Sectionals, {
             yield* saveConfig(session.id, config)
           }
           if (nextAt !== -1) return yield* serve(session.id, position, rest[nextAt]!.id, elapsedMs)
-          const { units: pool, lastSeen } = yield* poolAndSightings(session.profileId, config.section)
+          const { units: pool, lastSeen, paperSeen } = yield* poolAndSightings(session.profileId, config.section)
           const estimate = yield* estimateOf(served, yield* responsesOf(session.id))
           const step = nextUnit({
             blueprint: config.blueprint,
@@ -346,6 +379,7 @@ export class Sectionals extends Context.Service<Sectionals, {
               group: pick.unit.group,
               questionIds: [...pick.unit.questionIds],
               seen: pick.unit.questionIds.filter((id) => lastSeen.has(id)),
+              paper: pick.unit.questionIds.filter((id) => paperSeen.has(id)),
               skipped: [],
               tier: pick.tier,
               slot: pick.slot
@@ -356,7 +390,7 @@ export class Sectionals extends Context.Service<Sectionals, {
 
       // The report, from the Section as it closes: the final Responses at
       // the Questions' Difficulty now, before the Rated Responses move it.
-      const reportOf = (session: SessionRow, config: SectionalConfig, elapsedMs: number) =>
+      const reportOf = (session: SessionRow, config: SectionalConfig, elapsedMs: number, line: ScoreLine) =>
         Effect.gen(function*() {
           const served = yield* servedOf(session.id)
           const answers = yield* responsesOf(session.id)
@@ -368,6 +402,7 @@ export class Sectionals extends Context.Service<Sectionals, {
           const marked = yield* run(bookmarkedBy(session.profileId))
           const resolve = yield* run(mergeTargets)
           const repeatIds = new Set(config.units.flatMap((unit) => unit.seen))
+          const paperIds = new Set(config.units.flatMap((unit) => unit.paper ?? []))
           const results = served.map((row) => {
             const mine = answers.filter((each) => each.questionId === row.questionId)
             const final = mine.at(-1)
@@ -398,18 +433,21 @@ export class Sectionals extends Context.Service<Sectionals, {
             ? 0
             : [...open.own.values()].flat().reduce((sum, size) => sum + size, 0) + open.passed + cut
           return new SectionalReport({
-            ...scored(results, unreached),
+            ...scored(results, unreached, line),
             results,
             unreached,
             unfilled: config.unfilled + skipped + (rest.length - cut),
             repeats: results.filter((result) => result.repeat).length,
+            paperRepeats: results.filter((result) => paperIds.has(result.questionId)).length,
             changes: answers.filter((answer) => answer.kind === "edit").length,
             rescored: false
           })
         })
 
-      // Ends the Sectional: the Learner finished it, or its time ran out. Its
-      // report is kept, then its Rated Responses move Difficulty and Ability.
+      // Ends the Section: the Learner finished it, or its time ran out. Its
+      // report is kept, then a Sectional's Rated Responses move Difficulty and
+      // Ability. A Mock's Sections are rated when the Mock is over, so nothing
+      // shows how a closed Section went while it runs.
       const end = (session: SessionRow, endedBy: "finished" | "time", elapsedMs: number) =>
         Effect.gen(function*() {
           const now = yield* Clock.currentTimeMillis
@@ -417,9 +455,11 @@ export class Sectionals extends Context.Service<Sectionals, {
           const config = decodeConfig(session.config)
           yield* db.update(sessions).set({ status: "finished", endedBy, finishedAt: now, elapsedMs, clockSavedAt: now })
             .where(eq(sessions.id, session.id)).pipe(Effect.orDie)
-          const report = yield* reportOf(session, config, elapsedMs)
-          yield* saveConfig(session.id, { ...config, report })
-          yield* run(rateSession(session))
+          const lines = yield* run(scoreLinesOf(session.profileId))
+          const line = lines[config.section as keyof typeof lines] ?? UncalibratedLine
+          const report = yield* reportOf(session, config, elapsedMs, line)
+          yield* saveConfig(session.id, { ...config, report, line })
+          if (config.mock === undefined) yield* run(rateSession(session))
         })
 
       // When time runs out on a Question, it gets a time-out Response: wrong,
@@ -454,13 +494,17 @@ export class Sectionals extends Context.Service<Sectionals, {
       const servedView = (
         session: SessionRow,
         row: typeof servedQuestions.$inferSelect,
-        context: { readonly marked: ReadonlySet<string>; readonly resolve: (id: string) => string },
+        context: {
+          readonly marked: ReadonlySet<string>
+          readonly resolve: (id: string) => string
+          readonly revealed: boolean
+        },
         final: ResponseRow | undefined
       ) =>
         Effect.gen(function*() {
           const stored = (yield* run(storedQuestions([row.questionId]))).get(row.questionId)
           if (stored === undefined) return yield* Effect.die(new Error(`Served Question ${row.questionId} is missing`))
-          const over = session.status === "finished"
+          const over = context.revealed
           const question = practiceQuestion(stored, names, null)
           const selection = final === undefined ? [] : readSelection(final.selection)
           const keys = stored.parts.map((part) => ({ position: part.position, key: part.key }))
@@ -492,10 +536,11 @@ export class Sectionals extends Context.Service<Sectionals, {
           const marked = yield* run(bookmarkedBy(session.profileId))
           const resolve = yield* run(mergeTargets)
           const over = session.status === "finished"
+          const shown = yield* revealed(session, config)
           const stage = over ? "finished" as const : config.stage
           const last = served.at(-1)
           const current = stage === "question" && last !== undefined
-            ? yield* servedView(session, last, { marked, resolve }, undefined)
+            ? yield* servedView(session, last, { marked, resolve, revealed: false }, undefined)
             : null
           const changes = answers.filter((answer) => answer.kind === "edit")
           const review = stage !== "review" ? null : {
@@ -521,6 +566,7 @@ export class Sectionals extends Context.Service<Sectionals, {
           return new SectionalView({
             id: SessionId.make(session.id),
             section: sectionName(config.section),
+            mock: config.mock === undefined ? null : { id: SessionId.make(config.mock.id), place: config.mock.place },
             stage,
             total: served.length + remaining,
             remaining,
@@ -536,8 +582,13 @@ export class Sectionals extends Context.Service<Sectionals, {
             }),
             heldHere: holdsIt(session, device),
             endedBy: session.endedBy === "time" ? "time" : session.endedBy === "finished" ? "finished" : null,
-            report: over && config.report !== null
-              ? rescore(config.report, answers, yield* run(keysOf(config.report.results.map((result) => result.questionId))))
+            report: shown && config.report !== null
+              ? rescore(
+                config.report,
+                answers,
+                yield* run(keysOf(config.report.results.map((result) => result.questionId))),
+                lineOf(config)
+              )
               : null,
             createdAt: session.createdAt,
             finishedAt: session.finishedAt
@@ -567,31 +618,38 @@ export class Sectionals extends Context.Service<Sectionals, {
       const after = (caller: Caller, id: string) =>
         own(caller.profileId, id).pipe(Effect.orDie, Effect.flatMap((session) => viewOf(session, caller.device)))
 
-      const running = (profileId: string) =>
+      // The Profile's Sectional, or Mock, still running.
+      const running = (profileId: string, kind: "sectional" | "mock" = "sectional") =>
         db.select({ id: sessions.id }).from(sessions)
-          .where(and(eq(sessions.profileId, profileId), eq(sessions.kind, "sectional"), eq(sessions.status, "active")))
+          .where(and(eq(sessions.profileId, profileId), eq(sessions.kind, kind), eq(sessions.status, "active")))
           .pipe(Effect.orDie, Effect.map((rows) => rows[0]?.id))
+
+      const readinessAll = (profileId: string) =>
+        Effect.forEach(taxonomy.sections, (section) => readiness(profileId, section.id))
 
       const options = (profileId: string) =>
         Effect.gen(function*() {
-          const sections = yield* Effect.forEach(taxonomy.sections, (section) => readiness(profileId, section.id))
+          const sections = yield* readinessAll(profileId)
           const active = yield* running(profileId)
-          return new SectionalOptions({ sections, running: active === undefined ? null : SessionId.make(active) })
+          const mock = yield* running(profileId, "mock")
+          return new SectionalOptions({
+            sections,
+            running: active === undefined ? null : SessionId.make(active),
+            mock: mock === undefined ? null : SessionId.make(mock)
+          })
         })
 
-      const start = (caller: Caller, section: string) =>
+      // A new Section, held by the caller's device, with its first Question
+      // served: a Sectional, or one of a Mock's Sections.
+      const begin = (caller: Caller, section: string, mock: SectionalConfig["mock"]) =>
         Effect.gen(function*() {
-          if (!taxonomy.sections.some((each) => each.id === section)) return yield* new UnknownSection({ section })
-          const active = yield* running(caller.profileId)
-          if (active !== undefined) return yield* new SectionalRunning({ id: SessionId.make(active) })
-          const ready = yield* readiness(caller.profileId, section)
-          if (!ready.ready) return yield* new ReserveTooSmall({ readiness: ready })
           const blueprint = yield* settings.blueprint
           const id = crypto.randomUUID()
           yield* inTransaction(Effect.gen(function*() {
             const now = yield* Clock.currentTimeMillis
             const config: SectionalConfig = {
               section,
+              ...(mock === undefined ? {} : { mock }),
               blueprint,
               units: [],
               passed: {},
@@ -602,7 +660,7 @@ export class Sectionals extends Context.Service<Sectionals, {
             yield* db.insert(sessions).values({
               id,
               profileId: caller.profileId,
-              kind: "sectional",
+              kind: mock === undefined ? "sectional" : "mock-section",
               timed: true,
               config: encodeConfig(config),
               status: "active",
@@ -616,7 +674,20 @@ export class Sectionals extends Context.Service<Sectionals, {
             yield* serveNext(session, config, 0)
           }))
           yield* wake.open
-          return yield* after(caller, id)
+          return SessionId.make(id)
+        })
+
+      // One Sectional or Mock runs at a time.
+      const start = (caller: Caller, section: string) =>
+        Effect.gen(function*() {
+          if (!taxonomy.sections.some((each) => each.id === section)) return yield* new UnknownSection({ section })
+          const active = yield* running(caller.profileId)
+          if (active !== undefined) return yield* new SectionalRunning({ id: SessionId.make(active) })
+          const mock = yield* running(caller.profileId, "mock")
+          if (mock !== undefined) return yield* new MockRunning({ id: SessionId.make(mock) })
+          const ready = yield* readiness(caller.profileId, section)
+          if (!ready.ready) return yield* new ReserveTooSmall({ readiness: ready })
+          return yield* after(caller, yield* begin(caller, section, undefined))
         }).pipe(oneAtATime)
 
       const list = (profileId: string) =>
@@ -633,7 +704,7 @@ export class Sectionals extends Context.Service<Sectionals, {
             const config = configs.get(row.id)!
             const report = config.report === null
               ? null
-              : rescore(config.report, answers.filter((answer) => answer.sessionId === row.id), keys)
+              : rescore(config.report, answers.filter((answer) => answer.sessionId === row.id), keys, lineOf(config))
             return new SectionalSummary({
               id: SessionId.make(row.id),
               section: sectionName(config.section),
@@ -733,6 +804,9 @@ export class Sectionals extends Context.Service<Sectionals, {
           if (session.status !== "finished" && config.stage !== "review") {
             return yield* outOfStep(session, caller.device, "not-in-review")
           }
+          // A Mock's closed Section shows nothing until the Mock is over.
+          const shown = yield* revealed(session, config)
+          if (session.status === "finished" && !shown) return yield* outOfStep(session, caller.device, "finished")
           const served = yield* servedOf(id)
           const row = served.find((each) => each.position === position)
           if (row === undefined) return yield* outOfStep(session, caller.device, "not-current")
@@ -740,7 +814,7 @@ export class Sectionals extends Context.Service<Sectionals, {
           const marked = yield* run(bookmarkedBy(session.profileId))
           const resolve = yield* run(mergeTargets)
           return new SectionalQuestion({
-            served: yield* servedView(session, row, { marked, resolve }, final),
+            served: yield* servedView(session, row, { marked, resolve, revealed: shown }, final),
             selection: final === undefined || final.kind === "time-out" ? null : readSelection(final.selection)
           })
         })
@@ -797,11 +871,19 @@ export class Sectionals extends Context.Service<Sectionals, {
           else yield* end(session, "finished", elapsedMs)
         })).pipe(Effect.flatMap(() => after(caller, id)), oneAtATime)
 
+      // This device takes over the Section. Taking over a Mock's running
+      // Section takes over the Mock too, so its break and next Section
+      // follow; a closed one leaves the Mock with the device it is on.
       const claim = (caller: Caller, id: SessionId) =>
         Effect.gen(function*() {
           const session = yield* own(caller.profileId, id)
-          if (caller.device !== undefined && session.holder !== caller.device) {
+          if (caller.device !== undefined) {
             yield* db.update(sessions).set({ holder: caller.device }).where(eq(sessions.id, id)).pipe(Effect.orDie)
+            const mock = decodeConfig(session.config).mock
+            if (mock !== undefined && session.status === "active") {
+              yield* db.update(sessions).set({ holder: caller.device })
+                .where(and(eq(sessions.id, mock.id), eq(sessions.status, "active"))).pipe(Effect.orDie)
+            }
           }
           return yield* after(caller, id)
         }).pipe(oneAtATime)
@@ -811,13 +893,18 @@ export class Sectionals extends Context.Service<Sectionals, {
       const tickAll = Effect.gen(function*() {
         const now = yield* Clock.currentTimeMillis
         const active = yield* db.select().from(sessions)
-          .where(and(eq(sessions.kind, "sectional"), eq(sessions.status, "active"))).pipe(Effect.orDie)
+          .where(and(inArray(sessions.kind, SectionKinds), eq(sessions.status, "active"))).pipe(Effect.orDie)
         if (active.length === 0) yield* wake.close
         const ids = new Set(active.map((session) => session.id))
         for (const id of [...clocks.keys()]) if (!ids.has(id)) clocks.delete(id)
+        // One Section that cannot tick does not hold up the others.
         for (const session of active) {
-          const { expired } = yield* advance(session, now)
-          if (expired) yield* inTransaction(expire(session))
+          yield* Effect.gen(function*() {
+            const { expired } = yield* advance(session, now)
+            if (expired) yield* inTransaction(expire(session))
+          }).pipe(
+            Effect.catchCause((cause) => Effect.logError(`The Section ${session.id} could not tick: ${Cause.pretty(cause)}`))
+          )
         }
       }).pipe(
         oneAtATime,
@@ -828,7 +915,21 @@ export class Sectionals extends Context.Service<Sectionals, {
         Effect.forever(wake.await.pipe(Effect.andThen(Effect.sleep(TickMs)), Effect.andThen(tickAll)))
       )
 
-      return Sectionals.of({ options, start, list, get, answer, bookmark, question, change, finish, claim })
+      return Sectionals.of({
+        options,
+        start,
+        list,
+        get,
+        answer,
+        bookmark,
+        question,
+        change,
+        finish,
+        claim,
+        readinessAll,
+        runningSectional: (profileId) => running(profileId),
+        beginMockSection: (caller, section, mock) => begin(caller, section, mock).pipe(oneAtATime)
+      })
     })
   )
 }

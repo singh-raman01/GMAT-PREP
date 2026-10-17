@@ -1,4 +1,5 @@
-import { type AbilityFit, fitAbility, type ScoreEstimate, scoreEstimate, SectionPrior } from "../ratings/model.ts"
+import { type AbilityFit, fitAbility, SectionPrior } from "../ratings/model.ts"
+import { type ScoreLine, sectionEstimateOn, type SectionScoreEstimate, UncalibratedLine } from "../ratings/scale.ts"
 
 // A Mock or Sectional Section's score (docs/design.md, "Ratings and scores"):
 // fitted from the Section's final Responses alone, with prior mean 0 and
@@ -20,12 +21,18 @@ export const sectionFitOf = (answers: ReadonlyArray<FinalAnswer>, unreached: num
 
 export interface SectionScore {
   readonly fit: AbilityFit
-  readonly estimate: ScoreEstimate
+  readonly estimate: SectionScoreEstimate
 }
 
-export const sectionScoreOf = (answers: ReadonlyArray<FinalAnswer>, unreached: number): SectionScore => {
+// On the Profile's score line for the Section, uncalibrated until an
+// Official Score calibrates it.
+export const sectionScoreOf = (
+  answers: ReadonlyArray<FinalAnswer>,
+  unreached: number,
+  line: ScoreLine = UncalibratedLine
+): SectionScore => {
   const fit = sectionFitOf(answers, unreached)
-  return { fit, estimate: scoreEstimate(fit) }
+  return { fit, estimate: sectionEstimateOn(line, fit) }
 }
 
 // What Review & Edit changed in points: the score from the final answers
@@ -33,5 +40,6 @@ export const sectionScoreOf = (answers: ReadonlyArray<FinalAnswer>, unreached: n
 export const editPoints = (
   first: ReadonlyArray<FinalAnswer>,
   final: ReadonlyArray<FinalAnswer>,
-  unreached: number
-): number => sectionScoreOf(final, unreached).estimate.score - sectionScoreOf(first, unreached).estimate.score
+  unreached: number,
+  line: ScoreLine = UncalibratedLine
+): number => sectionScoreOf(final, unreached, line).estimate.score - sectionScoreOf(first, unreached, line).estimate.score

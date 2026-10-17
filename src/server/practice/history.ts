@@ -1,9 +1,10 @@
-import { and, asc, eq, inArray, isNotNull, max, sql } from "drizzle-orm"
+import { and, asc, eq, gte, inArray, isNotNull, max, sql } from "drizzle-orm"
 import { Effect, Schema } from "effect"
 import { PartChoice, type Selection } from "../../api/Practice.ts"
 import { Db } from "../db/Database.ts"
 import { bookmarks, books, difficulty, parts, questions, responses, servedQuestions, sessions, sources } from "../db/schema.ts"
 import { chosenQuestions, decodeConfig, SectionKinds } from "../sections/config.ts"
+import { marksAndPages, paperSeenOf } from "./paperSeen.ts"
 import type { History, PoolQuestion } from "./selection.ts"
 
 // What Practice Sets read about Questions and about a Profile's history.
@@ -58,7 +59,17 @@ export const mergeTargets = Effect.gen(function*() {
   }
 })
 
-// A Question is Seen by a Profile once a Session has served it to them.
+// When the Profile's Paper Marks made each Question Seen, by the Question
+// it counts as.
+export const paperSeenBy = (profileId: string, which: "first" | "last" = "first") =>
+  Effect.gen(function*() {
+    const { marks, pages } = yield* marksAndPages(profileId)
+    if (marks.length === 0) return new Map<string, number>() as ReadonlyMap<string, number>
+    return paperSeenOf(marks, pages, yield* mergeTargets, which)
+  })
+
+// A Question is Seen by a Profile once a Session has served it to them, or a
+// Paper Mark covers it.
 export const seenBy = (profileId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
@@ -66,25 +77,43 @@ export const seenBy = (profileId: string) =>
     const rows = yield* db.selectDistinct({ questionId: servedQuestions.questionId }).from(servedQuestions)
       .innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
       .where(eq(sessions.profileId, profileId))
-    return new Set(rows.map((row) => resolve(row.questionId)))
+    return new Set([...rows.map((row) => resolve(row.questionId)), ...(yield* paperSeenBy(profileId)).keys()])
   })
 
 // The Questions of every unit the Profile's running Sectionals chose, served
-// yet or not, by the Question each counts as. Practice leaves them out until
-// the Section closes, so no Practice Set can show their keys or say how an
-// answer went while the Section can still change it.
+// yet or not, by the Question each counts as, and those of a running Mock's
+// Sections, closed ones too. Practice leaves them out until the Sectional or
+// Mock ends, so no Practice Set can show their keys or say how an answer
+// went before its report does.
 export const heldBySections = (profileId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
+    const mine = and(eq(sessions.profileId, profileId), inArray(sessions.kind, SectionKinds))
     const running = yield* db.select({ config: sessions.config }).from(sessions)
-      .where(and(eq(sessions.profileId, profileId), inArray(sessions.kind, SectionKinds), eq(sessions.status, "active")))
-    if (running.length === 0) return new Set<string>()
+      .where(and(mine, eq(sessions.status, "active")))
+    const mocks = yield* db.select({ id: sessions.id, createdAt: sessions.createdAt }).from(sessions)
+      .where(and(eq(sessions.profileId, profileId), eq(sessions.kind, "mock"), eq(sessions.status, "active")))
+    // A Mock's Sections start after it does.
+    const closed = mocks.length === 0 ? [] : yield* db.select({ config: sessions.config }).from(sessions)
+      .where(and(
+        eq(sessions.profileId, profileId),
+        eq(sessions.kind, "mock-section"),
+        eq(sessions.status, "finished"),
+        gte(sessions.createdAt, Math.min(...mocks.map((mock) => mock.createdAt)))
+      ))
+    const configs = [
+      ...running.map((session) => decodeConfig(session.config)),
+      ...closed.map((session) => decodeConfig(session.config))
+        .filter((config) => config.mock !== undefined && mocks.some((mock) => mock.id === config.mock!.id))
+    ]
+    if (configs.length === 0) return new Set<string>()
     const resolve = yield* mergeTargets
-    return new Set(running.flatMap((session) => chosenQuestions(decodeConfig(session.config)).map(resolve)))
+    return new Set(configs.flatMap((config) => chosenQuestions(config).map(resolve)))
   })
 
 // When a Profile last saw each Question it has Seen, a merged Question's
-// servings counting for the one it became.
+// servings counting for the one it became. A Paper Mark counts as a sighting
+// at the time it was made, the latest of those that cover the Question.
 export const lastSeenBy = (profileId: string) =>
   Effect.gen(function*() {
     const db = yield* Db
@@ -99,6 +128,7 @@ export const lastSeenBy = (profileId: string) =>
       const id = resolve(row.questionId)
       last.set(id, Math.max(last.get(id) ?? 0, Number(row.at ?? 0)))
     }
+    for (const [id, at] of yield* paperSeenBy(profileId, "last")) last.set(id, Math.max(last.get(id) ?? 0, at))
     return last
   })
 

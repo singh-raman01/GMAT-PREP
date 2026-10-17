@@ -603,12 +603,13 @@ export const sessions = sqliteTable(
   {
     id: text("id").primaryKey(),
     profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
-    // practice or sectional
+    // practice, sectional, mock or mock-section
     kind: text("kind").notNull(),
     timed: integer("timed", { mode: "boolean" }).notNull(),
     // JSON, by kind: for a Practice Set, how it was chosen, the Questions
-    // planned in order and those it skips; for a Sectional, its Blueprint,
-    // the units it chose and its report once closed.
+    // planned in order and those it skips; for a Sectional or a Mock's
+    // Section, its Blueprint, the units it chose and its report once closed;
+    // for a Mock, the order of its Sections, their Sessions and the break.
     config: text("config").notNull(),
     // active, paused or finished
     status: text("status").notNull(),
@@ -680,6 +681,43 @@ export const bookmarks = sqliteTable(
     createdAt: integer("created_at").notNull()
   },
   (t) => [primaryKey({ columns: [t.profileId, t.questionId] })]
+)
+
+// A Profile's note that it studied a Book, or a page range of it, on paper:
+// its Questions are Seen from the mark's time, never Rated, and served in a
+// Mock only once unseen ones run out.
+export const paperMarks = sqliteTable(
+  "paper_marks",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    bookId: text("book_id").notNull().references(() => books.id, { onDelete: "cascade" }),
+    // The pages it covers, both included; null for the whole Book.
+    firstPage: integer("first_page"),
+    lastPage: integer("last_page"),
+    createdAt: integer("created_at").notNull()
+  },
+  (t) => [index("paper_marks_profile").on(t.profileId)]
+)
+
+// Scores from official GMAT practice exams or real sittings, which calibrate
+// the Profile's Score Estimates.
+export const officialScores = sqliteTable(
+  "official_scores",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    // When it was taken, as a day: YYYY-MM-DD.
+    takenOn: text("taken_on").notNull(),
+    // practice-exam or exam
+    kind: text("kind").notNull(),
+    total: integer("total").notNull(),
+    quant: integer("quant").notNull(),
+    verbal: integer("verbal").notNull(),
+    di: integer("di").notNull(),
+    createdAt: integer("created_at").notNull()
+  },
+  (t) => [index("official_scores_profile").on(t.profileId)]
 )
 
 // Derived and rebuildable: a Question's current Difficulty, moved from its

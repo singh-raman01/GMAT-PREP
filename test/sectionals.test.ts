@@ -10,7 +10,7 @@ import { type Blueprint, DefaultBlueprint } from "../src/api/blueprint.ts"
 import { QuestionId } from "../src/api/Review.ts"
 import type { SectionalView } from "../src/api/Sectionals.ts"
 import { Db } from "../src/server/db/Database.ts"
-import { difficulty, parts, questions, responses, scoreEstimates, servedQuestions } from "../src/server/db/schema.ts"
+import { difficulty, parts, questions, responses, scoreEstimates, servedQuestions, sessions } from "../src/server/db/schema.ts"
 import { numbered, seedBook, type SeedQuestion } from "./fixtures/bank.ts"
 import { openBrowser, runWithWorkers } from "./harness.ts"
 
@@ -385,6 +385,32 @@ describe("A Sectional's report", () => {
       expect(again.report!.results[0]!.difficulty).toBe(done.report!.results[0]!.difficulty)
       const [summary] = yield* asha.first.sectionals.list()
       expect(summary!.score).toBe(again.report!.score)
+    })))
+
+  test("kept before Paper Marks and Official Scores still lists and opens", () =>
+    runWithWorkers(Effect.gen(function*() {
+      yield* blueprint({ ps: 4 })
+      yield* seedBook("Quant Review", reserved(10, { seed: 0, key: "C" }))
+      const asha = yield* learner("Asha")
+      let view = yield* asha.first.sectionals.start({ payload: { section: "quant" } })
+      while (view.stage === "question") view = yield* answer(asha.first, view, "B")
+      yield* asha.first.sectionals.finish({ params: { id: view.id } })
+      // As ticket 11 kept it: no paperRepeats, calibrated, line or paper.
+      const db = yield* Db
+      const [row] = yield* db.select({ config: sessions.config }).from(sessions).where(eq(sessions.id, view.id))
+        .pipe(Effect.orDie)
+      const config = JSON.parse(row!.config)
+      delete config.report.paperRepeats
+      delete config.report.calibrated
+      delete config.line
+      for (const unit of config.units) delete unit.paper
+      yield* db.update(sessions).set({ config: JSON.stringify(config) }).where(eq(sessions.id, view.id)).pipe(Effect.orDie)
+      const [summary] = yield* asha.first.sectionals.list()
+      expect(summary).toMatchObject({ id: view.id, finished: true })
+      expect((yield* asha.first.sectionals.get({ params: { id: view.id } })).report).toMatchObject({
+        paperRepeats: 0,
+        calibrated: false
+      })
     })))
 
   test("marks as seen before only the Questions of a passage the Profile had Seen", () =>
