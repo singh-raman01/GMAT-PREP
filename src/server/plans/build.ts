@@ -174,6 +174,8 @@ export interface Plan {
   readonly days: ReadonlyArray<PlanDay>
   readonly dropped: ReadonlyArray<DroppedItem>
   readonly notes: ReadonlyArray<string>
+  // The last day whose sets and Retries are planned, or none.
+  readonly itemsUntil: string | null
 }
 
 const DayMs = 86_400_000
@@ -223,7 +225,12 @@ export const buildPlan = ({ settings, state }: PlanInputs): Plan => {
   const start = Math.min(today, dayNumber(state.start))
   const test = settings.testDate === null ? undefined : dayNumber(settings.testDate)
   if (test !== undefined && test <= today) {
-    return { days: [], dropped: [], notes: ["The test date is today or has passed. Set a new test date, or none, to plan again."] }
+    return {
+      days: [],
+      dropped: [],
+      notes: ["The test date is today or has passed. Set a new test date, or none, to plan again."],
+      itemsUntil: null
+    }
   }
   const last = test === undefined ? today + UndatedDays - 1 : test - 1
   const itemsUntil = Math.min(last, today + ItemDays - 1)
@@ -640,5 +647,10 @@ export const buildPlan = ({ settings, state }: PlanInputs): Plan => {
     }
   }
 
-  return { days: planDays, dropped: dropped.toSorted((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0)), notes }
+  return {
+    days: planDays,
+    dropped: dropped.toSorted((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0)),
+    notes,
+    itemsUntil: dayOfNumber(itemsUntil)
+  }
 }

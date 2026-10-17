@@ -66,6 +66,8 @@ const readJson = <A>(text: string) => decodeJson(text) as A
 interface Outline {
   readonly notes: ReadonlyArray<string>
   readonly days: ReadonlyArray<Omit<PlanDay, "items">>
+  // The last day whose sets are planned; versions before it planned all.
+  readonly itemsUntil?: string | null
 }
 
 // When to build again (decision 90): a new Study Day, new settings, a Mock
@@ -385,7 +387,8 @@ export class Plans extends Context.Service<Plans, {
             inputs: JSON.stringify(inputs),
             outline: JSON.stringify({
               notes: plan.notes,
-              days: plan.days.map(({ items: _, ...day }) => day)
+              days: plan.days.map(({ items: _, ...day }) => day),
+              itemsUntil: plan.itemsUntil
             } satisfies Outline)
           }
           const rows = [
@@ -550,6 +553,7 @@ export class Plans extends Context.Service<Plans, {
           const days = outline.days.filter((day) => day.day >= todayText).map((day) =>
             new PlanDayView({
               ...day,
+              setsPlanned: outline.itemsUntil === undefined || outline.itemsUntil === null || day.day <= outline.itemsUntil,
               items: [
                 ...(day.day === todayText ? earlier : []).map((each) => itemView(each, started)),
                 ...(planned.get(day.day) ?? []).map((each) => itemView(each, started))

@@ -81,6 +81,9 @@ export class PlanDayView extends Schema.Class<PlanDayView>("gmat-prep/api/PlanDa
   off: Schema.Boolean,
   minutes: Schema.Int,
   phase: Schema.Literals(["diagnostic", "weak-areas", "mixed", "mocks"]),
+  // Whether its sets and Retries are planned yet: the plan sets them 4
+  // weeks ahead, and a later day shows its time and any Mock or Sectional.
+  setsPlanned: Schema.Boolean,
   items: Schema.Array(PlanItemView)
 }) {}
 
