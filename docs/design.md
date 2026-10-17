@@ -191,10 +191,12 @@ Profiles and activity, written by the server:
 
 | Table | Holds |
 |---|---|
-| profiles | name, PIN hash, time zone, rollover hour, target score, test date, weekly hours, days off |
+| profiles | name, PIN hash, the time zone and rollover hour it was made with |
+| profile days | Profile, time zone, rollover hour, when it takes effect (the next rollover), time set (decision 92) |
+| plan settings | Profile, test date, target Total, weekly minutes, days off, Diagnostic skipped, time set; the latest applies (decision 81) |
 | paper marks | Profile, Book, page range, time |
 | lesson views | Profile, Lesson, time; its worked examples become Seen |
-| sessions | Profile, kind, configuration (Section order, filters, timed or not, size), status, holding device, interrupted flag |
+| sessions | Profile, kind, configuration (Section order, filters, timed or not, size), status, holding device, interrupted flag, the plan item it was started from |
 | section runs | Session, Section, position, time limit, elapsed time, edits used, how it ended |
 | served questions | Session or section run, position, Question, time served; what Sessions made Seen |
 | responses | Profile, Session, Question, client sequence number, selection per Part, time spent, guessed flag, kind (first, edit, retry, time-out with no selection), the Response it supersedes, time |
@@ -203,8 +205,7 @@ Profiles and activity, written by the server:
 | retry skips | Profile, entry, Retry Ladder step, time, note: a Sibling step with no Sibling left |
 | official scores | Profile, date, kind, Total and Section scores |
 | tutor messages | Profile, Question, message, reply, model, prompt version, tokens, time |
-| plan completions | Plan Item, the Session or Lesson that completed it, time |
-| daily notes | Profile, Study Day, note |
+| daily notes | Profile, Study Day, note, time; the latest kept |
 
 Derived and rebuildable:
 
@@ -216,15 +217,15 @@ Derived and rebuildable:
 | error log entries | worked out on read, not stored: Profile, Question, reasons (wrong, slow, guessed), status (open, Resolved, withdrawn) |
 | retry steps | worked out on read, not stored: entry, step, due Study Day, Sibling, outcome (decision 66) |
 | weak areas | Profile, Skill or Question Type, gap, Priority, slow flag, evidence count |
-| daily logs | Profile, Study Day, minutes, Questions, accuracy by Section, Mocks, planned and completed items |
+| daily logs | worked out on read, not stored: Profile, Study Day, minutes, Questions, accuracy by Section, Mocks, planned and completed items (decision 91) |
 | analytics rollups | aggregates behind each analytics view |
 
 Plans, append-only:
 
 | Table | Holds |
 |---|---|
-| plan versions | Profile, version, build time, the Study Day it starts from, inputs |
-| plan items | plan version, Study Day, kind, parameters, estimated minutes, status (planned, done, dropped), reason for dropping |
+| plan versions | Profile, version, build time, the Study Day it starts from, its basis, inputs, the days' outline |
+| plan items | plan version, Study Day, position, kind, the item as planned, estimated minutes, status (planned or dropped), reason for dropping; started and done are worked out from the Sessions started from it (decision 90) |
 
 Operations:
 

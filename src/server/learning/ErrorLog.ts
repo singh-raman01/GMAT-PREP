@@ -20,7 +20,7 @@ import {
 } from "../../api/ErrorLog.ts"
 import { MistakesView, Named, ResponseView, ServedView, SessionId } from "../../api/Practice.ts"
 import { QuestionId } from "../../api/Review.ts"
-import { calendarDaysUnder, studyDaysUnder } from "../../api/studyDay.ts"
+import { calendarDaysUnder, type DayRule, ruleInEffect, studyDaysUnder } from "../../api/studyDay.ts"
 import { Db } from "../db/Database.ts"
 import { dayRulesOf, DefaultRules } from "../profiles/days.ts"
 import { books, mistakeLabels, profiles, questions, responses, retrySkips, servedQuestions, sessions } from "../db/schema.ts"
@@ -101,7 +101,9 @@ interface Facts {
   readonly resolve: (questionId: string) => string
   readonly labels: ReadonlyMap<string, string>
   readonly ladders: ReadonlyMap<string, EntryLadder>
-  // The time zone in effect now.
+  // The Profile's day rules, and the time zone in effect now: a change
+  // waiting for the next rollover is not yet.
+  readonly rules: ReadonlyArray<DayRule>
   readonly timeZone: string
   // Today's Study Day, under the Profile's day rules.
   readonly today: number
@@ -338,7 +340,8 @@ export class ErrorLog extends Context.Service<ErrorLog, {
               : and(eq(mistakeLabels.profileId, profileId), inArray(mistakeLabels.responseId, missed))!
           ))
           const rules = (yield* dayRulesOf(profileId).pipe(Effect.provideService(Db, db))) ?? DefaultRules
-          const timeZone = rules.at(-1)!.timeZone
+          const now = yield* Clock.currentTimeMillis
+          const timeZone = ruleInEffect(rules, now).timeZone
           const dayOf = studyDaysUnder(rules)
           const dateOf = calendarDaysUnder(rules)
           const skips = yield* run(db.select().from(retrySkips).where(and(eq(retrySkips.profileId, profileId), skipsWhere)))
@@ -368,8 +371,9 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             get ladders() {
               return laddersNow()
             },
+            rules,
             timeZone,
-            today: dayOf(yield* Clock.currentTimeMillis),
+            today: dayOf(now),
             dayOf,
             dateOf,
             targetMs: (questionId: string) => questionFacts.get(questionId)?.targetMs ?? 0,
@@ -469,8 +473,13 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             // The latest read moves to the end, so the least recent goes first.
             factsKept.delete(profileId)
             factsKept.set(profileId, kept)
-            // A copy with today worked out again, which keeps the ladders lazy.
-            return Object.create(kept.facts, { today: { value: kept.facts.dayOf(yield* Clock.currentTimeMillis), enumerable: true } }) as Facts
+            // A copy with today and the time zone worked out again, which
+            // keeps the ladders lazy.
+            const now = yield* Clock.currentTimeMillis
+            return Object.create(kept.facts, {
+              today: { value: kept.facts.dayOf(now), enumerable: true },
+              timeZone: { value: ruleInEffect(kept.facts.rules, now).timeZone, enumerable: true }
+            }) as Facts
           }
           const found = yield* readSessions(and(eq(sessions.profileId, profileId), inArray(sessions.kind, Kinds)))
           const history = yield* historyOf(profileId)
