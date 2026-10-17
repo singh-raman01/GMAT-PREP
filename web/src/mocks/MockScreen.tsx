@@ -189,7 +189,7 @@ const Report = ({ view, report }: { readonly view: MockView; readonly report: Mo
         report.paperRepeats > 0 ? `, ${report.paperRepeats} of them done on paper` : ""
       }.`
       : undefined,
-    report.rescored ? "An answer key changed after the Mock, so these scores follow the current keys." : undefined
+    report.rescored ? "An answer key changed after the Mock, by a correction or a merge of duplicate Questions, so these scores follow the current keys." : undefined
   ].filter((note) => note !== undefined)
   return (
     <div className="mock-report">

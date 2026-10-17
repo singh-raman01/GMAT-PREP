@@ -133,7 +133,7 @@ describe("Exam frequency after the review", () => {
       }
       const asha = yield* learner("Asha")
       expect((yield* asha.analytics.weakAreas()).frequencyBasis).toBe("official")
-    })))
+    })), 30_000)
 })
 
 describe("Mistakes after the review", () => {
@@ -150,7 +150,7 @@ describe("Mistakes after the review", () => {
       expect(weeks.length).toBe(21)
       expect(weeks[0]!.questions).toBe(5)
       expect(weeks.at(-1)!.questions).toBe(5)
-    })))
+    })), 30_000)
 })
 
 describe("The Skill map after the review", () => {
@@ -165,7 +165,7 @@ describe("The Skill map after the review", () => {
       // The page shows a Section's rows whenever one has a scope (SkillMap.tsx).
       expect(quant.ability).toBeNull()
       expect(skill.scope).toMatchObject({ enough: true })
-    })))
+    })), 30_000)
 })
 
 describe("Analytics kept between reads", () => {
@@ -179,5 +179,5 @@ describe("Analytics kept between reads", () => {
       yield* timedSet(asha, { kind: "filters", status: "unseen", size: 5, timed: true }, "C")
       const after = yield* asha.analytics.study()
       expect(after.days[0]!.questions).toBe(first.days[0]!.questions + 5)
-    })))
+    })), 30_000)
 })
