@@ -3260,3 +3260,147 @@ input[type="date"] {
 .coverage-none td {
   color: var(--pencil);
 }
+
+/* The Study Plan: a day's items read as a list of sets, each with what it
+   is for and a button to start it. */
+
+.plan-items li {
+  align-items: center;
+}
+
+.plan-item .set-name {
+  flex: 0 1 16rem;
+}
+
+.plan-item .set-facts {
+  flex: 1 1 16rem;
+}
+
+.plan-item > .button {
+  flex: none;
+}
+
+.plan-item .problem {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
+.plan-order {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.6rem;
+  font-size: var(--step-0);
+  font-weight: 700;
+}
+
+.plan-order select {
+  font-weight: 400;
+}
+
+/* The Diagnostic waits ahead of the day, on a panel of its own. */
+.plan-diagnostic {
+  max-width: 52rem;
+  padding: 1rem 1.25rem 1.25rem;
+  border-left: 4px solid var(--graphite);
+  background: var(--hover);
+}
+
+.plan-diagnostic .group-about {
+  margin-bottom: 1rem;
+  color: var(--graphite);
+}
+
+.plan-day {
+  margin-bottom: 2.5rem;
+}
+
+.plan-day > h2 {
+  font-size: var(--step-2);
+}
+
+.plan-settings {
+  display: grid;
+  gap: 1.5rem;
+  max-width: 36rem;
+}
+
+.plan-settings .hint {
+  max-width: 62ch;
+  margin: 0;
+}
+
+/* The Daily Log reads down the days, the latest first. */
+.daily-log {
+  max-width: 52rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rule);
+}
+
+.log-day {
+  display: grid;
+  gap: 0.5rem;
+  padding: 1.25rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.log-date {
+  font-size: var(--step-2);
+}
+
+.log-work,
+.log-planned {
+  max-width: 62ch;
+  margin: 0;
+}
+
+.log-planned {
+  color: var(--pencil);
+  font-size: var(--step-0);
+}
+
+.log-items {
+  margin: 0;
+  padding-left: 1.5rem;
+  font-size: var(--step-0);
+  list-style: "○  ";
+}
+
+.log-items .log-item-done {
+  list-style: "✓  ";
+}
+
+.log-note {
+  display: grid;
+  gap: 0.5rem;
+  justify-items: start;
+  max-width: 62ch;
+}
+
+.log-note label {
+  font-size: var(--step-0);
+  font-weight: 700;
+}
+
+.log-note textarea {
+  width: 100%;
+  padding: 0.45rem 0.75rem;
+  border: 2px solid var(--field);
+  border-radius: var(--radius);
+  background: var(--paper);
+  color: var(--graphite);
+  font: inherit;
+}
+
+.log-note textarea:focus-visible {
+  border-color: var(--graphite);
+}
+
+.log-note-text {
+  margin: 0;
+  padding-left: 0.75rem;
+  border-left: 3px solid var(--rule);
+  white-space: pre-wrap;
+}
