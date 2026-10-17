@@ -76,6 +76,8 @@ export class ErrorLogView extends Schema.Class<ErrorLogView>("gmat-prep/api/Erro
   entries: Schema.Array(ErrorLogEntry),
   // How many the filters keep.
   matching: Schema.Int,
+  // How many of those come after this page.
+  more: Schema.Int,
   // Every entry, before the filters.
   total: Schema.Int,
   // Entries left out while a running Sectional or Mock holds their
@@ -85,6 +87,16 @@ export class ErrorLogView extends Schema.Class<ErrorLogView>("gmat-prep/api/Erro
   // The Profile's time zone, which the day filters and the times shown use.
   timeZone: Schema.String
 }) {}
+
+// Where a page starts: after the entry with this latest miss and Question,
+// as the entries run from the latest miss back, Question id breaking ties.
+export const ErrorLogCursor = Schema.String.check(Schema.isPattern(/^\d+\.\S+$/))
+export const cursorOf = (entry: { readonly lastMissedAt: number; readonly questionId: string }) =>
+  `${entry.lastMissedAt}.${entry.questionId}`
+export const parseCursor = (cursor: string) => {
+  const dot = cursor.indexOf(".")
+  return { at: Number(cursor.slice(0, dot)), id: cursor.slice(dot + 1) }
+}
 
 export const ErrorLogFilters = {
   section: Schema.optional(Schema.String),
@@ -99,9 +111,10 @@ export const ErrorLogFilters = {
   // The latest miss's day, in the Profile's time zone, both included.
   from: Schema.optional(Day),
   to: Schema.optional(Day),
-  // The page: entries to pass over, and how many to list.
-  offset: Schema.optional(Schema.FiniteFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
-  limit: Schema.optional(Schema.FiniteFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: ErrorLogPageMax })))
+  // The page: the entry it follows, and how many to list; none gives only
+  // the counts.
+  after: Schema.optional(ErrorLogCursor),
+  limit: Schema.optional(Schema.FiniteFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 0, maximum: ErrorLogPageMax })))
 }
 export type ErrorLogFilters = Schema.Struct<typeof ErrorLogFilters>["Type"]
 

@@ -58,7 +58,7 @@ export interface QuestionSummary {
 }
 
 // Reads ids a few hundred at a time, within SQLite's limit on parameters.
-const inChunks = <A, E, R>(ids: ReadonlyArray<string>, read: (chunk: Array<string>) => Effect.Effect<ReadonlyArray<A>, E, R>) =>
+export const inChunks = <A, E, R>(ids: ReadonlyArray<string>, read: (chunk: Array<string>) => Effect.Effect<ReadonlyArray<A>, E, R>) =>
   Effect.gen(function*() {
     const found: Array<A> = []
     for (let start = 0; start < ids.length; start += 500) found.push(...(yield* read(ids.slice(start, start + 500))))

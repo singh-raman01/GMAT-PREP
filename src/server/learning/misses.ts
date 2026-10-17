@@ -86,14 +86,36 @@ export interface Miss {
 // Slow is over 1.5 times the Target Time.
 export const SlowFactor = 1.5
 // Time pressure: an answer in under a quarter of the Target Time, or in the
-// last tenth of a timed Session.
+// last tenth of a timed Session. An untimed set's time can only run long, as
+// the Question sits open, never short, so a quick answer there counts too.
 export const RushedShare = 0.25
 export const LastShare = 0.1
 
+// Shared by every miss that has them; never changed.
+const Wrong: ReadonlyArray<Reason> = Object.freeze(["wrong"])
+const SlowOnly: ReadonlyArray<Reason> = Object.freeze(["slow"])
+const GuessedOnly: ReadonlyArray<Reason> = Object.freeze(["guessed"])
+const SlowAndGuessed: ReadonlyArray<Reason> = Object.freeze(["slow", "guessed"])
+const NoParts: ReadonlyArray<MissedPart> = Object.freeze([])
+
+// A timed Session's clock when it served the Question; 0 when not known.
+const servedAt = (rows: ReadonlyArray<ServedFact> | undefined, questionId: string) => {
+  if (rows !== undefined) for (const row of rows) if (row.questionId === questionId) return row.servedElapsedMs ?? 0
+  return 0
+}
+
+const pickedIn = (selection: Selection, part: number) => {
+  for (const choice of selection) if (choice.part === part) return choice.choice
+  return null
+}
+
+// A whole history runs through here on every read, so the loops below are
+// written to allocate little.
 export const missesOf = (input: {
   readonly sessions: ReadonlyArray<SessionFact>
   readonly responses: ReadonlyArray<ResponseFact>
-  readonly served: ReadonlyArray<ServedFact>
+  // The served rows, or the same grouped by Session.
+  readonly served: ReadonlyArray<ServedFact> | ReadonlyMap<string, ReadonlyArray<ServedFact>>
   readonly questions: ReadonlyArray<QuestionFact> | ReadonlyMap<string, QuestionFact>
   readonly resolve?: (questionId: string) => string
 }): ReadonlyArray<Miss> => {
@@ -102,12 +124,16 @@ export const missesOf = (input: {
     : new Map((input.questions as ReadonlyArray<QuestionFact>).map((question) => [question.id, question] as const))
   const resolve = input.resolve ?? ((questionId: string) => questionId)
   const bySession = Map.groupBy(input.responses, (response) => response.sessionId)
-  const servedAt = new Map(input.served.map((row) => [`${row.sessionId}|${row.questionId}`, row.servedElapsedMs] as const))
+  const servedBySession: ReadonlyMap<string, ReadonlyArray<ServedFact>> = input.served instanceof Map
+    ? input.served
+    : Map.groupBy(input.served as ReadonlyArray<ServedFact>, (row) => row.sessionId)
   const misses: Array<Miss> = []
   for (const session of input.sessions) {
     if (!session.shown) continue
+    const mine = bySession.get(session.id)
+    if (mine === undefined) continue
     // The groups are this function's own arrays, so they are sorted in place.
-    const mine = (bySession.get(session.id) ?? []).sort((a, b) => a.seq - b.seq)
+    mine.sort((a, b) => a.seq - b.seq)
     const byQuestion = new Map<string, Array<ResponseFact>>()
     for (const response of mine) {
       const questionId = resolve(response.questionId)
@@ -115,58 +141,67 @@ export const missesOf = (input: {
       if (given === undefined) byQuestion.set(questionId, [response])
       else given.push(response)
     }
-    // Each Question's time: its first Response's, as the clock counted it.
-    const timeOf = (questionId: string) => byQuestion.get(questionId)?.[0]?.timeSpentMs ?? 0
+    // Each Question's time is its first Response's, as the clock counted it.
     // An RC passage's or MSR set's Questions in the Session are timed as a
     // whole, against the sum of their Target Times.
-    const units = new Map<string, { spent: number; target: number }>()
-    for (const questionId of byQuestion.keys()) {
+    let units: Map<string, { spent: number; target: number }> | undefined
+    for (const [questionId, given] of byQuestion) {
       const question = questions.get(questionId)
       if (question?.unit == null) continue
-      const found = units.get(question.unit) ?? { spent: 0, target: 0 }
-      units.set(question.unit, { spent: found.spent + timeOf(questionId), target: found.target + question.targetMs })
+      units ??= new Map()
+      const found = units.get(question.unit)
+      if (found === undefined) units.set(question.unit, { spent: given[0]!.timeSpentMs, target: question.targetMs })
+      else {
+        found.spent += given[0]!.timeSpentMs
+        found.target += question.targetMs
+      }
     }
-    const timingOf = (question: QuestionFact) =>
-      question.unit === null ? { spent: timeOf(question.id), target: question.targetMs } : units.get(question.unit)!
+    // Looked up only for a wrong answer in a timed Session.
+    const served = session.limitMs === null ? undefined : servedBySession.get(session.id)
     for (const [questionId, given] of byQuestion) {
       const question = questions.get(questionId)
       if (question === undefined) continue
       const first = given[0]!
-      const final = given.at(-1)!
+      const final = given[given.length - 1]!
       const right = final.kind !== "time-out" && isCorrect(final.selection, question.parts)
-      const edited = given.some((response) => response.kind === "edit")
-      const timing = timingOf(question)
-      const miss = { sessionId: session.id, questionId, responseId: final.id, at: final.at }
+      const unit = question.unit === null ? undefined : units!.get(question.unit)!
+      const spent = unit === undefined ? first.timeSpentMs : unit.spent
+      const target = unit === undefined ? question.targetMs : unit.target
       if (!right) {
         const rushed = first.kind === "time-out" ||
-          timing.spent < RushedShare * timing.target ||
-          (session.limitMs !== null &&
-            (servedAt.get(`${session.id}|${first.questionId}`) ?? 0) + first.timeSpentMs >= (1 - LastShare) * session.limitMs)
-        const parts = question.parts.flatMap((part): Array<MissedPart> => {
-          const picked = final.kind === "time-out"
-            ? null
-            : final.selection.find((choice) => choice.part === part.position)?.choice ?? null
-          if (picked !== null && picked === part.key) return []
+          spent < RushedShare * target ||
+          (session.limitMs !== null && servedAt(served, first.questionId) + first.timeSpentMs >= (1 - LastShare) * session.limitMs)
+        const parts: Array<MissedPart> = []
+        for (const part of question.parts) {
+          const picked = final.kind === "time-out" ? null : pickedIn(final.selection, part.position)
+          if (picked !== null && picked === part.key) continue
           const note = picked === null ? undefined : part.notes.get(picked)
-          return [{
+          parts.push({
             part: part.position,
             picked,
             mistakeType: rushed ? TimePressure : note?.mistakeType ?? null,
             trapPattern: note?.trapPattern ?? null,
             basis: rushed ? "timing" : note === undefined ? "none" : "option"
-          }]
-        })
-        misses.push({ ...miss, reasons: ["wrong"], parts })
+          })
+        }
+        misses.push({ sessionId: session.id, questionId, responseId: final.id, at: final.at, reasons: Wrong, parts })
         continue
       }
-      // An answer fixed in Review & Edit stays out.
-      if (edited) continue
       // Only a timed Session's clock says an answer was slow: an untimed
       // set's time runs while the Question sits open.
-      const slow = session.limitMs !== null && timing.spent > SlowFactor * timing.target
+      const slow = session.limitMs !== null && spent > SlowFactor * target
       const guessed = session.kind === "practice" && final.guessed
-      const reasons: Array<Reason> = [...(slow ? ["slow" as const] : []), ...(guessed ? ["guessed" as const] : [])]
-      if (reasons.length > 0) misses.push({ ...miss, reasons, parts: [] })
+      if (!slow && !guessed) continue
+      // An answer fixed in Review & Edit stays out.
+      if (given.some((response) => response.kind === "edit")) continue
+      misses.push({
+        sessionId: session.id,
+        questionId,
+        responseId: final.id,
+        at: final.at,
+        reasons: slow && guessed ? SlowAndGuessed : slow ? SlowOnly : GuessedOnly,
+        parts: NoParts
+      })
     }
   }
   return misses

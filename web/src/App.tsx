@@ -14,6 +14,7 @@ import { SectionalsHome } from "./sectionals/SectionalsHome.tsx"
 import { ProfilePicker } from "./ProfilePicker.tsx"
 import { linkProps, usePath } from "./router.ts"
 import { TaxonomyBrowser } from "./TaxonomyBrowser.tsx"
+import { onUnsaved } from "./unsaved.ts"
 
 type Screen =
   | { readonly _tag: "Starting" }
@@ -116,11 +117,25 @@ export const App = () => {
             </div>
           </header>
           <main className="page">
+            <UnsavedNotices key={screen.profile.id} />
             <LearnerArea key={screen.profile.id} path={path} onSessionLost={sessionLost} onStopped={stop} />
           </main>
         </>
       )
   }
+}
+
+// Changes that failed to save once their screen had closed.
+const UnsavedNotices = () => {
+  const [messages, setMessages] = useState<ReadonlyArray<string>>([])
+  useEffect(() => onUnsaved((message) => setMessages((current) => (current.includes(message) ? current : [...current, message]))), [])
+  if (messages.length === 0) return null
+  return (
+    <div className="notice unsaved" role="alert">
+      {messages.map((message) => <p key={message}>{message}</p>)}
+      <button type="button" className="link-button" onClick={() => setMessages([])}>Dismiss</button>
+    </div>
+  )
 }
 
 // A Learner's pages: Practice and a set, Sectionals and one Sectional, Mocks

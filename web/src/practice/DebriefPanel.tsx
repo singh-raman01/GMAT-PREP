@@ -5,6 +5,7 @@ import type { Debrief, MissedPartView, MistakesView, PracticePart, ResponseView,
 import { call } from "../api.ts"
 import { spokenDuration } from "../format.ts"
 import { RichText } from "../RichText.tsx"
+import { reportUnsaved } from "../unsaved.ts"
 
 // What a Learner reads after a Question: whether the answer was right, why
 // a wrong option tempted, and the stored ways to solve it, fastest first.
@@ -158,8 +159,10 @@ const basisHint: Record<Basis, string> = {
 // choice until the Learner picks another, with one tap. A Part sends one
 // save at a time: picks made while one is on its way wait, and only the
 // latest is sent next, so arrowing through the choices stores where the
-// Learner stops, in order. A save that fails puts back what was saved last,
-// unless a newer pick is on its way.
+// Learner stops, in order. Every save that lands is recorded and passed on,
+// so a failed one puts back what was saved last, unless a newer pick is on
+// its way. A save that fails after the control has closed is reported by
+// the app.
 const MistakeControls = (
   { mistakes, parts, onChanged, onFailure }: {
     readonly mistakes: MistakesView
@@ -198,14 +201,17 @@ const MistakeControls = (
       })
     )
     slot.sending = false
-    // A newer pick waits: its reply decides what shows.
-    if (slot.next !== undefined) return void send(part)
     if (result._tag === "Success") {
       saved.current.set(part, { id: mistakeType, basis: "learner" })
-      return onChanged?.(result.success)
+      onChanged?.(result.success)
     }
+    // A newer pick waits: its reply decides what shows.
+    if (slot.next !== undefined) return void send(part)
+    if (result._tag === "Success") return
     if (result.failure._tag === "NotUnlocked") return onFailure?.(result.failure)
-    if (!mounted.current) return
+    if (!mounted.current) {
+      return reportUnsaved("A Mistake Type you picked was not saved. Open the Question in your Error Log to set it again.")
+    }
     const before = saved.current.get(part)
     if (before !== undefined) setChosen((current) => new Map(current).set(part, before))
     setProblems((current) =>
