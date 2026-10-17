@@ -88,13 +88,13 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
   const ids = { from: useId(), to: useId(), base: useId() }
   const [filters, setFilters] = useState<Filters>({})
   const [log, setLog] = useState<ErrorLogView>()
-  const [entries, setEntriesState] = useState<ReadonlyArray<ErrorLogEntry>>([])
-  // The entries shown, for the requests that follow the last of them.
-  const shown = useRef<ReadonlyArray<ErrorLogEntry>>([])
-  const setEntries = useCallback((next: (current: ReadonlyArray<ErrorLogEntry>) => ReadonlyArray<ErrorLogEntry>) => {
-    shown.current = next(shown.current)
-    setEntriesState(shown.current)
-  }, [])
+  const [entries, setEntries] = useState<ReadonlyArray<ErrorLogEntry>>([])
+  // Where the next page starts: after the last entry the pages gave. A label
+  // change replaces an entry on screen with its latest miss, which may be
+  // newer, so the cursor comes only from the pages.
+  const cursor = useRef<string | undefined>(undefined)
+  // Counted up as each page lands, so counts asked for before it are dropped.
+  const pages = useRef(0)
   const [open, setOpen] = useState<string>()
   const [more, setMore] = useState(false)
   // The filters start open on a wide screen, folded on a narrow one.
@@ -112,26 +112,26 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
     void call((client) => client.errorLog.list({ query: filters })).then((result) => {
       if (mine !== request.current) return
       if (result._tag === "Failure") return handle(result.failure)
+      const last = result.success.entries.at(-1)
+      cursor.current = last === undefined ? undefined : cursorOf(last)
+      pages.current++
       setLog(result.success)
-      setEntries(() => result.success.entries)
+      setEntries(result.success.entries)
     })
-  }, [filters, handle, setEntries])
-
-  // The next page follows the last entry shown, wherever a label change has
-  // since put it.
-  const after = () => {
-    const last = shown.current.at(-1)
-    return last === undefined ? {} : { after: cursorOf(last) }
-  }
+  }, [filters, handle])
 
   const showMore = async () => {
     if (more) return
     setMore(true)
     const mine = request.current
-    const result = await call((client) => client.errorLog.list({ query: { ...filters, ...after() } }))
+    const after = cursor.current
+    const result = await call((client) => client.errorLog.list({ query: { ...filters, ...(after === undefined ? {} : { after }) } }))
     setMore(false)
     if (mine !== request.current) return
     if (result._tag === "Failure") return handle(result.failure)
+    const last = result.success.entries.at(-1)
+    if (last !== undefined) cursor.current = cursorOf(last)
+    pages.current++
     setLog(result.success)
     setEntries((current) => [...current, ...result.success.entries])
   }
@@ -142,13 +142,14 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
   const changed = useCallback((entry: ErrorLogEntry) => {
     setEntries((current) => current.map((each) => (each.questionId === entry.questionId ? entry : each)))
     const mine = request.current
-    const last = shown.current.at(-1)
-    const query = { ...filters, ...(last === undefined ? {} : { after: cursorOf(last) }), limit: 0 }
+    const page = pages.current
+    const after = cursor.current
+    const query = { ...filters, ...(after === undefined ? {} : { after }), limit: 0 }
     void call((client) => client.errorLog.list({ query })).then((result) => {
-      if (mine !== request.current || result._tag === "Failure") return
+      if (mine !== request.current || page !== pages.current || result._tag === "Failure") return
       setLog((current) => (current === undefined ? current : { ...current, ...result.success, entries: current.entries }))
     })
-  }, [filters, setEntries])
+  }, [filters])
 
   const set = (key: keyof Filters, value: string) =>
     setFilters((current) => {

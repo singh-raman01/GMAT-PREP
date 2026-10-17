@@ -1,5 +1,5 @@
 import { and, eq, inArray, isNotNull, type SQL, sql } from "drizzle-orm"
-import { Clock, Context, Effect, Layer } from "effect"
+import { Cause, Clock, Context, Effect, Layer } from "effect"
 import { bandNames, bandOf, type DifficultyBand } from "../../api/difficulty.ts"
 import {
   ErrorLogDetail,
@@ -255,7 +255,8 @@ export class ErrorLog extends Context.Service<ErrorLog, {
       // Each Profile's Responses, with the served rows of its timed Sessions,
       // kept between reads for the few Profiles read last. Neither is changed
       // once written, so a read takes only the Responses written since, and
-      // the served rows of their Sessions again. What is kept is checked
+      // the served rows of their Sessions again: a Question is served before
+      // any Response to it is written. What is kept is checked
       // first: when fewer rows now reach the last Response kept, or another
       // row has taken its place, as after a deletion or a restore, it is all
       // read again.
@@ -463,25 +464,25 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           const held = yield* run(heldBySections(profileId))
           const all = entriesOf(facts)
           const shown = all.filter((entry) => !held.has(entry.questionId))
-          const kept = shown.filter((entry) => matches(entry, filters, facts.timeZone))
-          const names = yield* bookNames(facts.timeZone)
+          const matched = shown.filter((entry) => matches(entry, filters, facts.timeZone))
+          const titles = yield* bookNames(facts.timeZone)
           // The page starts after the entry the last one ended on, wherever
           // that entry is now: a label change can take it out of the filter.
           const after = filters.after === undefined ? undefined : parseCursor(filters.after)
           const start = after === undefined
             ? 0
             : (() => {
-              const found = kept.findIndex((entry) => later(after, { at: entry.latest.at, id: entry.questionId }) < 0)
-              return found === -1 ? kept.length : found
+              const found = matched.findIndex((entry) => later(after, { at: entry.latest.at, id: entry.questionId }) < 0)
+              return found === -1 ? matched.length : found
             })()
-          const page = kept.slice(start, start + (filters.limit ?? ErrorLogPageSize))
+          const page = matched.slice(start, start + (filters.limit ?? ErrorLogPageSize))
           return new ErrorLogView({
-            entries: page.map((entry) => viewOf(facts, entry, names)),
-            matching: kept.length,
-            more: kept.length - start - page.length,
+            entries: page.map((entry) => viewOf(facts, entry, titles)),
+            matching: matched.length,
+            more: matched.length - start - page.length,
             total: shown.length,
             held: all.length - shown.length,
-            facets: facetsOf(shown, names),
+            facets: facetsOf(shown, titles),
             timeZone: facts.timeZone
           })
         })
@@ -583,6 +584,19 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           const after = yield* entryOf(profileId, questionId).pipe(Effect.orDie)
           return viewOf(after.facts, after.entry, yield* bookNames(after.facts.timeZone))
         })
+
+      // When the app starts, the Profiles that practised last have their
+      // history read in the background, so their first Error Log opens as
+      // quickly as the ones after it.
+      yield* Effect.forkScoped(
+        Effect.gen(function*() {
+          const recent = yield* run(
+            db.select({ profileId: sessions.profileId }).from(sessions).groupBy(sessions.profileId)
+              .orderBy(sql`max(${sessions.createdAt}) desc`).limit(KeptProfiles)
+          )
+          for (const { profileId } of recent.toReversed()) yield* profileFacts(profileId)
+        }).pipe(Effect.catchCause((cause) => Effect.logWarning(`The Error Log could not be read ahead: ${Cause.pretty(cause)}`)))
+      )
 
       return ErrorLog.of({ list, get, setMistakeType })
     })

@@ -2758,9 +2758,11 @@ input[type="date"] {
   width: 100%;
 }
 
-/* A date field needs more room than a column gives it. */
-.filter-grid .field-date {
-  grid-column: span 2;
+/* A date field needs more room than a column gives it, once two fit. */
+@media (min-width: 23rem) {
+  .filter-grid .field-date {
+    grid-column: span 2;
+  }
 }
 
 .filter-grid input[type="date"] {
