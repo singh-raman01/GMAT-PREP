@@ -139,7 +139,7 @@ From your name at the top, your profile page downloads everything your profile h
 
 ## Display
 
-The Display button at the top of every screen sets this browser's colours (match the device, light or dark) and text size (standard, larger or largest). The choice stays in this browser. During a timed set, Sectional or Mock you can hide the timer; a warning still shows when 5 minutes are left.
+The Display button at the top of every screen, the profile picker and the sign-in screens included, sets this browser's colours (match the device, light or dark) and text size (standard, larger or largest). The choice stays in this browser, and its other open tabs follow it. While the Display panel is open, A to E and Enter never pick or submit an answer. During a timed set, Sectional or Mock you can hide the timer, and it stays hidden until you show it again, through a reload and into a Mock's next Section. A warning shows when 5 minutes are left, or a fifth of the time in a set shorter than 25 minutes, and stays until you dismiss it.
 
 ## Use it on a tablet or phone
 

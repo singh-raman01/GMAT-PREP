@@ -196,8 +196,17 @@ mark {
   letter-spacing: -0.01em;
 }
 
-.page > .wordmark {
+.page > .wordmark,
+.page > .plain-head {
   margin-bottom: clamp(2rem, 7vh, 4rem);
+}
+
+.plain-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1.5rem;
 }
 
 .page > h1 {
@@ -753,7 +762,7 @@ select:focus-visible {
 
 .task-models {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(17rem, 100%), 1fr));
   gap: 1.25rem 2.5rem;
 }
 
@@ -2829,9 +2838,12 @@ input[type="date"] {
 /* The Error Log: filters over the list, then one entry per Question, which
    opens to the Question, its Debrief and every answer given to it. */
 
+/* A container, so the rule below measures it in the root's rem, which
+   follow the text size; a media query's rem do not. */
 .error-filters {
   margin: 1.5rem 0 0;
   max-width: 64rem;
+  container-type: inline-size;
 }
 
 .error-filters summary {
@@ -2853,8 +2865,8 @@ input[type="date"] {
 }
 
 /* A date field needs more room than a column gives it, once two fit: two
-   9.5rem columns, their 1.25rem gap and the page's 1rem gutters. */
-@media (min-width: 22.25rem) {
+   9.5rem columns and their 1.25rem gap. */
+@container (min-width: 20.25rem) {
   .filter-grid .field-date {
     grid-column: span 2;
   }
@@ -3048,6 +3060,7 @@ input[type="date"] {
   stroke-width: 1;
 }
 
+/* In the chart's own units, which charts.tsx scales with the text size. */
 .chart-grid text,
 .chart-axis {
   fill: var(--pencil);
@@ -3796,6 +3809,8 @@ input[type="text"].pairing-code {
   position: relative;
 }
 
+/* Its edge is a field's, at 3:1 or more against the page in both themes,
+   and its shadow is dark in both, so it stands apart from what it covers. */
 .display-panel {
   position: absolute;
   inset-inline-end: 0;
@@ -3807,10 +3822,15 @@ input[type="text"].pairing-code {
   width: max-content;
   max-width: min(22rem, calc(100vw - 2rem));
   padding: 1rem 1.25rem;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--field);
   border-radius: var(--radius);
   background: var(--paper);
-  box-shadow: 0 0.5rem 1.5rem color-mix(in srgb, var(--graphite) 18%, transparent);
+  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 0.25);
+}
+
+/* Focused only by a click on its background, which needs no ring. */
+.display-panel:focus {
+  outline: none;
 }
 
 .display-panel fieldset {
