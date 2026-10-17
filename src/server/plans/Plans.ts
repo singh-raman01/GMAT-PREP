@@ -302,7 +302,7 @@ export class Plans extends Context.Service<Plans, {
           case "practice": {
             const params = item.practice!
             const what = params.trapPattern !== undefined
-              ? `${named(params.trapPattern).name} in ${sectionName(params.section).name}`
+              ? `Trap Pattern: ${named(params.trapPattern).name}`
               : params.skill !== undefined
               ? named(params.skill).name
               : params.questionType !== undefined

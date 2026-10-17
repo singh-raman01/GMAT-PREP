@@ -3405,3 +3405,12 @@ input[type="date"] {
   border-left: 3px solid var(--rule);
   white-space: pre-wrap;
 }
+
+.plan-more {
+  margin: -0.5rem 0 3rem;
+}
+
+/* A note under the Score Estimates keeps clear of the list. */
+.score-list ~ .hint {
+  margin-top: 0.75rem;
+}

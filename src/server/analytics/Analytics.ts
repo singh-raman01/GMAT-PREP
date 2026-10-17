@@ -480,7 +480,11 @@ export class Analytics extends Context.Service<Analytics, {
               day: dayText(day.day),
               minutes: day.minutes,
               questions: day.questions,
-              sections: [...day.sections].map(([section, accuracy]) => ({ section: named(section), ...accuracy })),
+              // In the Taxonomy's order, so each day reads the same way.
+              sections: taxonomy.sections.flatMap((each) => {
+                const accuracy = day.sections.get(each.id)
+                return accuracy === undefined ? [] : [{ section: named(each.id), ...accuracy }]
+              }),
               mocks: day.mocks
             }))
           })

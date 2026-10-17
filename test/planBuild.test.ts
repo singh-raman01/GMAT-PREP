@@ -104,7 +104,7 @@ describe("Mocks", () => {
     const dropped = plan.dropped.filter((item) => item.kind === "mock")
     expect(dropped.length).toBe(2)
     for (const item of dropped) expect(dayNumber(item.day)).toBeLessThan(Math.min(...mocks.map(dayNumber)))
-    expect(dropped[0]!.reason).toContain("2 Mocks")
+    expect(dropped[0]!.reason).toContain("only 2 more Mocks")
   })
 
   test("the Diagnostic is the first Mock, on the first study day, and counts against the start check", () => {

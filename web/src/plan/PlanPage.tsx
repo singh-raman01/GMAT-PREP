@@ -31,8 +31,12 @@ const phaseNames: Record<PlanDayView["phase"], string> = {
   "mocks": "a Mock week"
 }
 
-const dayAbout = (day: PlanDayView) =>
-  day.off ? "A day off." : `${hoursAndMinutes(day.minutes)} planned, for ${phaseNames[day.phase]}.`
+// A Weak Area day with no Weak Area to work on yet is mixed practice.
+const dayAbout = (day: PlanDayView) => {
+  if (day.off) return "A day off."
+  const phase = day.phase === "weak-areas" && !day.items.some((item) => item.weakArea !== null) ? "mixed" : day.phase
+  return `${hoursAndMinutes(day.minutes)} planned, for ${phaseNames[phase]}.`
+}
 
 export const PlanPage = ({ path, onSessionLost, onStopped }: Props) => {
   const heading = useFocusOnMount<HTMLHeadingElement>()
@@ -93,14 +97,19 @@ const orders = (ids: ReadonlyArray<string>): ReadonlyArray<ReadonlyArray<string>
   ids.length <= 1 ? [ids] : ids.flatMap((id) => orders(ids.filter((other) => other !== id)).map((rest) => [id, ...rest]))
 const SectionNames: Readonly<Record<string, string>> = { quant: "Quantitative", verbal: "Verbal", di: "Data Insights" }
 
-const forText = (item: PlanItemView) => {
+const forText = (item: PlanItemView, today: boolean) => {
   if (item.diagnostic) return "Shows where each Section starts, and counts as your first Mock."
   if (item.kind === "mock") return "One of your Mock weeks."
   if (item.kind === "sectional") return "In place of a Mock, as your weekly time is under one."
-  if (item.kind === "retries") return "Questions you missed, due back today."
+  if (item.kind === "retries") return today ? "Questions you missed, due back today." : "Questions you missed, due back by that day."
   if (item.weakArea === null) return `Mixed practice in ${item.section?.name ?? "a Section"}.`
-  const remedy = item.remedy === null ? "" : ` Most often: ${item.remedy.name.toLowerCase()}.`
-  return `For ${item.weakArea.scope.name}, a Weak Area.${remedy}`
+  const area = item.weakArea.scope.name
+  const section = item.section?.name ?? "its Section"
+  if (item.remedy?.id === "trap") {
+    return `For ${area}, a Weak Area whose misses are most often traps: Questions in ${section} that set the same trap.`
+  }
+  if (item.remedy?.id === "slow") return `For ${area}, a Weak Area where right answers come slowly.`
+  return `For ${area}, a Weak Area.${item.remedy === null ? "" : ` Most often: ${item.remedy.name.toLowerCase()}.`}`
 }
 
 const ItemRow = (
@@ -162,7 +171,7 @@ const ItemRow = (
     <li className={`plan-item plan-item-${item.status}`}>
       <span className="set-name">{item.status === "done" ? <span className="mark">{item.title}</span> : item.title}</span>
       <span className="set-facts">
-        {hoursAndMinutes(item.minutes)}. {forText(item)}
+        {hoursAndMinutes(item.minutes)}. {forText(item, today)}
         {item.status === "done" ? " Done." : ""}
       </span>
       {today && item.status === "planned" && item.kind === "mock" && (
@@ -276,13 +285,24 @@ const Today = (
   )
 }
 
+// The days ahead show a week at first, the rest on request.
+const FirstDays = 7
+
 const DaysAhead = ({ plan }: { readonly plan: PlanView }) => {
   const ahead = plan.plan.filter((day) => day.day > plan.today)
+  const [all, setAll] = useState(false)
+  const shown = all ? ahead : ahead.slice(0, FirstDays)
+  const events = ahead.flatMap((day) => day.items.filter((item) => item.kind === "mock" || item.kind === "sectional"))
   return (
     <>
+      {events.length > 0 && (
+        <p className="group-about">
+          {events.map((item) => `${item.title} on ${longDay(item.day)}`).join("; ")}.
+        </p>
+      )}
       {ahead.length === 0
         ? <p className="empty">No days are planned after today.</p>
-        : ahead.map((day) => (
+        : shown.map((day) => (
           <section key={day.day} className="group plan-day" aria-labelledby={`day-${day.day}`}>
             <h2 id={`day-${day.day}`}>{longDay(day.day)}</h2>
             <p className="group-about">{dayAbout(day)}</p>
@@ -291,13 +311,20 @@ const DaysAhead = ({ plan }: { readonly plan: PlanView }) => {
                 {day.items.map((item) => (
                   <li key={item.id} className="plan-item">
                     <span className="set-name">{item.title}</span>
-                    <span className="set-facts">{hoursAndMinutes(item.minutes)}. {forText(item)}</span>
+                    <span className="set-facts">{hoursAndMinutes(item.minutes)}. {forText(item, false)}</span>
                   </li>
                 ))}
               </ol>
             )}
           </section>
         ))}
+      {shown.length < ahead.length && (
+        <div className="actions plan-more">
+          <button type="button" className="button button-quiet" onClick={() => setAll(true)}>
+            Show the other {ahead.length - shown.length} days
+          </button>
+        </div>
+      )}
       <section className="group" aria-labelledby="dropped-title">
         <h2 id="dropped-title">What did not fit</h2>
         {plan.dropped.length === 0

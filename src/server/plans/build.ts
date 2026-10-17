@@ -313,11 +313,13 @@ export const buildPlan = ({ settings, state }: PlanInputs): Plan => {
         })
       }
     }
-    const mocksKept = [...events.values()].filter((event) => event.kind === "mock").length
+    // The Mock weeks' Mocks kept, the Diagnostic aside.
+    const weekMocks = [...events.values()].filter((event) => event.kind === "mock" && !event.diagnostic).length
+    const reason = weekMocks === 0
+      ? "The Mock Reserve has too few unseen Questions for another Mock."
+      : `The Mock Reserve has unseen Questions for only ${weekMocks} more ${weekMocks === 1 ? "Mock" : "Mocks"}, kept for the weeks nearest the test.`
     for (const [index, each] of dropped.entries()) {
-      if (each.kind === "mock" && each.reason === "") {
-        dropped[index] = { ...each, reason: `The Mock Reserve holds unseen Questions for ${mocksKept} Mocks in all.` }
-      }
+      if (each.kind === "mock" && each.reason === "") dropped[index] = { ...each, reason }
     }
   }
 
@@ -355,6 +357,9 @@ export const buildPlan = ({ settings, state }: PlanInputs): Plan => {
   const paceOf = (section: SectionId) => sectionOf.get(section)?.paceMs ?? 120_000
 
   const top = state.weakAreas.slice(0, TopWeakAreas)
+  if (top.length === 0) {
+    notes.push("No Weak Area shows yet, so the plan sets mixed practice until your timed answers show where you lose points.")
+  }
   const remedyOf = (area: WeakAreaState): Pick<PlannedItem, "remedy"> & { readonly params: Omit<PracticeParams, "size" | "near"> } => {
     const scope = area.kind === "skill" ? { skill: area.id } : { questionType: area.id }
     if (area.topMistake === "trap" && area.topTrap !== null) {
