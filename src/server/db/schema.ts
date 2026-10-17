@@ -685,6 +685,21 @@ export const mistakeLabels = sqliteTable(
   (t) => [index("mistake_labels_profile").on(t.profileId), index("mistake_labels_response").on(t.responseId, t.part)]
 )
 
+// A Retry Ladder step with no Sibling left to serve, skipped with a note when
+// its retries started. The entry is known by its Question.
+export const retrySkips = sqliteTable(
+  "retry_skips",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    questionId: text("question_id").notNull().references(() => questions.id, { onDelete: "cascade" }),
+    step: integer("step").notNull(),
+    note: text("note").notNull(),
+    createdAt: integer("created_at").notNull()
+  },
+  (t) => [index("retry_skips_profile").on(t.profileId)]
+)
+
 // A Profile's Bookmarks: one per Question, whichever set marked it, so a
 // Bookmark can be cleared from any set that shows the Question.
 export const bookmarks = sqliteTable(

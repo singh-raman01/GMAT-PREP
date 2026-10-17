@@ -13,6 +13,8 @@ import {
   type ErrorReason,
   type ErrorStatus,
   HistoryItem,
+  LadderStepView,
+  LadderView,
   MistakeTypeInvalid,
   parseCursor
 } from "../../api/ErrorLog.ts"
@@ -20,7 +22,7 @@ import { MistakesView, Named, ResponseView, ServedView, SessionId } from "../../
 import { QuestionId } from "../../api/Review.ts"
 import { studyDayOf } from "../../api/studyDay.ts"
 import { Db } from "../db/Database.ts"
-import { books, mistakeLabels, profiles, questions, responses, servedQuestions, sessions } from "../db/schema.ts"
+import { books, mistakeLabels, profiles, questions, responses, retrySkips, servedQuestions, sessions } from "../db/schema.ts"
 import { debriefOf, namesOf, practiceQuestion, storedQuestions } from "../practice/content.ts"
 import { bookmarkedBy, heldBySections, isCorrect, mergeTargets } from "../practice/history.ts"
 import { ratedAmong } from "../ratings/rated.ts"
@@ -35,13 +37,17 @@ import {
   questionSummaries,
   responseFact
 } from "./facts.ts"
+import type { Step } from "./ladder.ts"
+import { type EntryLadder, laddersOf } from "./ladders.ts"
 import { type Miss, missesOf, type ResponseFact, type ServedFact, type SessionFact } from "./misses.ts"
+import { type RetryItem, retryListOf } from "./retryConfig.ts"
 
-// The Error Log service (docs/design.md, "Learning loop"): entries worked
-// out from the facts on every read, with the Learner's Mistake Types kept
-// as facts of their own. A list reads the Profile's whole history once; an
+// The Error Log service (docs/design.md, "Learning loop"): entries and
+// their Retry Ladders worked out from the facts on every read, with the
+// Learner's Mistake Types and skipped retry steps kept as facts of their
+// own. A list reads the Profile's whole history, kept between reads; an
 // entry, and a change to it, read only the Sessions that answered its
-// Question.
+// Question or took its retry steps.
 
 const DayMs = 24 * 60 * 60 * 1000
 const dayNumber = (day: string) => Date.parse(`${day}T00:00:00Z`) / DayMs
@@ -55,7 +61,7 @@ const KindNames: Readonly<Record<"slow" | "guessed" | typeof Unlabelled, string>
   guessed: "Guessed",
   [Unlabelled]: "Not yet labelled"
 }
-const StatusNames: Readonly<Record<ErrorStatus, string>> = { open: "Open", withdrawn: "Withdrawn" }
+const StatusNames: Readonly<Record<ErrorStatus, string>> = { open: "Open", resolved: "Resolved", withdrawn: "Withdrawn" }
 const BandOrder: ReadonlyArray<DifficultyBand> = ["easy", "medium", "hard"]
 
 // The Session kinds whose Responses can enter the Error Log.
@@ -64,7 +70,25 @@ const Kinds = ["practice", "sectional", "mock-section"]
 // Facet values sort by name the same way on every read.
 const byName = new Intl.Collator("en").compare
 
-type ShownSession = SessionFact & { readonly timed: boolean }
+type ShownSession = SessionFact & {
+  readonly timed: boolean
+  readonly finished: boolean
+  readonly createdAt: number
+  // A retry set's Retry Ladder steps; none for any other Session.
+  readonly retry: ReadonlyArray<RetryItem>
+}
+
+// A Study Day as a date.
+const dayText = (day: number) => new Date(day * DayMs).toISOString().slice(0, 10)
+
+const ladderView = (found: EntryLadder | undefined) =>
+  found === undefined ? null : new LadderView({
+    step: found.ladder.step,
+    dueOn: found.ladder.dueDay === null ? null : dayText(found.ladder.dueDay),
+    steps: found.ladder.history.map((step) =>
+      new LadderStepView({ step: step.step, on: dayText(step.day), outcome: step.outcome, note: step.note ?? null })
+    )
+  })
 
 interface Facts {
   readonly sessions: ReadonlyMap<string, ShownSession>
@@ -73,7 +97,10 @@ interface Facts {
   readonly summaries: ReadonlyMap<string, QuestionSummary>
   readonly resolve: (questionId: string) => string
   readonly labels: ReadonlyMap<string, string>
+  readonly ladders: ReadonlyMap<string, EntryLadder>
   readonly timeZone: string
+  // Today's Study Day, in the Profile's time zone and rollover hour.
+  readonly today: number
 }
 
 // A moment's day and minute in a time zone.
@@ -141,6 +168,21 @@ interface Entry {
   // Guessed and Not yet labelled among them.
   readonly kinds: ReadonlyArray<string>
   readonly trapPatterns: ReadonlyArray<string>
+  readonly ladder: EntryLadder | undefined
+}
+
+// What the Retries service reads: each entry with a Retry Ladder, today's
+// Study Day, and a retry set not finished yet.
+export interface RetryState {
+  readonly today: number
+  readonly entries: ReadonlyArray<{
+    readonly questionId: string
+    readonly question: QuestionSummary
+    readonly status: ErrorStatus
+    readonly lastMissedAt: number
+    readonly ladder: EntryLadder
+  }>
+  readonly running: string | undefined
 }
 
 export class ErrorLog extends Context.Service<ErrorLog, {
@@ -151,6 +193,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
     questionId: string,
     change: { readonly responseId: string; readonly part: number; readonly mistakeType: string }
   ): Effect.Effect<ErrorLogEntry, ErrorLogEntryNotFound | MistakeTypeInvalid>
+  retryState(profileId: string): Effect.Effect<RetryState>
 }>()("gmat-prep/server/ErrorLog") {
   static readonly layer = Layer.effect(
     ErrorLog,
@@ -173,7 +216,9 @@ export class ErrorLog extends Context.Service<ErrorLog, {
               status: sessions.status,
               timed: sessions.timed,
               timeLimitMs: sessions.timeLimitMs,
-              mockId: sql<string | null>`json_extract(${sessions.config}, '$.mock.id')`
+              createdAt: sessions.createdAt,
+              mockId: sql<string | null>`json_extract(${sessions.config}, '$.mock.id')`,
+              retry: sql<string | null>`json_extract(${sessions.config}, '$.retry')`
             }).from(sessions).where(where)
           )
           const mockIds = [...new Set(rows.flatMap((row) => (row.mockId === null ? [] : [row.mockId])))]
@@ -187,6 +232,9 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             id: row.id,
             kind: row.kind,
             timed: row.timed,
+            finished: row.status === "finished",
+            createdAt: row.createdAt,
+            retry: row.kind === "practice" ? retryListOf(row.retry) : [],
             limitMs: row.timed ? row.timeLimitMs : null,
             shown: row.kind === "practice"
               ? !row.timed || row.status === "finished"
@@ -218,20 +266,16 @@ export class ErrorLog extends Context.Service<ErrorLog, {
         found: ReadonlyMap<string, ShownSession>,
         responseFacts: ReadonlyArray<ResponseFact>,
         served: ReadonlyArray<ServedFact> | ReadonlyMap<string, ReadonlyArray<ServedFact>>,
-        resolve: (questionId: string) => string
+        resolve: (questionId: string) => string,
+        skipsWhere: SQL
       ) =>
         Effect.gen(function*() {
           const answered = new Set<string>()
           for (const response of responseFacts) answered.add(response.questionId).add(resolve(response.questionId))
           const summaries = yield* run(questionSummaries([...answered]))
           const overrides = yield* settings.targetTimes
-          const misses = missesOf({
-            sessions: [...found.values()],
-            responses: responseFacts,
-            served,
-            questions: new Map([...summaries].map(([id, question]) => [id, questionFactOf(question, overrides)] as const)),
-            resolve
-          })
+          const questionFacts = new Map([...summaries].map(([id, question]) => [id, questionFactOf(question, overrides)] as const))
+          const misses = missesOf({ sessions: [...found.values()], responses: responseFacts, served, questions: questionFacts, resolve })
           // The labels of a few misses are read by their Responses; of many,
           // by the Profile.
           const missed = misses.map((miss) => miss.responseId)
@@ -240,7 +284,26 @@ export class ErrorLog extends Context.Service<ErrorLog, {
               ? eq(mistakeLabels.profileId, profileId)
               : and(eq(mistakeLabels.profileId, profileId), inArray(mistakeLabels.responseId, missed))!
           ))
-          const [profile] = yield* run(db.select({ timeZone: profiles.timeZone }).from(profiles).where(eq(profiles.id, profileId)))
+          const [profile] = yield* run(
+            db.select({ timeZone: profiles.timeZone, rolloverHour: profiles.rolloverHour }).from(profiles)
+              .where(eq(profiles.id, profileId))
+          )
+          const timeZone = profile?.timeZone ?? "UTC"
+          const dayOf = (at: number) => studyDayOf(at, timeZone, profile?.rolloverHour ?? 4)
+          const skips = yield* run(db.select().from(retrySkips).where(and(eq(retrySkips.profileId, profileId), skipsWhere)))
+          const ladders = laddersOf({
+            misses,
+            sessions: [...found.values()].flatMap((session) =>
+              session.retry.length === 0
+                ? []
+                : [{ id: session.id, shown: session.shown, retry: session.retry, createdAt: session.createdAt }]
+            ),
+            responses: responseFacts,
+            questions: questionFacts,
+            skips: skips.map((row) => ({ questionId: row.questionId, step: row.step as Step, at: row.createdAt, note: row.note })),
+            resolve,
+            dayOf
+          })
           return {
             sessions: found,
             responses: responseFacts,
@@ -248,7 +311,9 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             summaries,
             resolve,
             labels,
-            timeZone: profile?.timeZone ?? "UTC"
+            ladders,
+            timeZone,
+            today: dayOf(yield* Clock.currentTimeMillis)
           } satisfies Facts
         })
 
@@ -325,25 +390,38 @@ export class ErrorLog extends Context.Service<ErrorLog, {
         Effect.gen(function*() {
           const found = yield* readSessions(and(eq(sessions.profileId, profileId), inArray(sessions.kind, Kinds)))
           const history = yield* historyOf(profileId)
-          return yield* factsFrom(profileId, found, history.answers, history.served, yield* run(mergeTargets))
+          return yield* factsFrom(profileId, found, history.answers, history.served, yield* run(mergeTargets), sql`1 = 1`)
         })
 
       // The facts of one entry: every Session that answered its Question, or
       // a Question merged into it, with all their Responses, since a passage
-      // is timed as a whole.
+      // is timed as a whole; the retry sets that took its Retry Ladder's
+      // steps with a Sibling; and its skipped steps.
       const entryFacts = (profileId: string, entryId: string, resolve: (questionId: string) => string) =>
         Effect.gen(function*() {
           const merged = yield* run(db.select({ id: questions.id }).from(questions).where(isNotNull(questions.mergedInto)))
           const members = [entryId, ...merged.map((row) => row.id).filter((id) => id !== entryId && resolve(id) === entryId)]
-          const sessionIds = (yield* run(
+          const answered = (yield* run(
             db.selectDistinct({ sessionId: responses.sessionId }).from(responses)
               .where(and(eq(responses.profileId, profileId), inArray(responses.questionId, members)))
           )).map((row) => row.sessionId)
-          if (sessionIds.length === 0) return yield* factsFrom(profileId, new Map(), [], new Map(), resolve)
+          // A retry set names its entries in its config; the match is checked
+          // again when the set's retry list is read.
+          const retried = (yield* run(
+            db.select({ id: sessions.id }).from(sessions).where(and(
+              eq(sessions.profileId, profileId),
+              eq(sessions.kind, "practice"),
+              sql`json_extract(${sessions.config}, '$.retry') is not null`,
+              sql`(${sql.join(members.map((id) => sql`instr(${sessions.config}, ${id}) > 0`), sql` or `)})`
+            ))
+          )).map((row) => row.id)
+          const sessionIds = [...new Set([...answered, ...retried])]
+          const skipsWhere = inArray(retrySkips.questionId, members)
+          if (sessionIds.length === 0) return yield* factsFrom(profileId, new Map(), [], new Map(), resolve, skipsWhere)
           const found = yield* readSessions(and(inArray(sessions.id, sessionIds), inArray(sessions.kind, Kinds)))
           const answers = yield* run(db.select(responseColumns).from(responses).where(inArray(responses.sessionId, sessionIds)))
           const served = yield* run(db.select(servedColumns).from(servedQuestions).where(inArray(servedQuestions.sessionId, sessionIds)))
-          return yield* factsFrom(profileId, found, answers.map(responseFact), served, resolve)
+          return yield* factsFrom(profileId, found, answers.map(responseFact), served, resolve, skipsWhere)
         })
 
       const entriesOf = (facts: Facts): ReadonlyArray<Entry> =>
@@ -356,12 +434,14 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             ...latest.parts.map((part) => facts.labels.get(`${latest.responseId}:${part.part}`) ?? part.mistakeType ?? Unlabelled),
             ...latest.reasons.filter((reason) => reason !== "wrong")
           ]
+          const ladder = facts.ladders.get(questionId)
           return [{
             questionId,
             question,
             misses: ordered,
             latest,
-            status: question.status === "withdrawn" ? "withdrawn" : "open",
+            ladder,
+            status: question.status === "withdrawn" ? "withdrawn" : ladder?.ladder.status === "resolved" ? "resolved" : "open",
             band: bandOf(question.difficulty),
             kinds: [...new Set(kinds)],
             trapPatterns: [...new Set(latest.parts.flatMap((part) => (part.trapPattern === null ? [] : [part.trapPattern])))]
@@ -391,7 +471,8 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           responseId: entry.latest.responseId,
           misses: entry.misses.length,
           firstMissedAt: entry.misses[0]!.at,
-          lastMissedAt: entry.latest.at
+          lastMissedAt: entry.latest.at,
+          ladder: ladderView(entry.ladder)
         })
 
       const matches = (entry: Entry, filters: ErrorLogFilters, timeZone: string) => {
@@ -585,6 +666,25 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           return viewOf(after.facts, after.entry, yield* bookNames(after.facts.timeZone))
         })
 
+      const retryState = (profileId: string) =>
+        Effect.gen(function*() {
+          const facts = yield* profileFacts(profileId)
+          return {
+            today: facts.today,
+            entries: entriesOf(facts).flatMap((entry) =>
+              entry.ladder === undefined ? [] : [{
+                questionId: entry.questionId,
+                question: entry.question,
+                status: entry.status,
+                lastMissedAt: entry.latest.at,
+                ladder: entry.ladder
+              }]
+            ),
+            // A retry set not finished: started, or paused.
+            running: [...facts.sessions.values()].find((session) => session.retry.length > 0 && !session.finished)?.id
+          } satisfies RetryState
+        })
+
       // When the app starts, the Profiles that practised last have their
       // history read in the background, so their first Error Log opens as
       // quickly as the ones after it.
@@ -598,7 +698,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
         }).pipe(Effect.catchCause((cause) => Effect.logWarning(`The Error Log could not be read ahead: ${Cause.pretty(cause)}`)))
       )
 
-      return ErrorLog.of({ list, get, setMistakeType })
+      return ErrorLog.of({ list, get, setMistakeType, retryState })
     })
   )
 }

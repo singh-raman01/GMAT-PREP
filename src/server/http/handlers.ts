@@ -6,12 +6,20 @@ import { CurrentProfile, NotUnlocked, ProfileCookie, ProfileSession } from "../.
 import { Profiles } from "../profiles/Profiles.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { WorkerSupervisor } from "../worker/WorkerSupervisor.ts"
-import { BankHandlers, BooksHandlers, GenerationHandlers, GoldenHandlers, ReviewHandlers } from "./books.ts"
+import {
+  BankHandlers,
+  BooksHandlers,
+  GenerationHandlers,
+  GoldenHandlers,
+  ReviewHandlers,
+  SiblingsHandlers
+} from "./books.ts"
 import { CuratorHandlers, CuratorSessionLive } from "./curatorHandlers.ts"
 import { ErrorLogHandlers } from "./errorLog.ts"
 import { MocksHandlers } from "./mocks.ts"
 import { PaperMarksHandlers } from "./paperMarks.ts"
 import { PracticeHandlers } from "./practice.ts"
+import { RetriesHandlers } from "./retries.ts"
 import { ScoresHandlers } from "./scores.ts"
 import { SectionalsHandlers } from "./sectionals.ts"
 
@@ -125,12 +133,14 @@ export const ApiRoutes = HttpApiBuilder.layer(Api).pipe(
     ScoresHandlers,
     PaperMarksHandlers,
     ErrorLogHandlers,
+    RetriesHandlers,
     CuratorHandlers,
     BooksHandlers,
     ReviewHandlers,
     GoldenHandlers,
     BankHandlers,
-    GenerationHandlers
+    GenerationHandlers,
+    SiblingsHandlers
   ]),
   Layer.provide([ProfileSessionLive, CuratorSessionLive])
 )

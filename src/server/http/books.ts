@@ -21,6 +21,7 @@ import { Bank } from "../review/Bank.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { Golden } from "../review/Golden.ts"
 import { ReviewQueue } from "../review/ReviewQueue.ts"
+import { SiblingsReport } from "../learning/SiblingsReport.ts"
 
 export const BooksHandlers = HttpApiBuilder.group(
   Api,
@@ -193,3 +194,12 @@ export const BookFileRoutes = HttpRouter.use(Effect.fn(function*(router) {
   yield* router.add("POST", BookUploadPath, serveUpload)
   yield* router.add("GET", "/api/curator/books/:id/file", serveFile)
 }))
+
+export const SiblingsHandlers = HttpApiBuilder.group(
+  Api,
+  "siblings",
+  Effect.fn(function*(handlers) {
+    const siblings = yield* SiblingsReport
+    return handlers.handleAll({ report: () => siblings.report })
+  })
+)

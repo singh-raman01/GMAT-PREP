@@ -11,7 +11,7 @@ import { bandNames } from "../../../src/api/difficulty.ts"
 import type { PracticeQuestion } from "../../../src/api/Practice.ts"
 import { call } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
-import { dayAndTime, spokenDuration } from "../format.ts"
+import { calendarDay, dayAndTime, spokenDuration } from "../format.ts"
 import { DebriefPanel } from "../practice/DebriefPanel.tsx"
 import { AnsweredOptions } from "../practice/PracticeSet.tsx"
 import { RichText } from "../RichText.tsx"
@@ -57,6 +57,29 @@ const whyText = (entry: ErrorLogEntry) => {
     ? "Slow"
     : "Guessed"
 }
+
+// Where the entry's Retry Ladder stands.
+const stepsText = (steps: ReadonlyArray<number>) =>
+  steps.length === 1 ? `step ${steps[0]}` : `steps ${steps.slice(0, -1).join(", ")} and ${steps.at(-1)}`
+
+// How the run that resolved it went: each step's last outcome. A Sibling
+// step with no Sibling left was skipped, and counts as passed.
+const resolvedText = (ladder: NonNullable<ErrorLogEntry["ladder"]>) => {
+  const last = new Map(ladder.steps.map((step) => [step.step, step.outcome] as const))
+  const skipped = [1, 2, 3].filter((step) => last.get(step) === "skipped")
+  if (skipped.length === 0) return " Resolved: its three retries were right."
+  const right = [1, 2, 3].filter((step) => last.get(step) === "passed")
+  return ` Resolved: ${right.length === 0 ? "" : `${stepsText(right)} right, `}${stepsText(skipped)} skipped, as no unseen Question like it was left.`
+}
+
+const ladderText = (entry: ErrorLogEntry) =>
+  entry.status === "resolved" && entry.ladder !== null
+    ? resolvedText(entry.ladder)
+    : entry.ladder?.step != null && entry.ladder.dueOn !== null
+    ? ` Retry step ${entry.ladder.step} on ${calendarDay(entry.ladder.dueOn)}.`
+    : ""
+
+const outcomeText = { passed: "right", missed: "missed", skipped: "skipped" } as const
 
 // How often it came here: wrong answers are missed; a right one that was
 // slow or guessed is only logged.
@@ -303,6 +326,7 @@ const EntryRow = (
         {whyText(entry)}. {countText(entry)}, last {dayAndTime(entry.lastMissedAt, timeZone)}
         {entry.books.length === 0 ? "" : `, from ${entry.books.map((book) => book.name).join(" and ")}`}
         {entry.status === "withdrawn" ? ". Withdrawn from the Question Bank, so this entry is closed" : ""}.
+        {entry.status === "withdrawn" ? "" : ladderText(entry)}
       </p>
       <div id={panel} className="error-detail" hidden={!open}>
         {!open ? null : opened._tag === "Loading"
@@ -328,6 +352,19 @@ const EntryRow = (
                   onMistakeChanged={onChanged}
                   onFailure={onFailure}
                 />
+              )}
+              {opened.detail.entry.ladder !== null && opened.detail.entry.ladder.steps.length > 0 && (
+                <>
+                  <h3 className="history-title">Retries</h3>
+                  <ul className="error-history">
+                    {opened.detail.entry.ladder.steps.map((step, index) => (
+                      <li key={index}>
+                        Step {step.step}, {calendarDay(step.on)}: {outcomeText[step.outcome]}
+                        {step.note === null ? "" : `. ${step.note}`}
+                      </li>
+                    ))}
+                  </ul>
+                </>
               )}
               <h3 className="history-title">Every answer you gave it</h3>
               <ul className="error-history">

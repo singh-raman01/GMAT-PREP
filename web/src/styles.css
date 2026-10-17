@@ -2900,3 +2900,9 @@ input[type="date"] {
   margin: 0;
   accent-color: var(--graphite);
 }
+
+/* Lists led by a Section's swatch: the swatch sits close to the name. */
+.retry-list .swatch,
+.sibling-list .swatch {
+  margin-right: -0.5rem;
+}

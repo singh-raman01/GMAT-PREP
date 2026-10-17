@@ -12,9 +12,25 @@ import { QuestionId } from "./Review.ts"
 export const ErrorReason = Schema.Literals(["wrong", "slow", "guessed"])
 export type ErrorReason = typeof ErrorReason.Type
 
-// Resolved comes with the Retry Ladder (ticket 14).
-export const ErrorStatus = Schema.Literals(["open", "withdrawn"])
+// Resolved once its Retry Ladder is done; withdrawn with its Question.
+export const ErrorStatus = Schema.Literals(["open", "resolved", "withdrawn"])
 export type ErrorStatus = typeof ErrorStatus.Type
+
+export class LadderStepView extends Schema.Class<LadderStepView>("gmat-prep/api/LadderStepView")({
+  step: Schema.Int,
+  // The Study Day it was taken, or skipped.
+  on: Day,
+  outcome: Schema.Literals(["passed", "missed", "skipped"]),
+  note: Schema.NullOr(Schema.String)
+}) {}
+
+// Where an entry's Retry Ladder stands: the step due next and its Study Day,
+// none once Resolved, and the steps of this run so far.
+export class LadderView extends Schema.Class<LadderView>("gmat-prep/api/LadderView")({
+  step: Schema.NullOr(Schema.Int),
+  dueOn: Schema.NullOr(Day),
+  steps: Schema.Array(LadderStepView)
+}) {}
 
 export class ErrorLogEntry extends Schema.Class<ErrorLogEntry>("gmat-prep/api/ErrorLogEntry")({
   questionId: QuestionId,
@@ -33,7 +49,8 @@ export class ErrorLogEntry extends Schema.Class<ErrorLogEntry>("gmat-prep/api/Er
   responseId: Schema.String,
   misses: Schema.Int,
   firstMissedAt: Schema.Number,
-  lastMissedAt: Schema.Number
+  lastMissedAt: Schema.Number,
+  ladder: Schema.NullOr(LadderView)
 }) {}
 
 const Counted = Schema.Struct({ id: Schema.String, name: Schema.String, entries: Schema.Int })
