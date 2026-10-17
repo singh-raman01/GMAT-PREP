@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { eq } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { Effect, Ref } from "effect"
 import { Cookies, HttpClient, HttpClientRequest } from "effect/http"
 import { HttpApiClient } from "effect/http-api"
@@ -7,11 +7,11 @@ import { TestClock } from "effect/testing"
 import { Api } from "../src/api/Api.ts"
 import { DefaultBlueprint } from "../src/api/blueprint.ts"
 import { BookId } from "../src/api/Books.ts"
-import type { ErrorLogFilters } from "../src/api/ErrorLog.ts"
+import { cursorOf, type ErrorLogFilters } from "../src/api/ErrorLog.ts"
 import type { PracticeChoice, PracticeView } from "../src/api/Practice.ts"
 import { QuestionId } from "../src/api/Review.ts"
 import { Db } from "../src/server/db/Database.ts"
-import { parts, questions, sessions, sources } from "../src/server/db/schema.ts"
+import { parts, questions, responses, sessions, sources } from "../src/server/db/schema.ts"
 import { encodeConfig } from "../src/server/sections/config.ts"
 import { numbered, OtherPsSkill, seedBook } from "./fixtures/bank.ts"
 import { seedExamBank, SmallBlueprint } from "./fixtures/examBank.ts"
@@ -376,9 +376,10 @@ describe("Review fixes in the Error Log", () => {
       for (let i = 0; i < 3; i++) view = yield* answer(asha, view, "A")
       const log = yield* list(asha)
       expect(log.facets.bands.map((band) => band.id)).toEqual(["easy", "medium", "hard"])
-      const page = yield* list(asha, { offset: 1, limit: 1 })
-      expect([page.entries.length, page.matching, page.total, String(page.entries[0]!.questionId)])
-        .toEqual([1, 3, 3, String(log.entries[1]!.questionId)])
+      const page = yield* list(asha, { after: cursorOf(log.entries[0]!), limit: 1 })
+      expect([page.entries.length, page.matching, page.more, page.total, String(page.entries[0]!.questionId)])
+        .toEqual([1, 3, 1, 3, String(log.entries[1]!.questionId)])
+      expect(yield* list(asha, { after: cursorOf(log.entries[0]!), limit: 0 })).toMatchObject({ entries: [], more: 2 })
       expect(log.timeZone).toBe("UTC")
     })))
 
@@ -426,5 +427,125 @@ describe("Review fixes in the Error Log", () => {
       const asha = yield* learner("Asha")
       yield* answer(asha, yield* asha.practice.start({ payload: { choice: untimed(1) } }), "A", { seconds: 20 })
       expect((yield* list(asha)).entries[0]!.parts[0]).toMatchObject({ mistakeType: { id: "time-pressure" }, basis: "timing" })
+    })))
+})
+
+describe("Re-review fixes in the Error Log", () => {
+  test("a page follows the entry the last one ended on, so labelling under a Mistake Type filter skips none", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const book = yield* seedBook("Quant Review", numbered(4))
+      const asha = yield* learner("Asha")
+      let view = yield* asha.practice.start({ payload: { choice: untimed(4) } })
+      for (let i = 0; i < 4; i++) view = yield* answer(asha, view, "A")
+      // Notes waiting to be written again: every wrong Part is unlabelled.
+      const db = yield* Db
+      yield* db.update(questions).set({ enrichment: "key-content" }).pipe(Effect.orDie)
+      const filters = { mistakeType: "unlabelled" }
+      const wanted = (yield* list(asha, filters)).entries.map((entry) => entry.questionId)
+      const first = yield* list(asha, { ...filters, limit: 2 })
+      expect([first.matching, first.more]).toEqual([4, 2])
+      const labelled = first.entries[0]!
+      yield* asha.errorLog.setMistakeType({
+        params: { questionId: labelled.questionId },
+        payload: { responseId: labelled.responseId, part: 0, mistakeType: "misread" }
+      })
+      // The counts after the label: three match, two still to show.
+      const counts = yield* list(asha, { ...filters, after: cursorOf(first.entries.at(-1)!), limit: 0 })
+      expect([counts.matching, counts.more]).toEqual([3, 2])
+      const more = yield* list(asha, { ...filters, after: cursorOf(first.entries.at(-1)!), limit: 2 })
+      expect([...first.entries, ...more.entries].map((entry) => entry.questionId)).toEqual(wanted)
+      expect(more.more).toBe(0)
+      expect(book.ids.size).toBe(4)
+    })))
+
+  test("a Book keeps one name everywhere, and copies added the same day are told apart in the Profile's time zone", () =>
+    runWithWorkers(Effect.gen(function*() {
+      // 23:30 UTC on 1 January is 18:30 in New York; the next copy, an hour
+      // later, is still that day in New York but the next in UTC.
+      yield* TestClock.adjust("23.5 hours")
+      const one = yield* seedBook("Quant Review", numbered(1))
+      yield* TestClock.adjust("1 hour")
+      const two = yield* seedBook("Quant Review", numbered(1))
+      yield* TestClock.adjust("1 day")
+      yield* seedBook("Quant Review", numbered(1))
+      const jar = yield* Ref.make(Cookies.empty)
+      const tab = yield* HttpApiClient.make(Api, {
+        transformClient: (client) =>
+          client.pipe(HttpClient.withCookiesRef(jar), HttpClient.mapRequest(HttpClientRequest.setHeader("x-gp-device", "tab-1")))
+      })
+      yield* tab.profiles.create({ payload: { name: "Asha", timeZone: "America/New_York" } })
+      const asha = tab as unknown as Tab
+      for (const bookId of [one.bookId, two.bookId]) {
+        yield* answer(asha, yield* asha.practice.start({ payload: { choice: bookItem(bookId, 1) } }), "A")
+      }
+      const log = yield* list(asha)
+      expect(log.facets.books.map((book) => book.name)).toEqual([
+        "Quant Review, added 1970-01-01 18:30",
+        "Quant Review, added 1970-01-01 19:30"
+      ])
+      const entry = log.entries[0]!
+      const changed = yield* asha.errorLog.setMistakeType({
+        params: { questionId: entry.questionId },
+        payload: { responseId: entry.responseId, part: 0, mistakeType: "misread" }
+      })
+      const opened = yield* asha.errorLog.get({ params: { questionId: entry.questionId } })
+      expect([changed.books[0]!.name, opened.entry.books[0]!.name]).toEqual([entry.books[0]!.name, entry.books[0]!.name])
+    })))
+
+  test("a Response deleted and replaced in its row is read afresh", () =>
+    runWithWorkers(Effect.gen(function*() {
+      yield* seedBook("Quant Review", numbered(1))
+      const asha = yield* learner("Asha")
+      const view = yield* asha.practice.start({ payload: { choice: untimed(1) } })
+      yield* answer(asha, view, "A")
+      expect((yield* list(asha)).total).toBe(1)
+      const db = yield* Db
+      const [wrong] = yield* db.select().from(responses).pipe(Effect.orDie)
+      yield* db.delete(responses).where(eq(responses.id, wrong!.id)).pipe(Effect.orDie)
+      // The new row takes the deleted one's rowid.
+      yield* db.insert(responses).values({ ...wrong!, id: crypto.randomUUID(), selection: JSON.stringify([{ part: 0, choice: "C" }]) })
+        .pipe(Effect.orDie)
+      const [row] = yield* db.select({ rowid: sql<number>`${responses}.rowid` }).from(responses).pipe(Effect.orDie)
+      expect(row!.rowid).toBe(1)
+      expect((yield* list(asha)).total).toBe(0)
+    })))
+
+  test("Responses written between reads join those kept, with their Sessions' served rows", () =>
+    runWithWorkers(Effect.gen(function*() {
+      yield* seedBook("Quant Review", numbered(4))
+      const asha = yield* learner("Asha")
+      let view = yield* asha.practice.start({ payload: { choice: timed(2) } })
+      view = yield* answer(asha, view, "A")
+      // Kept: the first Response, and the one served row so far.
+      expect((yield* list(asha)).total).toBe(0)
+      view = yield* asha.practice.next({ params: { id: view.id }, payload: { position: 1 } })
+      // The second answer comes in the set's last tenth of 258 seconds:
+      // served at 60, answered at 240, so Time pressure.
+      yield* TestClock.adjust("3 minutes")
+      yield* asha.practice.answer({
+        params: { id: view.id },
+        payload: { seq: view.nextSeq, questionId: view.current!.question.id, selection: [{ part: 0, choice: "B" }], guessed: false }
+      })
+      yield* asha.practice.finish({ params: { id: view.id } })
+      const log = yield* list(asha)
+      expect(log.entries.map((entry) => entry.parts[0]!.mistakeType?.id)).toEqual(["time-pressure", "trap"])
+    })))
+
+  test("a merged copy's own set judges it by the Question it became, as its entry does", () =>
+    runWithWorkers(Effect.gen(function*() {
+      const a = yield* seedBook("Book A", numbered(1))
+      const b = yield* seedBook("Book B", numbered(1))
+      const asha = yield* learner("Asha")
+      const view = yield* asha.practice.start({ payload: { choice: bookItem(b.bookId, 1) } })
+      yield* answer(asha, view, "C")
+      // Book B's copy merged into Book A's, whose key is then B.
+      yield* merge(b.ids.get(1)!, a.ids.get(1)!)
+      const db = yield* Db
+      yield* db.update(parts).set({ key: "B" }).where(eq(parts.questionId, a.ids.get(1)!)).pipe(Effect.orDie)
+      expect((yield* list(asha)).total).toBe(1)
+      const served = (yield* asha.practice.get({ params: { id: view.id } })).current!
+      expect([served.debrief?.correct, served.response?.correct, served.mistakes !== null]).toEqual([false, false, true])
+      const summary = (yield* asha.practice.list()).find((each) => each.id === view.id)!
+      expect(summary.correct).toBe(0)
     })))
 })

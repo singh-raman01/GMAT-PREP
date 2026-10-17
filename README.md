@@ -95,7 +95,7 @@ Every Question you answer wrong, or right but slowly in a timed set, or by a gue
 
 ## Retries
 
-A Question you missed comes back on a Retry Ladder: 2 Study Days later the Question itself, 7 days later a Question like it you have not seen (a Sibling, of the same type and Skill and close in Difficulty), and 21 days later another. The Practice page lists what is due today, with one button for the untimed retries and one for the timed ones; a Question you were slow on, and every Sibling, comes timed. A miss puts the step back by 2 days. Get all three right and the entry is resolved, and stays in your Error Log as Resolved. The Curator's Siblings page shows the Skills running out of Siblings.
+A Question you missed comes back on a Retry Ladder: 2 Study Days later the Question itself, 7 days later a Question like it you have not seen (a Sibling, of the same type and Skill and close in Difficulty), and 21 days later another. The Practice page lists what is due today, with one button for the untimed retries and one for the timed ones, 20 at a time, the longest waiting first; a Question you were slow on, and every Sibling, comes timed, and a slow one gets 1.5 times its Target Time. A miss puts the step back by 2 days. Get all three right and the entry is resolved, and stays in your Error Log as Resolved; a Sibling step with no Sibling left is skipped, and the entry says so. The Curator's Siblings page shows the Skills, by Question Type, running out of Siblings.
 
 ## Scores
 

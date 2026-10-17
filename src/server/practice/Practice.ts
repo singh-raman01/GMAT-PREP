@@ -42,6 +42,7 @@ import {
   sources
 } from "../db/schema.ts"
 import { sessionMistakes } from "../learning/facts.ts"
+import { SlowFactor } from "../learning/misses.ts"
 import { RetryItem } from "../learning/retryConfig.ts"
 import { scoreEstimatesOf, scoreEstimateView } from "../ratings/estimates.ts"
 import { rateSession } from "../ratings/rateSession.ts"
@@ -198,7 +199,14 @@ export class Practice extends Context.Service<Practice, {
   scores(profileId: string): Effect.Effect<ReadonlyArray<ScoreEstimateView>>
   // A retry set of the given Questions, each for its entry and step; the
   // caller has chosen them.
-  startRetries(caller: Caller, items: ReadonlyArray<RetryItem>, timed: boolean): Effect.Effect<PracticeView>
+  // slow: the entries, by Question, whose steps get 1.5 times the Target
+  // Time on the set's clock.
+  startRetries(
+    caller: Caller,
+    items: ReadonlyArray<RetryItem>,
+    timed: boolean,
+    slow: ReadonlySet<string>
+  ): Effect.Effect<PracticeView>
 }>()("gmat-prep/server/Practice") {
   static readonly layer = Layer.effect(
     Practice,
@@ -463,11 +471,16 @@ export class Practice extends Context.Service<Practice, {
         }
       ) =>
         Effect.gen(function*() {
-          const stored = (yield* run(storedQuestions([row.questionId]))).get(row.questionId)
+          // A Question since merged shows as served, judged by the one it
+          // became, as the Error Log judges it.
+          const target = context.resolve(row.questionId)
+          const read = yield* run(storedQuestions([...new Set([row.questionId, target])]))
+          const stored = read.get(row.questionId)
           if (stored === undefined) return yield* Effect.die(new Error(`Served Question ${row.questionId} is missing`))
+          const judged = read.get(target) ?? stored
           const response = finalFor(context.answers, row.questionId)
           const selection = response === undefined ? [] : readSelection(response.selection)
-          const keys = stored.parts.map((part) => ({ position: part.position, key: part.key }))
+          const keys = judged.parts.map((part) => ({ position: part.position, key: part.key }))
           // A timed set keeps its Debriefs, and whether answers were right,
           // for the end.
           const over = session.status === "finished"
@@ -494,7 +507,7 @@ export class Practice extends Context.Service<Practice, {
               rated: context.rated.has(response.id),
               timedOut: response.kind === "time-out"
             }),
-            debrief: shown ? debriefOf(stored, selection, names) : null,
+            debrief: shown ? debriefOf(judged, selection, names) : null,
             mistakes
           })
         })
@@ -587,21 +600,30 @@ export class Practice extends Context.Service<Practice, {
           return session
         })
 
-      // The time limit of a timed set: its Questions' Target Times added up.
-      const limitFor = (planned: ReadonlyArray<string>) =>
+      // The time limit of a timed set: its Questions' Target Times added up,
+      // each times its allowance, 1 unless a retry step gives more.
+      const limitFor = (planned: ReadonlyArray<string>, allowance: (position: number) => number = () => 1) =>
         Effect.gen(function*() {
           const overrides = yield* settings.targetTimes
           const rows = yield* db.select({ id: questions.id, questionType: questions.questionType }).from(questions)
             .where(inArray(questions.id, [...planned])).pipe(Effect.orDie)
           const typeOf = new Map(rows.map((row) => [row.id, row.questionType] as const))
-          return planned.reduce((sum, id) => sum + targetSecondsFor(typeOf.get(id) ?? "", overrides) * 1000, 0)
+          return Math.round(
+            planned.reduce((sum, id, position) => sum + targetSecondsFor(typeOf.get(id) ?? "", overrides) * 1000 * allowance(position), 0)
+          )
         })
 
       // Creates the Session, held by the caller's device, and serves its
       // first Question.
-      const begin = (caller: Caller, config: PracticeConfig, id: string, timed: boolean) =>
+      const begin = (
+        caller: Caller,
+        config: PracticeConfig,
+        id: string,
+        timed: boolean,
+        allowance?: (position: number) => number
+      ) =>
         Effect.gen(function*() {
-          const limitMs = timed ? yield* limitFor(config.planned) : null
+          const limitMs = timed ? yield* limitFor(config.planned, allowance) : null
           const created = yield* inTransaction(Effect.gen(function*() {
             const now = yield* Clock.currentTimeMillis
             yield* db.insert(sessions).values({
@@ -1050,7 +1072,7 @@ export class Practice extends Context.Service<Practice, {
         Effect.forever(wake.await.pipe(Effect.andThen(Effect.sleep(TickMs)), Effect.andThen(tickAll)))
       )
 
-      const startRetries = (caller: Caller, items: ReadonlyArray<RetryItem>, timed: boolean) =>
+      const startRetries = (caller: Caller, items: ReadonlyArray<RetryItem>, timed: boolean, slow: ReadonlySet<string>) =>
         begin(caller, {
           title: timed ? "Retries, timed" : "Retries",
           choice: null,
@@ -1061,7 +1083,7 @@ export class Practice extends Context.Service<Practice, {
           heldForMocks: [],
           unavailable: [],
           retry: [...items]
-        }, crypto.randomUUID(), timed).pipe(oneAtATime)
+        }, crypto.randomUUID(), timed, (position) => (slow.has(items[position]!.entry) ? SlowFactor : 1)).pipe(oneAtATime)
 
       return Practice.of({
         startRetries,

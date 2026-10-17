@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, or } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { Context, Effect, Layer } from "effect"
 import { Named } from "../../api/Practice.ts"
 import { FewSiblings, SkillSiblings } from "../../api/Siblings.ts"
@@ -21,40 +21,53 @@ export class SiblingsReport extends Context.Service<SiblingsReport, {
       const names = namesOf(taxonomy)
 
       const report = Effect.gen(function*() {
-        const skips = yield* db.select({ skill: questions.primarySkill, at: retrySkips.createdAt }).from(retrySkips)
-          .innerJoin(questions, eq(questions.id, retrySkips.questionId)).pipe(Effect.orDie)
-        const open = yield* db.select({ skill: questions.primarySkill }).from(questions)
-          .where(and(
-            eq(questions.status, "published"),
-            or(eq(questions.reserve, false), isNotNull(questions.releasedAt))
-          )).pipe(Effect.orDie)
-        const available = new Map<string, number>()
-        for (const row of open) if (row.skill !== null) available.set(row.skill, (available.get(row.skill) ?? 0) + 1)
+        const key = (skill: string, questionType: string) => `${skill}|${questionType}`
+        const skips = yield* db.select({ skill: questions.primarySkill, questionType: questions.questionType, at: retrySkips.createdAt })
+          .from(retrySkips).innerJoin(questions, eq(questions.id, retrySkips.questionId)).pipe(Effect.orDie)
+        const published = yield* db.select({
+          skill: questions.primarySkill,
+          questionType: questions.questionType,
+          open: sql<number>`${questions.reserve} = 0 or ${questions.releasedAt} is not null`
+        }).from(questions).where(eq(questions.status, "published")).pipe(Effect.orDie)
+        const counts = new Map<string, { all: number; open: number }>()
+        for (const row of published) {
+          if (row.skill === null) continue
+          const found = counts.get(key(row.skill, row.questionType)) ?? { all: 0, open: 0 }
+          counts.set(key(row.skill, row.questionType), { all: found.all + 1, open: found.open + (row.open ? 1 : 0) })
+        }
         const skipped = new Map<string, { count: number; last: number }>()
         for (const row of skips) {
           if (row.skill === null) continue
-          const found = skipped.get(row.skill) ?? { count: 0, last: 0 }
-          skipped.set(row.skill, { count: found.count + 1, last: Math.max(found.last, row.at) })
+          const found = skipped.get(key(row.skill, row.questionType)) ?? { count: 0, last: 0 }
+          skipped.set(key(row.skill, row.questionType), { count: found.count + 1, last: Math.max(found.last, row.at) })
         }
         return taxonomy.sections.flatMap((section) =>
           section.topics.flatMap((topic) =>
-            topic.skills.flatMap((skill) => {
-              const skips = skipped.get(skill.id)
-              const left = available.get(skill.id) ?? 0
-              // A Skill no Question has yet is the Taxonomy's, not a shortage.
-              if (skips === undefined && (left === 0 || left > FewSiblings)) return []
-              return [
-                new SkillSiblings({
-                  skill: names.named(skill.id),
-                  section: new Named({ id: section.id, name: section.name }),
-                  skipped: skips?.count ?? 0,
-                  lastSkippedAt: skips?.last ?? null,
-                  available: left
-                })
-              ]
-            })
+            topic.skills.flatMap((skill) =>
+              section.questionTypes.flatMap((questionType) => {
+                const skips = skipped.get(key(skill.id, questionType.id))
+                const count = counts.get(key(skill.id, questionType.id)) ?? { all: 0, open: 0 }
+                // A Skill and type no published Question has is the
+                // Taxonomy's, not a shortage; one whose Questions are all in
+                // the Reserve has none to give.
+                if (skips === undefined && (count.all === 0 || count.open > FewSiblings)) return []
+                return [
+                  new SkillSiblings({
+                    skill: names.named(skill.id),
+                    questionType: names.named(questionType.id),
+                    section: new Named({ id: section.id, name: section.name }),
+                    skipped: skips?.count ?? 0,
+                    lastSkippedAt: skips?.last ?? null,
+                    available: count.open
+                  })
+                ]
+              })
+            )
           )
-        ).toSorted((a, b) => b.skipped - a.skipped || a.available - b.available || a.skill.name.localeCompare(b.skill.name))
+        ).toSorted((a, b) =>
+          b.skipped - a.skipped || a.available - b.available || a.skill.name.localeCompare(b.skill.name) ||
+          a.questionType.name.localeCompare(b.questionType.name)
+        )
       })
 
       return SiblingsReport.of({ report })

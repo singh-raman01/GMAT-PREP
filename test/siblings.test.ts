@@ -20,7 +20,8 @@ const missed: SiblingTarget = {
   questionType: "quant.ps",
   primarySkill: "quant.algebra.linear-equations",
   secondarySkills: ["quant.word-problems.percents", "di.sufficiency.value"],
-  difficulty: 0.2
+  difficulty: 0.2,
+  stimulusId: null
 }
 
 describe("A Sibling", () => {
@@ -50,5 +51,12 @@ describe("A Sibling", () => {
     ]
     expect(pickSibling(pool, new Set(), missed, "salt")).toEqual({ id: "percents", match: "secondary" })
     expect(pickSibling(pool.slice(0, 1), new Set(), missed, "salt")).toBeUndefined()
+  })
+
+  test("is never about the passage the missed Question asks about", () => {
+    const passage = { ...missed, stimulusId: "passage-1" }
+    const pool = [question("mate", { difficulty: 0.2, stimulusId: "passage-1" }), question("other", { difficulty: 0.2, stimulusId: "passage-2" })]
+    expect(pickSibling(pool, new Set(), passage, "salt")).toEqual({ id: "other", match: "primary" })
+    expect(pickSibling(pool.slice(0, 1), new Set(), passage, "salt")).toBeUndefined()
   })
 })

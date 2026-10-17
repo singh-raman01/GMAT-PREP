@@ -15,29 +15,39 @@ import {
   HistoryItem,
   LadderStepView,
   LadderView,
-  MistakeTypeInvalid
+  MistakeTypeInvalid,
+  parseCursor
 } from "../../api/ErrorLog.ts"
 import { MistakesView, Named, ResponseView, ServedView, SessionId } from "../../api/Practice.ts"
 import { QuestionId } from "../../api/Review.ts"
 import { studyDayOf } from "../../api/studyDay.ts"
 import { Db } from "../db/Database.ts"
-import { mistakeLabels, profiles, questions, responses, retrySkips, servedQuestions, sessions } from "../db/schema.ts"
+import { books, mistakeLabels, profiles, questions, responses, retrySkips, servedQuestions, sessions } from "../db/schema.ts"
 import { debriefOf, namesOf, practiceQuestion, storedQuestions } from "../practice/content.ts"
 import { bookmarkedBy, heldBySections, isCorrect, mergeTargets } from "../practice/history.ts"
 import { ratedAmong } from "../ratings/rated.ts"
 import { Settings } from "../settings/Settings.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
-import { labelsOf, missedPartView, questionFactOf, type QuestionSummary, questionSummaries, responseFact } from "./facts.ts"
+import {
+  inChunks,
+  labelsOf,
+  missedPartView,
+  questionFactOf,
+  type QuestionSummary,
+  questionSummaries,
+  responseFact
+} from "./facts.ts"
 import type { Step } from "./ladder.ts"
 import { type EntryLadder, laddersOf } from "./ladders.ts"
 import { type Miss, missesOf, type ResponseFact, type ServedFact, type SessionFact } from "./misses.ts"
 import { type RetryItem, retryListOf } from "./retryConfig.ts"
 
-// The Error Log service (docs/design.md, "Learning loop"): entries worked
-// out from the facts on every read, with the Learner's Mistake Types kept
-// as facts of their own. A list reads the Profile's whole history once; an
+// The Error Log service (docs/design.md, "Learning loop"): entries and
+// their Retry Ladders worked out from the facts on every read, with the
+// Learner's Mistake Types and skipped retry steps kept as facts of their
+// own. A list reads the Profile's whole history, kept between reads; an
 // entry, and a change to it, read only the Sessions that answered its
-// Question.
+// Question or took its retry steps.
 
 const DayMs = 24 * 60 * 60 * 1000
 const dayNumber = (day: string) => Date.parse(`${day}T00:00:00Z`) / DayMs
@@ -57,9 +67,13 @@ const BandOrder: ReadonlyArray<DifficultyBand> = ["easy", "medium", "hard"]
 // The Session kinds whose Responses can enter the Error Log.
 const Kinds = ["practice", "sectional", "mock-section"]
 
+// Facet values sort by name the same way on every read.
+const byName = new Intl.Collator("en").compare
+
 export type ShownSession = SessionFact & {
   readonly timed: boolean
   readonly finished: boolean
+  readonly createdAt: number
   // A retry set's Retry Ladder steps; none for any other Session.
   readonly retry: ReadonlyArray<RetryItem>
   // For a Mock's Section, its Mock.
@@ -112,6 +126,58 @@ export interface LearningHistory {
   readonly dayOf: (at: number) => number
   readonly targetMs: (questionId: string) => number
 }
+
+// A moment's day and minute in a time zone.
+const localTime = (at: number, timeZone: string) => {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).formatToParts(at)
+  const part = (type: string) => parts.find((each) => each.type === type)?.value ?? ""
+  return { day: `${part("year")}-${part("month")}-${part("day")}`, minute: `${part("hour")}:${part("minute")}` }
+}
+
+type BookRow = Pick<typeof books.$inferSelect, "id" | "title" | "edition" | "createdAt">
+
+// Every Book's name: its title and edition; Books that share both also say
+// the day they were added, in the Profile's time zone, then the minute, and
+// copies added in the same minute are counted in the order added. Names come
+// from every Book, so one never changes with the entries shown.
+export const bookNamesOf = (all: ReadonlyArray<BookRow>, timeZone: string): ReadonlyMap<string, string> => {
+  const plain = (book: BookRow) => (book.edition === "" ? book.title : `${book.title}, ${book.edition}`)
+  const steps: ReadonlyArray<(book: BookRow) => string> = [
+    plain,
+    (book) => `${plain(book)}, added ${localTime(book.createdAt, timeZone).day}`,
+    (book) => {
+      const added = localTime(book.createdAt, timeZone)
+      return `${plain(book)}, added ${added.day} ${added.minute}`
+    }
+  ]
+  const names = new Map<string, string>()
+  let sharing = all.toSorted((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  for (const step of steps) {
+    const next: Array<BookRow> = []
+    for (const [name, group] of Map.groupBy(sharing, step)) {
+      if (group.length === 1) names.set(group[0]!.id, name)
+      else next.push(...group)
+    }
+    sharing = next
+  }
+  for (const [name, group] of Map.groupBy(sharing, steps.at(-1)!)) {
+    group.forEach((book, index) => names.set(book.id, `${name}, copy ${index + 1}`))
+  }
+  return names
+}
+
+// Entries run from the latest miss back, Question id breaking ties, and a
+// page starts after the entry the last one ended on.
+const later = (a: { readonly at: number; readonly id: string }, b: { readonly at: number; readonly id: string }) =>
+  b.at - a.at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
 
 // An entry as plain data; its view is built only for the page shown.
 interface Entry {
@@ -175,6 +241,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
               status: sessions.status,
               timed: sessions.timed,
               timeLimitMs: sessions.timeLimitMs,
+              createdAt: sessions.createdAt,
               mockId: sql<string | null>`json_extract(${sessions.config}, '$.mock.id')`,
               retry: sql<string | null>`json_extract(${sessions.config}, '$.retry')`
             }).from(sessions).where(where)
@@ -191,6 +258,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             kind: row.kind,
             timed: row.timed,
             finished: row.status === "finished",
+            createdAt: row.createdAt,
             retry: row.kind === "practice" ? retryListOf(row.retry) : [],
             mockId: row.mockId,
             limitMs: row.timed ? row.timeLimitMs : null,
@@ -222,23 +290,20 @@ export class ErrorLog extends Context.Service<ErrorLog, {
       const factsFrom = (
         profileId: string,
         found: ReadonlyMap<string, ShownSession>,
-        answers: ReadonlyArray<Parameters<typeof responseFact>[0]>,
-        served: ReadonlyArray<ServedFact>,
+        responseFacts: ReadonlyArray<ResponseFact>,
+        served: ReadonlyArray<ServedFact> | ReadonlyMap<string, ReadonlyArray<ServedFact>>,
         resolve: (questionId: string) => string,
         skipsWhere: SQL
       ) =>
         Effect.gen(function*() {
-          const responseFacts = answers.map(responseFact)
-          const summaries = yield* run(questionSummaries(answers.flatMap((answer) => [answer.questionId, resolve(answer.questionId)])))
+          const answered = new Set<string>()
+          for (const response of responseFacts) answered.add(response.questionId).add(resolve(response.questionId))
+          const summaries = yield* run(questionSummaries([...answered]))
           const overrides = yield* settings.targetTimes
-          const misses = missesOf({
-            sessions: [...found.values()],
-            responses: responseFacts,
-            served,
-            questions: new Map([...summaries].map(([id, question]) => [id, questionFactOf(question, overrides)] as const)),
-            resolve
-          })
-          // A few misses are looked up one by one; many, by the Profile.
+          const questionFacts = new Map([...summaries].map(([id, question]) => [id, questionFactOf(question, overrides)] as const))
+          const misses = missesOf({ sessions: [...found.values()], responses: responseFacts, served, questions: questionFacts, resolve })
+          // The labels of a few misses are read by their Responses; of many,
+          // by the Profile.
           const missed = misses.map((miss) => miss.responseId)
           const labels = missed.length === 0 ? new Map<string, string>() : yield* run(labelsOf(
             missed.length > 500
@@ -255,10 +320,12 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           const ladders = laddersOf({
             misses,
             sessions: [...found.values()].flatMap((session) =>
-              session.retry.length === 0 ? [] : [{ id: session.id, shown: session.shown, retry: session.retry }]
+              session.retry.length === 0
+                ? []
+                : [{ id: session.id, shown: session.shown, retry: session.retry, createdAt: session.createdAt }]
             ),
             responses: responseFacts,
-            questions: new Map([...summaries].map(([id, question]) => [id, questionFactOf(question, overrides)] as const)),
+            questions: questionFacts,
             skips: skips.map((row) => ({ questionId: row.questionId, step: row.step as Step, at: row.createdAt, note: row.note })),
             resolve,
             dayOf
@@ -274,62 +341,85 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             timeZone,
             today: dayOf(yield* Clock.currentTimeMillis),
             dayOf,
-            targetMs: (questionId: string) => {
-              const question = summaries.get(questionId)
-              return question === undefined ? 0 : questionFactOf(question, overrides).targetMs
-            }
+            targetMs: (questionId: string) => questionFacts.get(questionId)?.targetMs ?? 0
           } satisfies Facts
         })
 
-      // Each Profile's Responses, kept between reads for the few Profiles read
-      // last. A Response is never changed once written, so a read takes only
-      // the rows written since; a count or a last row that disagrees, as after
-      // a deletion or a restore, reads them all again.
-      type Kept = { readonly answers: ReadonlyArray<Parameters<typeof responseFact>[0]>; readonly last: number }
+      // Each Profile's Responses, with the served rows of its timed Sessions,
+      // kept between reads for the few Profiles read last. Neither is changed
+      // once written, so a read takes only the Responses written since, and
+      // the served rows of their Sessions again. What is kept is checked
+      // first: when fewer rows now reach the last Response kept, or another
+      // row has taken its place, as after a deletion or a restore, it is all
+      // read again.
+      type Kept = {
+        readonly answers: ReadonlyArray<ResponseFact>
+        // Only a timed Session's clock says when a Question was served.
+        readonly served: ReadonlyMap<string, ReadonlyArray<ServedFact>>
+        // The last Response kept.
+        readonly last: { readonly rowid: number; readonly id: string } | undefined
+      }
       const kept = new Map<string, Kept>()
       const KeptProfiles = 4
       const rowid = sql<number>`${responses}.rowid`
-      const answersOf = (profileId: string) =>
+      const stillKept = (profileId: string, before: Kept) =>
         Effect.gen(function*() {
-          const before = kept.get(profileId)
-          const [stats] = yield* run(
-            db.select({ count: sql<number>`count(*)`, last: sql<number | null>`max(${responses}.rowid)` }).from(responses)
-              .where(eq(responses.profileId, profileId))
+          if (before.last === undefined) return true
+          const [check] = yield* run(
+            db.select({
+              count: sql<number>`count(*)`,
+              last: sql<string | null>`(select ${responses.id} from ${responses} where rowid = ${before.last.rowid})`
+            }).from(responses).where(and(eq(responses.profileId, profileId), sql`${responses}.rowid <= ${before.last.rowid}`))
           )
-          const count = Number(stats?.count ?? 0)
-          const last = Number(stats?.last ?? 0)
-          const since = before === undefined || last < before.last ? undefined : yield* run(
+          return Number(check?.count ?? 0) === before.answers.length && check?.last === before.last.id
+        })
+      const servedOf = (where: SQL) =>
+        run(
+          db.select(servedColumns).from(servedQuestions).innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
+            .where(and(where, eq(sessions.timed, true)))
+        )
+      const historyOf = (profileId: string) =>
+        Effect.gen(function*() {
+          const found = kept.get(profileId)
+          const before = found !== undefined && (yield* stillKept(profileId, found)) ? found : undefined
+          // The Profile's rows are read in the table's order, which is faster
+          // than by its index, which sorts them by Question.
+          const since = yield* run(
             db.select({ ...responseColumns, rowid }).from(responses)
-              .where(and(eq(responses.profileId, profileId), sql`${responses}.rowid > ${before.last}`))
+              .where(and(sql`+${responses.profileId} = ${profileId}`, sql`${responses}.rowid > ${before?.last?.rowid ?? 0}`))
           )
-          const all = (rows: ReadonlyArray<{ readonly rowid: number }>) => rows.reduce((most, row) => Math.max(most, row.rowid), 0)
-          const next: Kept = before !== undefined && since !== undefined && before.answers.length + since.length === count
-            ? { answers: since.length === 0 ? before.answers : [...before.answers, ...since], last: Math.max(before.last, all(since)) }
-            : yield* run(db.select({ ...responseColumns, rowid }).from(responses).where(eq(responses.profileId, profileId))).pipe(
-              Effect.map((rows) => ({ answers: rows, last: all(rows) }))
-            )
+          const sessionIds = [...new Set(since.map((row) => row.sessionId))]
+          const servedRows = before === undefined
+            ? yield* servedOf(eq(sessions.profileId, profileId))
+            : sessionIds.length === 0
+            ? []
+            : yield* run(inChunks(sessionIds, (chunk) => servedOf(inArray(servedQuestions.sessionId, chunk))))
+          const served = new Map(before?.served ?? [])
+          for (const [sessionId, rows] of Map.groupBy(servedRows, (row) => row.sessionId)) served.set(sessionId, rows)
+          const newest = since.reduce<(typeof since)[number] | undefined>(
+            (most, row) => (most === undefined || row.rowid > most.rowid ? row : most),
+            undefined
+          )
+          const answers = since.map(responseFact)
+          const next: Kept = {
+            answers: before === undefined ? answers : answers.length === 0 ? before.answers : [...before.answers, ...answers],
+            served,
+            last: newest === undefined ? before?.last : { rowid: newest.rowid, id: newest.id }
+          }
           kept.delete(profileId)
           kept.set(profileId, next)
           for (const oldest of [...kept.keys()].slice(0, Math.max(0, kept.size - KeptProfiles))) kept.delete(oldest)
-          return next.answers
+          return next
         })
 
       // Every fact of the Profile's history.
       const profileFacts = (profileId: string) =>
         Effect.gen(function*() {
           const found = yield* readSessions(and(eq(sessions.profileId, profileId), inArray(sessions.kind, Kinds)))
-          const answers = yield* answersOf(profileId)
-          // Only a timed Session's clock says when a Question was served.
-          const served = yield* run(
-            db.select(servedColumns).from(servedQuestions).innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
-              .where(and(eq(sessions.profileId, profileId), eq(sessions.timed, true)))
-          )
-          return yield* factsFrom(profileId, found, answers, served, yield* run(mergeTargets), sql`1 = 1`)
+          const history = yield* historyOf(profileId)
+          return yield* factsFrom(profileId, found, history.answers, history.served, yield* run(mergeTargets), sql`1 = 1`)
         })
 
-      // The facts of one entry: every Session that answered its Question, or
-      // a Question merged into it, with all their Responses, since a passage
-      // is timed as a whole.
       // The facts of one entry: every Session that answered its Question, or
       // a Question merged into it, with all their Responses, since a passage
       // is timed as a whole; the retry sets that took its Retry Ladder's
@@ -354,11 +444,11 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           )).map((row) => row.id)
           const sessionIds = [...new Set([...answered, ...retried])]
           const skipsWhere = inArray(retrySkips.questionId, members)
-          if (sessionIds.length === 0) return yield* factsFrom(profileId, new Map(), [], [], resolve, skipsWhere)
+          if (sessionIds.length === 0) return yield* factsFrom(profileId, new Map(), [], new Map(), resolve, skipsWhere)
           const found = yield* readSessions(and(inArray(sessions.id, sessionIds), inArray(sessions.kind, Kinds)))
           const answers = yield* run(db.select(responseColumns).from(responses).where(inArray(responses.sessionId, sessionIds)))
           const served = yield* run(db.select(servedColumns).from(servedQuestions).where(inArray(servedQuestions.sessionId, sessionIds)))
-          return yield* factsFrom(profileId, found, answers, served, resolve, skipsWhere)
+          return yield* factsFrom(profileId, found, answers.map(responseFact), served, resolve, skipsWhere)
         })
 
       const entriesOf = (facts: Facts): ReadonlyArray<Entry> =>
@@ -383,21 +473,12 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             kinds: [...new Set(kinds)],
             trapPatterns: [...new Set(latest.parts.flatMap((part) => (part.trapPattern === null ? [] : [part.trapPattern])))]
           }]
-        }).toSorted((a, b) => b.latest.at - a.latest.at)
+        }).toSorted((a, b) => later({ at: a.latest.at, id: a.questionId }, { at: b.latest.at, id: b.questionId }))
 
-      // A Book by its title and edition; Books that share both also say when
-      // they were added.
-      const bookNamesOf = (entries: ReadonlyArray<Entry>) => {
-        const all = [...new Map(entries.flatMap((entry) => entry.question.books).map((book) => [book.id, book] as const)).values()]
-        const plain = (book: QuestionSummary["books"][number]) => (book.edition === "" ? book.title : `${book.title}, ${book.edition}`)
-        const shared = Map.groupBy(all, plain)
-        return new Map(all.map((book) => [
-          book.id,
-          shared.get(plain(book))!.length > 1
-            ? `${plain(book)}, added ${new Date(book.createdAt).toISOString().slice(0, 10)}`
-            : plain(book)
-        ] as const))
-      }
+      const bookNames = (timeZone: string) =>
+        run(db.select({ id: books.id, title: books.title, edition: books.edition, createdAt: books.createdAt }).from(books)).pipe(
+          Effect.map((rows) => bookNamesOf(rows, timeZone))
+        )
 
       const viewOf = (facts: Facts, entry: Entry, bookNames: ReadonlyMap<string, string>) =>
         new ErrorLogEntry({
@@ -422,7 +503,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
         })
 
       const matches = (entry: Entry, filters: ErrorLogFilters, timeZone: string) => {
-        const day = studyDayOf(entry.latest.at, timeZone, 0)
+        const day = () => studyDayOf(entry.latest.at, timeZone, 0)
         const question = entry.question
         return (filters.section === undefined || question.section === filters.section) &&
           (filters.skill === undefined || question.primarySkill === filters.skill || question.secondarySkills.includes(filters.skill)) &&
@@ -432,45 +513,57 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           (filters.band === undefined || entry.band === filters.band) &&
           (filters.book === undefined || question.books.some((book) => book.id === filters.book)) &&
           (filters.status === undefined || entry.status === filters.status) &&
-          (filters.from === undefined || day >= dayNumber(filters.from)) &&
-          (filters.to === undefined || day <= dayNumber(filters.to))
+          (filters.from === undefined || day() >= dayNumber(filters.from)) &&
+          (filters.to === undefined || day() <= dayNumber(filters.to))
       }
 
-      // Each value's count over the entries, by name unless an order is given.
+      // How many entries have each value, by name unless an order is given.
+      // Values are named once counted, as a history holds thousands.
       const counted = (
-        values: ReadonlyArray<ReadonlyArray<{ readonly id: string; readonly name: string }>>,
+        entries: ReadonlyArray<Entry>,
+        idsOf: (entry: Entry) => string | ReadonlyArray<string>,
+        nameOf: (id: string) => string,
         order?: ReadonlyArray<string>
       ) => {
-        const counts = new Map<string, { id: string; name: string; entries: number }>()
-        for (const each of values) {
-          for (const value of new Map(each.map((item) => [item.id, item] as const)).values()) {
-            const found = counts.get(value.id) ?? { id: value.id, name: value.name, entries: 0 }
-            counts.set(value.id, { ...found, entries: found.entries + 1 })
+        const counts = new Map<string, number>()
+        for (const entry of entries) {
+          const ids = idsOf(entry)
+          if (typeof ids === "string") {
+            counts.set(ids, (counts.get(ids) ?? 0) + 1)
+            continue
+          }
+          for (let index = 0; index < ids.length; index++) {
+            // An entry counts once for each value, however often it has it.
+            if (ids.indexOf(ids[index]!) < index) continue
+            counts.set(ids[index]!, (counts.get(ids[index]!) ?? 0) + 1)
           }
         }
-        return [...counts.values()].toSorted((a, b) =>
-          order === undefined ? a.name.localeCompare(b.name) : order.indexOf(a.id) - order.indexOf(b.id)
+        return [...counts].map(([id, entries]) => ({ id, name: nameOf(id), entries })).toSorted((a, b) =>
+          order === undefined ? byName(a.name, b.name) : order.indexOf(a.id) - order.indexOf(b.id)
         )
       }
 
       const kindName = (id: string) =>
         id === "slow" || id === "guessed" || id === Unlabelled ? { id, name: KindNames[id] } : names.named(id)
+      const taxonomyName = (id: string) => names.named(id).name
 
       const facetsOf = (entries: ReadonlyArray<Entry>, bookNames: ReadonlyMap<string, string>) =>
         new ErrorLogFacets({
-          sections: counted(entries.map((entry) => [names.named(entry.question.section)])),
-          skills: counted(entries.map((entry) =>
-            [...(entry.question.primarySkill === null ? [] : [entry.question.primarySkill]), ...entry.question.secondarySkills]
-              .map((skill) => names.named(skill))
-          )),
-          questionTypes: counted(entries.map((entry) => [names.named(entry.question.questionType)])),
-          mistakeTypes: counted(entries.map((entry) => entry.kinds.map(kindName))),
-          trapPatterns: counted(entries.map((entry) => entry.trapPatterns.map((id) => names.named(id)))),
-          bands: counted(entries.map((entry) => [{ id: entry.band, name: bandNames[entry.band] }]), BandOrder),
-          books: counted(entries.map((entry) =>
-            entry.question.books.map((book) => ({ id: book.id, name: bookNames.get(book.id) ?? book.title }))
-          )),
-          statuses: counted(entries.map((entry) => [{ id: entry.status, name: StatusNames[entry.status] }]))
+          sections: counted(entries, (entry) => entry.question.section, taxonomyName),
+          skills: counted(
+            entries,
+            (entry) =>
+              entry.question.primarySkill === null
+                ? entry.question.secondarySkills
+                : [entry.question.primarySkill, ...entry.question.secondarySkills],
+            taxonomyName
+          ),
+          questionTypes: counted(entries, (entry) => entry.question.questionType, taxonomyName),
+          mistakeTypes: counted(entries, (entry) => entry.kinds, (id) => kindName(id).name),
+          trapPatterns: counted(entries, (entry) => entry.trapPatterns, taxonomyName),
+          bands: counted(entries, (entry) => entry.band, (id) => bandNames[id as DifficultyBand], BandOrder),
+          books: counted(entries, (entry) => entry.question.books.map((book) => book.id), (id) => bookNames.get(id) ?? id),
+          statuses: counted(entries, (entry) => entry.status, (id) => StatusNames[id as ErrorStatus])
         })
 
       const list = (profileId: string, filters: ErrorLogFilters) =>
@@ -480,14 +573,24 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           const all = entriesOf(facts)
           const shown = all.filter((entry) => !held.has(entry.questionId))
           const kept = shown.filter((entry) => matches(entry, filters, facts.timeZone))
-          const bookNames = bookNamesOf(shown)
-          const offset = filters.offset ?? 0
+          const names = yield* bookNames(facts.timeZone)
+          // The page starts after the entry the last one ended on, wherever
+          // that entry is now: a label change can take it out of the filter.
+          const after = filters.after === undefined ? undefined : parseCursor(filters.after)
+          const start = after === undefined
+            ? 0
+            : (() => {
+              const found = kept.findIndex((entry) => later(after, { at: entry.latest.at, id: entry.questionId }) < 0)
+              return found === -1 ? kept.length : found
+            })()
+          const page = kept.slice(start, start + (filters.limit ?? ErrorLogPageSize))
           return new ErrorLogView({
-            entries: kept.slice(offset, offset + (filters.limit ?? ErrorLogPageSize)).map((entry) => viewOf(facts, entry, bookNames)),
+            entries: page.map((entry) => viewOf(facts, entry, names)),
             matching: kept.length,
+            more: kept.length - start - page.length,
             total: shown.length,
             held: all.length - shown.length,
-            facets: facetsOf(shown, bookNames),
+            facets: facetsOf(shown, names),
             timeZone: facts.timeZone
           })
         })
@@ -534,7 +637,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           // The time the first answer took; a change in Review & Edit takes none.
           const first = mine.find((response) => response.sessionId === latest.sessionId) ?? final
           const rated = yield* run(ratedAmong(profileId, [final.questionId]))
-          const view = viewOf(facts, entry, bookNamesOf([entry]))
+          const view = viewOf(facts, entry, yield* bookNames(facts.timeZone))
           return new ErrorLogDetail({
             entry: view,
             served: new ServedView({
@@ -587,7 +690,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             createdAt: yield* Clock.currentTimeMillis
           }))
           const after = yield* entryOf(profileId, questionId).pipe(Effect.orDie)
-          return viewOf(after.facts, after.entry, bookNamesOf([after.entry]))
+          return viewOf(after.facts, after.entry, yield* bookNames(after.facts.timeZone))
         })
 
       const retryState = (profileId: string) =>

@@ -25,21 +25,42 @@ export interface PartKey {
 
 // Right when every Part has a key and the selection gives it; scored against
 // the current key, so a Key Override re-scores every past Response.
-export const isCorrect = (selection: Selection, keys: ReadonlyArray<PartKey>) =>
-  keys.length > 0 &&
-  keys.every((part) => part.key !== null && selection.some((each) => each.part === part.position && each.choice === part.key))
+export const isCorrect = (selection: Selection, keys: ReadonlyArray<PartKey>) => {
+  if (keys.length === 0) return false
+  for (const part of keys) {
+    if (part.key === null) return false
+    let picked = false
+    for (const each of selection) {
+      if (each.part === part.position && each.choice === part.key) {
+        picked = true
+        break
+      }
+    }
+    if (!picked) return false
+  }
+  return true
+}
 
+// Each Question's Part keys. A merged Question has the keys of the one it
+// became, so every count of right answers judges it as the Error Log does.
 export const keysOf = (questionIds: ReadonlyArray<string>) =>
   Effect.gen(function*() {
     const keys = new Map<string, Array<PartKey>>()
     if (questionIds.length === 0) return keys
     const db = yield* Db
+    const resolve = yield* mergeTargets
+    const wanted = [...new Set(questionIds)]
     const rows = yield* db.select({ questionId: parts.questionId, position: parts.position, key: parts.key }).from(parts)
-      .where(inArray(parts.questionId, [...new Set(questionIds)])).orderBy(asc(parts.position))
+      .where(inArray(parts.questionId, [...new Set(wanted.map(resolve))])).orderBy(asc(parts.position))
+    const byQuestion = new Map<string, Array<PartKey>>()
     for (const row of rows) {
-      const mine = keys.get(row.questionId) ?? []
+      const mine = byQuestion.get(row.questionId) ?? []
       mine.push({ position: row.position, key: row.key })
-      keys.set(row.questionId, mine)
+      byQuestion.set(row.questionId, mine)
+    }
+    for (const id of wanted) {
+      const found = byQuestion.get(resolve(id))
+      if (found !== undefined) keys.set(id, found)
     }
     return keys
   })

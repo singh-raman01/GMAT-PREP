@@ -5,8 +5,9 @@ import { hashOrder, type PoolQuestion } from "../practice/selection.ts"
 // Siblings (docs/design.md, "Learning loop"): the Questions a Retry Ladder's
 // steps 2 and 3 serve in place of the one missed. A Sibling is unseen,
 // outside the Mock Reserve, within 0.5 of the missed Question's Difficulty,
-// of its Question Type, and shares its primary Skill; failing that, it shares
-// one of its secondary Skills other than the Data Sufficiency ones.
+// of its Question Type, not about the same passage, and shares its primary
+// Skill; failing that, it shares one of its secondary Skills other than the
+// Data Sufficiency ones.
 
 export interface SiblingTarget {
   readonly id: string
@@ -14,6 +15,9 @@ export interface SiblingTarget {
   readonly primarySkill: string | null
   readonly secondarySkills: ReadonlyArray<string>
   readonly difficulty: number
+  // Its passage: a Question about the same one is no Sibling, as the
+  // passage was read already.
+  readonly stimulusId: string | null
 }
 
 export type SiblingMatch = "primary" | "secondary"
@@ -34,6 +38,7 @@ export const pickSibling = (
   const gap = (question: PoolQuestion) => Math.abs(question.difficulty - target.difficulty)
   const fits = pool.filter((question) =>
     question.id !== target.id &&
+    (target.stimulusId === null || question.stimulusId !== target.stimulusId) &&
     !unavailable.has(question.id) &&
     (question.reserve === false || question.released) &&
     question.questionType === target.questionType &&
