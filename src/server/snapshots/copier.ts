@@ -40,10 +40,13 @@ export const commandOf = (args: ReadonlyArray<string>): ReadonlyArray<string> =>
     : [process.execPath, Bun.main, ...args]
 
 // Runs one of the commands in `fileCommand` and reads its answer as JSON.
+// Interrupted, as when the app stops, it ends the process too, so no copy
+// or check outlives the app; a copy cut short leaves only a temporary file,
+// which the next start removes.
 const runCommand = <A>(args: ReadonlyArray<string>) =>
   Effect.tryPromise({
-    try: async () => {
-      const child = Bun.spawn([...commandOf(args)], { stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+    try: async (signal) => {
+      const child = Bun.spawn([...commandOf(args)], { stdin: "ignore", stdout: "pipe", stderr: "pipe", signal })
       const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
       if (code !== 0) throw new Error(err.trim() === "" ? `The ${args[0]} step stopped with code ${code}.` : err.trim())
       return JSON.parse(out) as A
