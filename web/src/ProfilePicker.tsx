@@ -3,6 +3,7 @@ import { type FormEvent, useCallback, useEffect, useId, useRef, useState } from 
 import { Pin, ProfileName, type ProfileSummary } from "../../src/api/Profiles.ts"
 import { call } from "./api.ts"
 import { clockTime, minutesAndSeconds } from "./format.ts"
+import { PlainHead } from "./DisplayMenu.tsx"
 import { linkProps } from "./router.ts"
 
 type Stop = (error: { readonly _tag: string }) => void
@@ -97,7 +98,7 @@ export const ProfilePicker = ({ notice, onUnlocked, onStopped }: PickerProps) =>
   if (profiles.length === 0) {
     return (
       <main className="page picker">
-        <p className="wordmark">GMAT prep</p>
+        <PlainHead />
         <h1>Set up your first profile</h1>
         {noticeLine}
         <p className="lede">
@@ -111,7 +112,7 @@ export const ProfilePicker = ({ notice, onUnlocked, onStopped }: PickerProps) =>
 
   return (
     <main className="page picker">
-      <p className="wordmark">GMAT prep</p>
+      <PlainHead />
       <h1 ref={heading} tabIndex={-1}>Who is studying?</h1>
       {noticeLine}
       <ul className="profiles">

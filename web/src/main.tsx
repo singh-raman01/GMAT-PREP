@@ -4,6 +4,7 @@ import "./styles.css"
 import { Component, type ReactNode, StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 import { App } from "./App.tsx"
+import { startDisplay } from "./display.ts"
 
 // A last resort: a bug in a screen shows this instead of an empty page.
 class CrashScreen extends Component<{ readonly children: ReactNode }, { readonly crashed: boolean }> {
@@ -31,6 +32,10 @@ class CrashScreen extends Component<{ readonly children: ReactNode }, { readonly
     )
   }
 }
+
+// This browser's colours and text size, as display-boot.js set them before
+// the first paint, then as other tabs change them.
+startDisplay()
 
 const root = document.getElementById("root")
 if (root === null) throw new Error("index.html has no #root element")

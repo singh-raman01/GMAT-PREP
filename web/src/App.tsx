@@ -21,6 +21,7 @@ import { MocksHome } from "./mocks/MocksHome.tsx"
 import { ScoresPage } from "./scores/ScoresPage.tsx"
 import { SectionalScreen } from "./sectionals/SectionalScreen.tsx"
 import { SectionalsHome } from "./sectionals/SectionalsHome.tsx"
+import { DisplayMenu, PlainHead } from "./DisplayMenu.tsx"
 import { PairingPage } from "./PairingPage.tsx"
 import { ProfilePicker } from "./ProfilePicker.tsx"
 import { PlanPage } from "./plan/PlanPage.tsx"
@@ -141,6 +142,7 @@ export const App = () => {
           <header className="topbar">
             <span className="wordmark">GMAT prep</span>
             <div className="who">
+              <DisplayMenu />
               <a className="who-name" {...linkProps("/profile")}>{screen.profile.name}</a>
               <button type="button" className="button button-quiet" onClick={() => void lock()}>
                 Lock
@@ -293,7 +295,7 @@ const Stopped = ({ trouble, onRetry }: { readonly trouble: Trouble; readonly onR
   const act = () => (trouble === "unreadable" ? window.location.reload() : onRetry())
   return (
     <main className="page page-narrow">
-      <p className="wordmark">GMAT prep</p>
+      <PlainHead />
       <h1 ref={heading} tabIndex={-1}>{text.title}</h1>
       <p className="lede">{text.body}</p>
       <button type="button" className="button" onClick={act}>

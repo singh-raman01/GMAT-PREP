@@ -16,7 +16,9 @@ import { minutesAndSeconds, spokenDuration } from "../format.ts"
 import { RichInline, RichText } from "../RichText.tsx"
 import { linkProps, navigate } from "../router.ts"
 import { DebriefPanel } from "./DebriefPanel.tsx"
+import { examKey, keyPressOf } from "./examKeys.ts"
 import { type ClockReading, Timer, useRemaining, warningFor } from "./Timer.tsx"
+import { useTimerChoice } from "./timerChoices.ts"
 import { StimulusDetails, StimulusPane } from "../stimulus/StimulusPane.tsx"
 import { AnswerParts, type Picks } from "./Parts.tsx"
 import { Calculator } from "./Calculator.tsx"
@@ -111,13 +113,6 @@ const isHeldElsewhere = (failure: { readonly _tag: string }): failure is HeldEls
 const isSelectionInvalid = (failure: { readonly _tag: string }): failure is SelectionInvalid =>
   failure._tag === "SelectionInvalid"
 
-// Keys typed into a text field are the field's; a radio button or a
-// checkbox leaves the shortcuts working.
-export const isTyping = (target: EventTarget | null) =>
-  target instanceof HTMLElement &&
-  (target.isContentEditable || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement ||
-    (target instanceof HTMLInputElement && !["radio", "checkbox", "button", "submit"].includes(target.type)))
-
 const outOfStepText: Record<PracticeOutOfStep["reason"], string> = {
   "answered": "The set had moved on in another tab, so this shows where it stands now.",
   "not-current": "The set had moved on in another tab, so this shows where it stands now.",
@@ -168,25 +163,15 @@ const SetScreen = (
   }
 ) => {
   const actions = useActions(onView, onFailure)
-  const [timerHidden, setTimerHidden] = useState(false)
+  const [timerHidden, setTimerHidden] = useTimerChoice("hidden", view.id)
+  const [warningDismissed, setWarningDismissed] = useTimerChoice("dismissed", view.id)
   // The calculator comes with Data Insights Questions only.
   const [calculating, setCalculating] = useState(false)
   const calculatorToggle = useRef<HTMLButtonElement>(null)
   const dataInsights = view.status === "active" && view.current?.question.section.id === "di"
   const remaining = useRemaining(reading)
 
-  // The time left turns to a warning near the end, and is said once then,
-  // even with the timer hidden.
   const warningMs = warningFor(view.clock?.limitMs ?? 0)
-  const [announcement, setAnnouncement] = useState("")
-  const aboveWarning = useRef(remaining === undefined || remaining > warningMs)
-  useEffect(() => {
-    if (remaining === undefined) return
-    if (aboveWarning.current && remaining <= warningMs && remaining > 0) {
-      setAnnouncement(`${spokenDuration(Math.ceil(remaining / 1000) * 1000)} left.`)
-    }
-    aboveWarning.current = remaining > warningMs
-  }, [remaining, warningMs])
 
   // When the time shown runs out, the server ends the set within a second
   // or two; read it then.
@@ -227,7 +212,9 @@ const SetScreen = (
               remainingMs={remaining}
               warningMs={warningMs}
               hidden={timerHidden}
-              onToggle={() => setTimerHidden((hidden) => !hidden)}
+              onToggle={() => setTimerHidden(!timerHidden)}
+              dismissed={warningDismissed}
+              onDismiss={() => setWarningDismissed(true)}
             />
           )}
           {dataInsights && (
@@ -259,7 +246,6 @@ const SetScreen = (
           }}
         />
       )}
-      <p className="visually-hidden" role="status">{announcement}</p>
       {view.clock?.interrupted === true && (
         <p className="clock-note">
           The clock did not count time while the app was stopped, the computer slept or the data was restored.
@@ -401,23 +387,13 @@ const QuestionScreen = (
   // A to E pick an option and Enter submits; once answered, Enter moves on.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (locked || event.altKey || event.ctrlKey || event.metaKey || isTyping(event.target)) return
-      // Keys typed in the calculator, or in the Mistake Type control, are
-      // their own: Enter there does not move on.
-      if (event.target instanceof Element && event.target.closest(".calculator, .mistakes") !== null) return
-      const label = event.key.toUpperCase()
-      if (
-        !answered && lettered !== undefined && label.length === 1 &&
-        lettered.options.some((option) => option.label === label)
-      ) {
-        event.preventDefault()
-        pick(lettered.position, label)
-        return
-      }
-      if (event.key !== "Enter") return
-      if (event.target instanceof HTMLButtonElement || event.target instanceof HTMLAnchorElement) return
+      if (locked) return
+      const letters = !answered && lettered !== undefined ? lettered.options.map((option) => option.label) : []
+      const action = examKey(keyPressOf(event), letters)
+      if (action === undefined) return
       event.preventDefault()
-      if (answered) moveOn()
+      if (action._tag === "Pick") pick(lettered!.position, action.label)
+      else if (answered) moveOn()
       else submit()
     }
     document.addEventListener("keydown", onKey)

@@ -9,6 +9,7 @@ import { BookPage } from "./BookPage.tsx"
 import { CuratorBooks } from "./CuratorBooks.tsx"
 import { CuratorJobs } from "./CuratorJobs.tsx"
 import { CuratorSettings } from "./CuratorSettings.tsx"
+import { DisplayMenu, PlainHead } from "../DisplayMenu.tsx"
 import { DataPage } from "./DataPage.tsx"
 import { DevicesPage } from "./DevicesPage.tsx"
 import { Generation } from "./Generation.tsx"
@@ -101,6 +102,7 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
           <header className="topbar">
             <span className="wordmark">GMAT prep</span>
             <div className="who">
+              <DisplayMenu />
               <a className="quiet-link" {...linkProps("/")}>Profiles</a>
               <span className="who-name">Curator</span>
               <button type="button" className="button button-quiet" onClick={() => void lock()}>
@@ -227,7 +229,7 @@ const SetPassphrase = ({ onSet, onStopped }: { readonly onSet: () => void; reado
 
   return (
     <main className="page page-narrow">
-      <p className="wordmark">GMAT prep</p>
+      <PlainHead />
       <h1 ref={heading} tabIndex={-1}>Set the Curator passphrase</h1>
       <p className="lede">
         The Curator adds books, reviews questions and sets up the LLM. A passphrase guards those tools on this
@@ -333,7 +335,7 @@ const Unlock = (
 
   return (
     <main className="page page-narrow">
-      <p className="wordmark">GMAT prep</p>
+      <PlainHead />
       <h1 ref={heading} tabIndex={-1}>Unlock the Curator tools</h1>
       {notice !== undefined && <p className="notice" role="status">{notice}</p>}
       <form className="add-form" noValidate onSubmit={(event) => void submit(event)}>

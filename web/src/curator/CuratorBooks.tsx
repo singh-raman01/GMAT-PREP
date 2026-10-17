@@ -191,26 +191,17 @@ const MockReserve = (
         A quarter of each Section's Questions is held back so that Mocks serve Questions a Learner has not seen.
         Practice Sets use a Reserve Question only once it is released, or once that Learner has seen it.
       </p>
-      <table className="report">
-        <thead>
-          <tr>
-            <th scope="col">Section</th>
-            <th scope="col" className="report-count">Published</th>
-            <th scope="col" className="report-count">Held for Mocks</th>
-            <th scope="col" className="report-count">Released</th>
-          </tr>
-        </thead>
-        <tbody>
-          {sections.map((each) => (
-            <tr key={each.id}>
-              <th scope="row">{each.name}</th>
-              <td className="report-count">{each.questions}</td>
-              <td className="report-count">{each.held}</td>
-              <td className="report-count">{each.released}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <ul className="set-list">
+        {sections.map((each) => (
+          <li key={each.id} data-section={each.id}>
+            <span className="swatch" aria-hidden="true" />
+            <span className="set-name">{each.name}</span>
+            <span className="set-facts">
+              {each.questions} published, {each.held} held for Mocks, {each.released} released
+            </span>
+          </li>
+        ))}
+      </ul>
       {withReserve.length > 0 && (
         <form className="release-form" noValidate onSubmit={(event) => void release(event)}>
           <div className="field">
