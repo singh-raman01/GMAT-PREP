@@ -118,6 +118,24 @@ describe("LAN mode", () => {
       expect(stored?.tokenHash).toMatch(/^[0-9a-f]{64}$/)
     })))
 
+  test("the paired device's cookie is HttpOnly, SameSite=Strict, and kept for 400 days", () =>
+    run(Effect.gen(function*() {
+      yield* network
+      const host = yield* curator
+      yield* host.curatorLan.setMode({ payload: { on: true } })
+      const { code } = yield* host.curatorLan.makeCode()
+      const response = yield* (yield* HttpClient.HttpClient).execute(
+        HttpClientRequest.post("/api/pairing/pair").pipe(
+          HttpClientRequest.setHeader(TestRemoteHeader, Tablet),
+          HttpClientRequest.bodyJsonUnsafe({ code, name: "Tablet" })
+        )
+      )
+      expect(response.status).toBe(200)
+      const cookie = response.headers["set-cookie"] ?? ""
+      expect(cookie).toMatch(/^gp_device=[A-Za-z0-9_-]{43};/)
+      expect(cookie.split("; ").slice(1).toSorted()).toEqual(["HttpOnly", `Max-Age=${400 * 24 * 60 * 60}`, "Path=/", "SameSite=Strict"])
+    })))
+
   test("five wrong codes in a row end the code, so a new one must be shown", () =>
     run(Effect.gen(function*() {
       yield* network
