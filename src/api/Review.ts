@@ -45,7 +45,10 @@ export const ReasonCode = Schema.Literals([
   // The same, but its solves do not all agree with its key.
   "inference-unconfirmed",
   // A page, not a Question.
-  "unread-page"
+  "unread-page",
+  // A Learner's report that something is wrong with a published Question,
+  // with their words (decision 107).
+  "problem-report"
 ])
 export type ReasonCode = typeof ReasonCode.Type
 
@@ -157,11 +160,15 @@ export class ReviewItemView extends Schema.Class<ReviewItemView>("gmat-prep/api/
   // A held Question, or else a page extraction could not read.
   question: Schema.NullOr(QuestionView),
   page: Schema.NullOr(Schema.Struct({ bookId: BookId, bookTitle: Schema.String, number: Schema.Int })),
+  // check for what extraction, linking or the Publish Gate held; report for
+  // Learners' Problem Reports on a Question, which no check decides.
+  kind: Schema.Literals(["check", "report"]),
   reasons: Schema.Array(ReviewReason),
   // The Question this one may repeat, for a near match or the same text.
   related: Schema.NullOr(QuestionView),
   status: Schema.Literals(["open", "decided"]),
-  decision: Schema.NullOr(Schema.Literals(["published", "withdrawn", "variant", "merged", "dismissed"])),
+  // key-changed: a report decided by changing the Question's key.
+  decision: Schema.NullOr(Schema.Literals(["published", "withdrawn", "variant", "merged", "dismissed", "key-changed"])),
   // Whether enrichment can be tried again for it: tagging, solving, or its
   // Approaches and notes, after an unusable reply.
   checkable: Schema.Boolean,
@@ -273,7 +280,8 @@ export class ReviewApi extends HttpApiGroup.make("review")
     }),
     // Tries again the enrichment an unusable reply left missing or wrong:
     // tagging, solving, or the Approaches and notes. The Question leaves the
-    // queue while a job checks it, and comes back if it is held again.
+    // queue while a job checks it, and comes back if it is held again. Not
+    // for a report item, which only the Curator decides.
     HttpApiEndpoint.post("checkAgain", "/review/:id/check", {
       ...decided,
       error: [ReviewItemNotFound, ReviewItemNotOpen]
@@ -281,14 +289,15 @@ export class ReviewApi extends HttpApiGroup.make("review")
     HttpApiEndpoint.get("drafts", "/drafts", { success: DraftsView }),
     // Queues a job for the drafts no job would check.
     HttpApiEndpoint.post("checkDrafts", "/drafts/check", { success: DraftsView }),
-    // A page extraction could not read, once the Curator has dealt with it.
+    // A page extraction could not read, once the Curator has dealt with it,
+    // or Learners' reports on a Question the Curator keeps as it is.
     HttpApiEndpoint.post("dismiss", "/review/:id/dismiss", {
       ...decided,
       error: [ReviewItemNotFound, ReviewItemNotOpen]
     }),
     // Replaces the key, with the Curator's reason. The Question's Approaches
     // and wrong-option notes are written again for it, and it goes back
-    // through the Publish Gate.
+    // through the Publish Gate. A report item is decided by it.
     HttpApiEndpoint.post("overrideKey", "/review/:id/key", {
       ...decided,
       payload: Schema.Struct({

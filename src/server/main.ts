@@ -1,6 +1,6 @@
 import { BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { Config, Effect, Layer, Option } from "effect"
-import { HttpRouter, HttpServer } from "effect/http"
+import { FetchHttpClient, HttpRouter, HttpServer } from "effect/http"
 import { rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { MaxBookBytes } from "../api/Books.ts"
@@ -8,6 +8,7 @@ import { AppConfig } from "./AppConfig.ts"
 import { AppRoutes, AppServices } from "./app.ts"
 import { ResetPassphrase } from "./curator/resetPassphrase.ts"
 import { InstanceLockLive } from "./instanceLock.ts"
+import { LlmTransportHttp } from "./llm/LlmTransport.ts"
 import { WorkerMain } from "./worker/main.ts"
 import { WorkerSupervisor } from "./worker/WorkerSupervisor.ts"
 
@@ -65,6 +66,8 @@ const MainLive = AnnounceLive.pipe(
   Layer.provideMerge(ServerLive),
   Layer.provide(WorkerSupervisor.layer),
   Layer.provide(AppServices),
+  // Tutor Chat's calls go out over HTTP.
+  Layer.provide(LlmTransportHttp.pipe(Layer.provide(FetchHttpClient.layer))),
   Layer.provide(InstanceLockLive),
   Layer.provide(AppConfig.layerFromEnv)
 )

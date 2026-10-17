@@ -59,7 +59,7 @@ If a reply was unusable, "Check again" asks once more for the tags, solves, Appr
 
 Under Golden set, approve the first book's questions with their Skills, up to a hundred. Checking the golden set reads their pages again and tags them again with the current models. It passes when text, answer choices and keys are all exact and the Skills match yours on 90% or more. Run it after changing a model or prompt.
 
-The Curator area opens on an Overview: published questions by Skill and difficulty band, how many Mocks the Mock Reserve still covers, the Skills running out of questions or Siblings, what waits in the Review Queue, and this month's jobs and LLM spend.
+The Curator area opens on an Overview: published questions by Skill and difficulty band, how many Mocks the Mock Reserve still covers, the Skills running out of questions or Siblings, what waits in the Review Queue, the Learners' Problem Reports waiting for you, and this month's jobs and LLM spend.
 
 ## Generate Data Insights questions
 
@@ -116,6 +116,10 @@ Every chart has its numbers in a table below it.
 Every Skill and Question Type gets a Lesson: its rules, the ways to solve its questions and when each works, the common traps, and up to three worked examples taken from real questions, then a 5-question check. Under Lessons in the Curator area, "Write the Lessons needed" queues a job that writes a draft for each subject with at least six published questions outside the Mock Reserve. A Data Sufficiency question counts for its value or yes/no sufficiency Skill as well as for its maths. One Lesson job runs at a time, so let it finish, or stop it under Jobs, before writing more. Read each draft as a Learner will and approve it or turn it down with a note; every other version, turned down or earlier, opens from its subject's row too. A Lesson is marked to write again when the Taxonomy changes how it describes the subject, or a worked example leaves the subject or joins the Mock Reserve. Until a new version is approved, it shows only the worked examples still on the subject.
 
 Learners find the approved Lessons under Lessons, and a Debrief links to the Lesson on its question's main Skill. The worked examples a Lesson shows count as seen, so they never change your scores later. One your running Sectional or Mock holds stays hidden until the test ends, and a Lesson opened for its ways to solve alone shows none. Its check is an untimed set of five questions on the subject. The Study Plan sets a Lesson before practice when a Weak Area's misses are mostly a concept gap, and the Lesson's ways to solve it when they are mostly a wrong approach; the Weak Areas view links the same beside the Weak Area's set.
+
+## Tutor Chat and reports
+
+Under the Debrief of any question you answered, Ask the tutor opens a chat about it: ask why your answer went wrong or how to see it faster. The tutor sees the question, its key, the ways to solve it and your own answers and misses on its Skill, and takes the key as correct. Asking the same thing again shows the earlier reply at no cost, unless the Curator has changed the key since; a reply written for an earlier key says so. If you close or reload the page while the tutor answers, the reply is kept and shows next time. If you believe a question is wrong, Report a problem sends your words to the Curator's Review Queue, and reporting it again before the Curator decides replaces them. The question stays as it is until the Curator keeps it, changes its key or withdraws it, and your reports are listed at the bottom of the Error Log with each question and the decision. A question the Curator has withdrawn takes no more messages or reports. Tutor Chat calls the model as you ask, so the Curator sets a monthly cap under Settings, 5 dollars until changed. Settings also shows when the model's API refused a Tutor Chat call, and what it said.
 
 ## Study Plan
 

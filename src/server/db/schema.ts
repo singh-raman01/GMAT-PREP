@@ -114,7 +114,8 @@ export const llmCalls = sqliteTable(
     detail: text("detail"),
     createdAt: integer("created_at").notNull()
   },
-  (t) => [index("llm_calls_job").on(t.jobId)]
+  // Tutor Chat's monthly spend is summed by task and time.
+  (t) => [index("llm_calls_job").on(t.jobId), index("llm_calls_task").on(t.task, t.createdAt)]
 )
 
 // Books the Curator added. The file is stored once in the data folder's books
@@ -459,8 +460,12 @@ export const reviewItems = sqliteTable(
     relatedQuestionId: text("related_question_id").references(() => questions.id, { onDelete: "set null" }),
     // open or decided
     status: text("status").notNull(),
-    // published, withdrawn, variant, merged or dismissed
+    // published, withdrawn, variant, merged, dismissed or key-changed
     decision: text("decision"),
+    // check for what extraction, linking or the Publish Gate held; report for
+    // the item gathering Learners' Problem Reports on a Question, which only
+    // the Curator decides (decision 107).
+    kind: text("kind").notNull().default("check"),
     createdAt: integer("created_at").notNull(),
     decidedAt: integer("decided_at")
   },
@@ -926,4 +931,52 @@ export const lessonViews = sqliteTable(
     shownExamples: text("shown_examples")
   },
   (t) => [index("lesson_views_profile").on(t.profileId, t.viewedAt)]
+)
+
+// A Learner's Tutor Chat message about a Question and its reply (decision
+// 104). Read only for the Profile that wrote it.
+export const tutorMessages = sqliteTable(
+  "tutor_messages",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    questionId: text("question_id").notNull().references(() => questions.id, { onDelete: "cascade" }),
+    message: text("message").notNull(),
+    // The message as compared for reuse: trimmed, spaces folded, lower case.
+    messageKey: text("message_key").notNull(),
+    reply: text("reply").notNull(),
+    // The Question's key the reply was written against, joined as keys.ts
+    // joins it; a reply is reused, and sent back as context, only while the
+    // key is the same. Null for replies from before it was kept.
+    answerKey: text("answer_key"),
+    // An earlier version stored each repeat as a row of its own, naming the
+    // message whose reply it reused. A repeat is now counted on the message
+    // it repeats, which moves to when it was last asked.
+    reusedFrom: text("reused_from"),
+    repeats: integer("repeats").notNull().default(0),
+    askedAt: integer("asked_at").notNull().default(0),
+    model: text("model").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    tokensIn: integer("tokens_in").notNull(),
+    tokensOut: integer("tokens_out").notNull(),
+    cost: real("cost").notNull(),
+    createdAt: integer("created_at").notNull()
+  },
+  (t) => [index("tutor_messages_asked").on(t.profileId, t.questionId, t.askedAt)]
+)
+
+// A Learner's report that a Question is wrong (decision 107). It joins the
+// Question's open report item; while that item is open, a Profile that
+// reports the Question again replaces its words.
+export const problemReports = sqliteTable(
+  "problem_reports",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    questionId: text("question_id").notNull().references(() => questions.id, { onDelete: "cascade" }),
+    text: text("text").notNull(),
+    reviewItemId: text("review_item_id").references(() => reviewItems.id, { onDelete: "set null" }),
+    createdAt: integer("created_at").notNull()
+  },
+  (t) => [index("problem_reports_question").on(t.questionId), index("problem_reports_profile").on(t.profileId, t.createdAt)]
 )

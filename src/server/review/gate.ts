@@ -271,7 +271,8 @@ export const gateInputOf = (questionId: string) =>
 
 // Runs the gate on a Question and records the outcome: published, or held
 // with every reason. Its starting Difficulty is set here, from the Book
-// Label, else the estimate. Withdrawn Questions are left alone. It reads and
+// Label, else the estimate. Withdrawn Questions are left alone, and so are
+// Learners' reports on it, which only the Curator decides. It reads and
 // writes in one transaction, so a change the Curator commits meanwhile is
 // either seen or waits for it.
 export const runGate = (questionId: string, taxonomy: TaxonomyView) =>
@@ -300,7 +301,7 @@ const gateOnce = (questionId: string, taxonomy: TaxonomyView) =>
       .where(eq(questions.id, questionId))
     if (passed) {
       yield* db.update(reviewItems).set({ status: "decided", decision: "published", decidedAt: now })
-        .where(and(eq(reviewItems.questionId, questionId), eq(reviewItems.status, "open")))
+        .where(and(eq(reviewItems.questionId, questionId), eq(reviewItems.status, "open"), eq(reviewItems.kind, "check")))
     } else {
       yield* holdForReview(questionId, reasons, question.relatedQuestionId)
     }

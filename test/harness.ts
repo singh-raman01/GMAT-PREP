@@ -53,6 +53,7 @@ export const appLayer = (dataDir: string) =>
     Layer.provide(AppServices),
     Layer.provide(WorkerSupervisor.layerIdle),
     Layer.provide(AppConfig.layer({ dataDir, preferredPort: 0 })),
+    Layer.provide(LlmTransportFake),
     Layer.provideMerge(BunHttpServer.layerTest),
     Layer.provideMerge(TestClock.layer())
   )

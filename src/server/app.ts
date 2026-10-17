@@ -9,6 +9,8 @@ import { JobFeed } from "./events/JobFeed.ts"
 import { ErrorLog } from "./learning/ErrorLog.ts"
 import { Plans } from "./plans/Plans.ts"
 import { Lessons } from "./lessons/Lessons.ts"
+import { LlmAdapter } from "./llm/LlmAdapter.ts"
+import { Tutor } from "./tutor/Tutor.ts"
 import { Retries } from "./learning/Retries.ts"
 import { Analytics } from "./analytics/Analytics.ts"
 import { SiblingsReport } from "./learning/SiblingsReport.ts"
@@ -63,6 +65,7 @@ export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Plans.layer.pip
     Scores.layer,
     PaperMarks.layer,
     Lessons.layer,
+    Tutor.layer,
     RemoveUploadLeftovers
   )),
   // The analytics, which Retries order their steps by.
@@ -71,6 +74,8 @@ export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Plans.layer.pip
   // the Practice and Error Log services Retries build on, and the Bank and
   // Siblings counts the Curator's Overview reads.
   Layer.provideMerge(Layer.mergeAll(Sectionals.layer, Practice.layer, ErrorLog.layer, Bank.layer, SiblingsReport.layer)),
+  // Tutor Chat calls the LLM from the server, over the transport given.
+  Layer.provideMerge(LlmAdapter.layer),
   Layer.provideMerge(Layer.mergeAll(Settings.layer, ApiKeyStore.layer, BookFiles.layer, FigureFiles.layer, Taxonomy.layer)),
   Layer.provideMerge(JobStore.layer),
   Layer.provideMerge(kinds),

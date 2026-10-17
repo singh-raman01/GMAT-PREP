@@ -785,6 +785,7 @@ const ResultRow = (
                 parts={served.question.parts}
                 mistakes={served.mistakes}
                 onFailure={onFailure}
+                questionId={served.question.id}
               />
             )}
           </>
