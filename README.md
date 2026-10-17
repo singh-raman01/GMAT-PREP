@@ -59,6 +59,8 @@ If a reply was unusable, "Check again" asks once more for the tags, solves, Appr
 
 Under Golden set, approve the first book's questions with their Skills, up to a hundred. Checking the golden set reads their pages again and tags them again with the current models. It passes when text, answer choices and keys are all exact and the Skills match yours on 90% or more. Run it after changing a model or prompt.
 
+The Curator area opens on an Overview: published questions by Skill and difficulty band, how many Mocks the Mock Reserve still covers, the Skills running out of questions or Siblings, what waits in the Review Queue, and this month's jobs and LLM spend.
+
 ## Generate Data Insights questions
 
 Under Generate, ask for a batch of Table Analysis, Graphics Interpretation, Two-Part Analysis or Multi-Source Reasoning questions: a Skill, a difficulty, how many (Multi-Source Reasoning comes in sets of three questions on shared tabs) and a spend cap. Set models for Generation and Statement translation in Settings first, and for tagging, solving and Approaches, which every new question goes through. The generator writes each question on a table of its own, with a small query for every statement, and the app works out each answer by running the query on the table, never from the model's arithmetic. A second model call reads each statement's words again and writes its own query; when the two give different answers, the question waits in the Review Queue until you change that part's key or withdraw it. A Multi-Source Reasoning statement that is an inference from the text cannot be checked this way, so it always waits for you: you can publish it when its three solves agree with its key, and otherwise change that key or withdraw it. Generated questions then go through the same checks as a book's, a repeat of another question waits beside it, and a quarter of the generated questions of each type is held back for Mocks.
@@ -97,9 +99,21 @@ Every Question you answer wrong, or right but slowly in a timed set, or by a gue
 
 A Question you missed comes back on a Retry Ladder: 2 Study Days later the Question itself, 7 days later a Question like it you have not seen (a Sibling, of the same type and Skill and close in Difficulty), and 21 days later another. The Practice page lists what is due today, with one button for the untimed retries and one for the timed ones, 20 at a time, the longest waiting first; a Question you were slow on, and every Sibling, comes timed, and a slow one gets 1.5 times its Target Time. A miss puts the step back by 2 days. Get all three right and the entry is resolved, and stays in your Error Log as Resolved; a Sibling step with no Sibling left is skipped, and the entry says so. The Curator's Siblings page shows the Skills, by Question Type, running out of Siblings.
 
+## Progress
+
+Progress shows how your practice is going, from your timed answers to Questions you had not seen, in five views:
+
+- Weak Areas: the Skills and Question Types that cost you the most points, ranked by how far each sits below your level in its Section times how often the exam asks it. Each says how slow your right answers are and what went wrong, and has a button that starts 10 Questions on it, timed when pace is the problem.
+- Skill map: every Skill and Question Type against your level, your Weak Areas marked, and those without 8 timed answers yet said so.
+- Timing: your pace against the Target Time by Question Type and by Strategy, how you do on a Section's last 5 Questions, and each Mock's pacing against an even pace.
+- Mistakes: each Mistake Type and Trap Pattern per 100 Questions, week by week.
+- Study: the minutes, Questions and accuracy of each Study Day, with the last 4 weeks as a chart.
+
+Every chart has its numbers in a table below it.
+
 ## Scores
 
-Scores shows each Section's Score Estimate, and the Total once all three have one. Enter an Official Score from an official practice exam or the GMAT itself to calibrate them: each one is matched with your estimates as they stood that day, so it calibrates only the Sections you had an estimate for by then. One shifts each Section's scale to match it, and two or more fit it, as long as your estimates on those days were far enough apart to say how the scale runs.
+Scores shows each Section's Score Estimate, and the Total once all three have one, with the trend of each Study Day's estimates and your Official Scores marked on it. Enter an Official Score from an official practice exam or the GMAT itself to calibrate them: each one is matched with your estimates as they stood that day, so it calibrates only the Sections you had an estimate for by then. One shifts each Section's scale to match it, and two or more fit it, as long as your estimates on those days were far enough apart to say how the scale runs.
 
 ## Check it
 
