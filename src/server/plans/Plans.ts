@@ -26,7 +26,8 @@ import { type DayRule, nextRolloverUnder, ruleInEffect, studyDaysUnder, studyDay
 import { DefaultTargetSeconds, targetSecondsFor } from "../../api/targetTimes.ts"
 import { Analytics } from "../analytics/Analytics.ts"
 import { Db } from "../db/Database.ts"
-import { dailyNotes, lessonViews, planItems, planSettings, planVersions, profileDays, sessions } from "../db/schema.ts"
+import { dailyNotes, lessonViews, planItems, planSettings, planVersions, profileDays, scoreEstimates, sessions } from "../db/schema.ts"
+import { ErrorLog } from "../learning/ErrorLog.ts"
 import { Retries } from "../learning/Retries.ts"
 import { Lessons, minutesFor } from "../lessons/Lessons.ts"
 import { CheckCount } from "../lessons/pick.ts"
@@ -143,6 +144,7 @@ export class Plans extends Context.Service<Plans, {
     Effect.gen(function*() {
       const db = yield* Db
       const analytics = yield* Analytics
+      const errorLog = yield* ErrorLog
       const retries = yield* Retries
       const lessons = yield* Lessons
       const practice = yield* Practice
@@ -281,8 +283,9 @@ export class Plans extends Context.Service<Plans, {
 
       // The Diagnostic (decision 89): done once a Mock is finished, or the
       // three Diagnostic Sectionals; else skipped, blocked while no Mock can
-      // start and none of it is taken, or pending with the Sections still to
-      // take. The start check is read only when it decides.
+      // start and no part of it has started, or pending with the Sections
+      // whose Sectional has not started. A part started, running or ended,
+      // has begun it. The start check is read only when it decides.
       const diagnosticOf = (
         profileId: string,
         skipped: boolean,
@@ -296,21 +299,26 @@ export class Plans extends Context.Service<Plans, {
           const mocksFinished = finished.find((row) => row.kind === "mock")?.count ?? 0
           const finishedCount = finished.reduce((sum, row) => sum + row.count, 0)
           if (mocksFinished > 0) return { state: "done" as DiagnosticState, sectionsLeft: [] as ReadonlyArray<string>, finished: finishedCount }
-          const sectionalIds = [...started.values()].filter((session) => session.kind === "sectional" && session.status === "finished")
-            .map((session) => session.planItemId!)
-          const diagnosticSectionals = sectionalIds.length === 0
+          const eventSessions = [...started.values()].filter((session) => session.kind === "sectional" || session.kind === "mock")
+          const eventItems = eventSessions.length === 0
             ? []
-            : yield* db.select({ item: planItems.item }).from(planItems).where(inArray(planItems.id, sectionalIds)).pipe(Effect.orDie)
-          const sectionsDone = new Set(
-            diagnosticSectionals.map((row) => readJson<PlannedItem>(row.item)).filter((each) => each.diagnostic).map((each) => each.section!)
-          )
-          const left = sectionIds.filter((section) => !sectionsDone.has(section))
+            : yield* db.select({ id: planItems.id, item: planItems.item }).from(planItems)
+              .where(inArray(planItems.id, eventSessions.map((session) => session.planItemId!))).pipe(Effect.orDie)
+          const parts = eventItems.map((row) => ({ session: started.get(row.id)!, item: readJson<PlannedItem>(row.item) }))
+            .filter((part) => part.item.diagnostic)
+          const begun = parts.length > 0
+          const sectionals = parts.filter((part) => part.item.kind === "sectional")
+          const sectionsDone = new Set(sectionals.filter((part) => part.session.status === "finished").map((part) => part.item.section!))
+          const sectionsStarted = new Set(sectionals.map((part) => part.item.section!))
+          // A Diagnostic Mock under way leaves nothing more to plan for it.
+          const mockUnderWay = parts.some((part) => part.item.kind === "mock")
+          const left = mockUnderWay ? [] : sectionIds.filter((section) => !sectionsStarted.has(section))
           const outcome = (state: DiagnosticState) => ({ state, sectionsLeft: state === "pending" ? left : [], finished: finishedCount })
-          if (left.length === 0) return outcome("done")
+          if (sectionIds.every((section) => sectionsDone.has(section))) return outcome("done")
           if (skipped) return outcome("skipped")
           // Once begun, it goes on: a Section that cannot serve its Sectional
           // waits, dropped with the reason.
-          if (left.length === sectionIds.length) {
+          if (!begun) {
             const counts = yield* allowed
             if (sectionIds.some((section) => (counts[section] ?? 0) < 1)) return outcome("blocked")
           }
@@ -359,9 +367,20 @@ export class Plans extends Context.Service<Plans, {
             day: dayOfNumber(dayOf(row.createdAt)),
             kind: row.kind === "mock" ? "mock" : "sectional",
             section: row.kind === "sectional" ? row.section : null,
-            diagnostic: row.planItemId !== null && diagnostic.has(row.planItemId)
+            diagnostic: row.planItemId !== null && diagnostic.has(row.planItemId),
+            fromPlan: row.planItemId !== null
           }))
         })
+
+      // Each Section's Rated Responses as its latest Score Estimate counted
+      // them, which is read at once, where the analytics would fit every
+      // Weak Area first.
+      const ratedOf = (profileId: string) =>
+        Effect.forEach(sectionIds, (section) =>
+          db.select({ rated: scoreEstimates.ratedResponses }).from(scoreEstimates)
+            .where(and(eq(scoreEstimates.profileId, profileId), eq(scoreEstimates.section, section)))
+            .orderBy(desc(scoreEstimates.at), desc(sql`${scoreEstimates}.rowid`)).limit(1)
+            .pipe(Effect.orDie, Effect.map((rows) => rows[0]?.rated ?? 0)))
 
       // What decides when to build again, read cheaply: the start check only
       // while the Diagnostic waits, and the Rated Responses only until it is
@@ -379,7 +398,7 @@ export class Plans extends Context.Service<Plans, {
             ? []
             : latest !== undefined && latest.warm.length === sectionIds.length && latest.warm.every((each) => each)
             ? latest.warm
-            : (yield* analytics.planAnalytics(profileId)).sections.map((section) => section.rated >= WarmUpRated)
+            : (yield* ratedOf(profileId)).map((rated) => rated >= WarmUpRated)
           const lessonStates = yield* lessonStatesOf(profileId)
           return {
             day: dayOfNumber(today),
@@ -402,6 +421,9 @@ export class Plans extends Context.Service<Plans, {
       ) =>
         Effect.gen(function*() {
           const found = yield* analytics.planAnalytics(profileId)
+          // Counted as the basis counts them, so a build sees the warm-up the
+          // basis saw.
+          const rated = yield* ratedOf(profileId)
           const forecast = yield* retries.forecast(profileId)
           const allowed = yield* allowedOf(profileId)
           const overrides = yield* settings.targetTimes
@@ -422,7 +444,7 @@ export class Plans extends Context.Service<Plans, {
               sections: found.sections.map((section) => ({
                 id: section.id,
                 ability: section.ability === null ? null : Math.round(section.ability * 1000) / 1000,
-                rated: section.rated,
+                rated: rated[sectionIds.indexOf(section.id)] ?? 0,
                 paceMs: (DefaultTargetSeconds[section.id] ?? 120) * 1000
               })),
               weakAreas: found.weakAreas.map((area) => ({
@@ -499,14 +521,14 @@ export class Plans extends Context.Service<Plans, {
             status,
             reason
           }))
-          yield* db.transaction(() =>
-            Effect.gen(function*() {
-              yield* db.insert(planVersions).values(version)
-              for (let from = 0; from < rows.length; from += InsertRows) {
-                yield* db.insert(planItems).values(rows.slice(from, from + InsertRows))
-              }
-            })
-          ).pipe(Effect.orDie)
+          // No fact depends on the plan, so writing it keeps the analytics
+          // worked out for the next read.
+          yield* errorLog.factFree(Effect.gen(function*() {
+            yield* db.insert(planVersions).values(version)
+            for (let from = 0; from < rows.length; from += InsertRows) {
+              yield* db.insert(planItems).values(rows.slice(from, from + InsertRows))
+            }
+          }))
           return { version, basis, row, rules, today, now, progress }
         }).pipe(oneAtATime)
 
@@ -877,8 +899,9 @@ export class Plans extends Context.Service<Plans, {
           const rules = yield* rulesOf(profileId)
           const today = studyDaysUnder(rules)(now)
           if (dayNumber(day) > today || dayNumber(day) < today - LogDays + 1) return yield* new NoteDayInvalid({ day })
-          yield* db.insert(dailyNotes).values({ id: crypto.randomUUID(), profileId, day, note: note.trim(), writtenAt: now })
-            .pipe(Effect.orDie)
+          yield* errorLog.factFree(
+            db.insert(dailyNotes).values({ id: crypto.randomUUID(), profileId, day, note: note.trim(), writtenAt: now })
+          )
           const log = yield* dailyLog(profileId)
           return log.days.find((each) => each.day === day) ??
             new DailyLogDay({ day, minutes: 0, questions: 0, sections: [], mocks: 0, items: [], note: note.trim() === "" ? null : note.trim() })

@@ -289,3 +289,95 @@ describe("Daily Log notes", () => {
       expect(kept.note).toBe("The first day kept.")
     })))
 })
+
+describe("The second review's findings", () => {
+  test("a Sectional taken from the Sectionals page today counts against today's time", () =>
+    run(Effect.gen(function*() {
+      yield* smallBlueprint
+      yield* seedExamBank()
+      yield* seedBook("Algebra Review", numbered(40))
+      const asha = yield* learner("Asha")
+      yield* asha.plan.saveSettings({ payload: settings({ weeklyMinutes: 120, daysOff: [], targetTotal: null }) })
+      const before = yield* asha.plan.skipDiagnostic()
+      const started = yield* asha.sectionals.start({ payload: { section: "quant" } })
+      yield* takeSectional(asha, started.id)
+      const after = yield* asha.plan.view()
+      const day = today(after)
+      const planned = day.items.filter((each) => each.status === "planned").reduce((sum, each) => sum + each.minutes, 0)
+      expect(after.version).toBeGreaterThan(before.version!)
+      expect(planned + 45).toBeLessThanOrEqual(day.minutes)
+    })), 60_000)
+
+  test("a Diagnostic Sectional under way keeps the Diagnostic pending, and its Section is not planned again", () =>
+    run(Effect.gen(function*() {
+      yield* smallBlueprint
+      yield* seedExamBank()
+      const asha = yield* learner("Asha")
+      const saved = yield* asha.plan.saveSettings({ payload: settings({ weeklyMinutes: 120, daysOff: [], targetTotal: null }) })
+      const quant = today(saved).items[0]!
+      expect(quant).toMatchObject({ kind: "sectional", diagnostic: true })
+      const started = yield* asha.plan.start({ params: { id: quant.id }, payload: {} })
+      const view = yield* asha.sectionals.get({ params: { id: started.id } })
+      yield* TestClock.adjust("1 minute")
+      yield* asha.sectionals.answer({
+        params: { id: view.id },
+        payload: { seq: view.nextSeq, questionId: view.current!.question.id, selection: [{ part: 0, choice: "C" }] }
+      })
+      // Something builds again meanwhile: the weekly time changed in another tab.
+      const during = yield* asha.plan.saveSettings({ payload: settings({ weeklyMinutes: 125, daysOff: [], targetTotal: null }) })
+      expect(during.diagnostic.state).toBe("pending")
+      expect(during.diagnostic.sectionsLeft.map((each) => each.id)).toEqual(["verbal", "di"])
+      const planned = during.plan.flatMap((day) => day.items).filter((each) => each.diagnostic && each.status === "planned")
+      expect(planned.map((each) => each.section?.id)).toEqual(["verbal", "di"])
+    })), 60_000)
+
+  test("a Diagnostic Mock under way keeps the Diagnostic pending, with no other Diagnostic planned", () =>
+    run(Effect.gen(function*() {
+      yield* smallBlueprint
+      yield* seedExamBank()
+      const asha = yield* learner("Asha")
+      const saved = yield* asha.plan.saveSettings({ payload: settings({ targetTotal: null }) })
+      const mock = today(saved).items[0]!
+      expect(mock).toMatchObject({ kind: "mock", diagnostic: true })
+      yield* asha.plan.start({ params: { id: mock.id }, payload: { order: ["quant", "verbal", "di"] } })
+      const during = yield* asha.plan.view()
+      expect(during.diagnostic.state).toBe("pending")
+      expect(today(during).items.find((each) => each.id === mock.id)?.status).toBe("started")
+      expect(during.plan.flatMap((day) => day.items).filter((each) => each.diagnostic && each.status === "planned")).toEqual([])
+    })), 60_000)
+
+  test("the Plan page's timed re-reads do not keep the Profile unlocked past 12 hours", () =>
+    run(Effect.gen(function*() {
+      const open = (background: boolean) =>
+        Effect.gen(function*() {
+          const jar = yield* Ref.make(Cookies.empty)
+          return yield* HttpApiClient.make(Api, {
+            transformClient: (client) =>
+              client.pipe(
+                HttpClient.withCookiesRef(jar),
+                HttpClient.mapRequest((request) => {
+                  const fromDevice = HttpClientRequest.setHeader(request, "x-gp-device", background ? "left-open" : "in-use")
+                  return background ? HttpClientRequest.setHeader(fromDevice, "x-gp-background", "1") : fromDevice
+                })
+              )
+          })
+        })
+      const leftOpen = yield* open(true)
+      const inUse = yield* open(false)
+      yield* leftOpen.profiles.create({ payload: { name: "Asha", timeZone: "UTC" } })
+      yield* inUse.profiles.create({ payload: { name: "Bea", timeZone: "UTC" } })
+      for (const tab of [leftOpen, inUse]) {
+        yield* tab.plan.saveSettings({ payload: settings({ targetTotal: null }) }).pipe(Effect.orDie)
+      }
+      for (let n = 0; n < 13 * 12; n += 1) {
+        yield* TestClock.adjust("5 minutes")
+        // Once the unlock ends, the page is told so.
+        yield* leftOpen.plan.view().pipe(Effect.ignore)
+        yield* inUse.plan.view()
+      }
+      const state = (tab: typeof leftOpen) =>
+        tab.session.me().pipe(Effect.map(() => "unlocked"), Effect.catch(() => Effect.succeed("locked")))
+      expect(yield* state(leftOpen)).toBe("locked")
+      expect(yield* state(inUse)).toBe("unlocked")
+    })), 300_000)
+})

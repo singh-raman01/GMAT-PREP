@@ -103,6 +103,9 @@ export interface TakenEvent {
   readonly section: SectionId | null
   // Whether it was planned as the Diagnostic or part of it.
   readonly diagnostic: boolean
+  // Whether it was started from a plan item, so today's work counts it
+  // already.
+  readonly fromPlan: boolean
 }
 
 export interface PlanState {
@@ -284,10 +287,10 @@ export const buildPlan = ({ settings, state }: PlanInputs): Plan => {
   const taken = state.taken.map((event) => ({ ...event, number: dayNumber(event.day) })).filter((event) => event.number <= today)
   const takenToday = taken.filter((event) => event.number === today)
   const mockToday = takenToday.some((event) => event.kind === "mock")
-  const doneToday = minutesOf(state.todayWork)
-  // The Mock before the next: a Mock taken, or a Diagnostic Sectional.
-  const lastTaken = taken.filter((event) => event.kind === "mock" || event.diagnostic).map((event) => event.number)
-  const latestTaken = lastTaken.length === 0 ? undefined : Math.max(...lastTaken)
+  // Today's plan items worked on, and the Sectionals taken today from their
+  // own page, which take their minutes from today as well.
+  const doneToday = minutesOf(state.todayWork) +
+    takenToday.filter((event) => event.kind === "sectional" && !event.fromPlan).length * SectionalMinutes
 
   // The fixed events, Mocks and Sectionals, placed with today open to them
   // or not: today takes one only when none was taken today and it fits
@@ -303,7 +306,6 @@ export const buildPlan = ({ settings, state }: PlanInputs): Plan => {
     const open = (day: number) => day !== today || todayOpen
 
     // The Diagnostic, first.
-    let lastMock = latestTaken
     const diagnosticDays: Array<number> = []
     if (state.diagnostic === "pending") {
       const usable = studyDays.filter((day) => day <= mockLimit && open(day))
@@ -312,7 +314,6 @@ export const buildPlan = ({ settings, state }: PlanInputs): Plan => {
         if (day !== undefined && canServe(sectionIds)) {
           events.set(day, item(day, { kind: "mock", diagnostic: true, minutes: MockMinutes }))
           serve(sectionIds)
-          lastMock = day
           diagnosticDays.push(day)
         } else {
           dropped.push({
@@ -335,41 +336,81 @@ export const buildPlan = ({ settings, state }: PlanInputs): Plan => {
             })
           }
         })
-        if (diagnosticDays.length > 0) lastMock = Math.max(lastMock ?? -Infinity, ...diagnosticDays)
       }
     }
 
-    // The Mock weeks: the last 4 before the test, earliest first, each Mock
-    // on the week's latest study day that keeps 3 days before the test and 3
-    // after the Mock before it. A week that holds the Diagnostic or a Mock
-    // already taken needs no other; under a Mock's time, a week gets the
-    // Sectionals of the Sections it has not had yet.
+    // The Mock weeks, the last 4 before the test, placed from the test back:
+    // each Mock on the week's latest study day that keeps 3 days before the
+    // test, 3 before the Mock after it and 3 after every Mock taken. A week
+    // that holds the Diagnostic or a Mock taken needs no other. Under a
+    // Mock's time, a week gets the Sectionals of the Sections it has not had,
+    // each on its own day from the week's end, Data Insights last, so a day
+    // missed drops its own Sectional and moves no other.
     if (test !== undefined) {
-      const held = new Set([
-        ...diagnosticDays.map(weekOf),
-        ...taken.filter((event) => event.kind === "mock" || event.diagnostic).map((event) => weekOf(event.number))
-      ])
-      const wanted: Array<{ readonly days: ReadonlyArray<number>; readonly sections: ReadonlyArray<SectionId> }> = []
-      for (let week = MockWeeks - 1; week >= 0; week -= 1) {
-        if (held.has(week)) continue
-        const inWeek = (studyDaysByWeek.get(week) ?? []).filter((day) => day <= mockLimit && open(day))
-        if (inWeek.length === 0) continue
+      const fixed = [
+        ...diagnosticDays,
+        ...taken.filter((event) => event.kind === "mock" || event.diagnostic).map((event) => event.number)
+      ]
+      const held = new Set(fixed.map(weekOf))
+      const wanted: Array<{
+        readonly days: ReadonlyArray<number>
+        readonly sections: ReadonlyArray<SectionId>
+        readonly missed: ReadonlyArray<SectionId>
+      }> = []
+      let next = Infinity
+      for (let week = 0; week < MockWeeks; week += 1) {
+        const weekEnd = test - 1 - week * 7
+        // The weeks run back from the test, so the rest are past.
+        if (weekEnd < today) break
+        if (held.has(week)) {
+          next = Math.min(next, ...fixed.filter((day) => weekOf(day) === week))
+          continue
+        }
+        const had = new Set(taken.filter((event) => event.kind === "sectional" && weekOf(event.number) === week).map((event) => event.section))
+        const sections = mockMode ? sectionIds : sectionIds.filter((section) => !had.has(section))
+        if (sections.length === 0) continue
+        const unplaced = (day: number, reason: string) => {
+          if (mockMode) dropped.push({ ...item(day, { kind: "mock", minutes: MockMinutes }), reason })
+          else for (const section of sections) dropped.push({ ...item(day, { kind: "sectional", section, minutes: SectionalMinutes }), reason })
+        }
+        const left = studyDaysByWeek.get(week) ?? []
+        const beforeTest = left.filter((day) => day <= mockLimit)
+        const inWeek = beforeTest.filter(open)
+        const lastDay = Math.min(weekEnd, last)
+        if (left.length === 0) {
+          unplaced(lastDay, "No study day is left in its week.")
+          continue
+        }
+        if (beforeTest.length === 0) {
+          unplaced(lastDay, "No study day in its week falls at least 3 days before the test.")
+          continue
+        }
+        if (inWeek.length === 0) {
+          unplaced(today, "Today has had its Mock or Sectional, and no other study day is left in its week.")
+          continue
+        }
         if (mockMode) {
-          const after = lastMock === undefined ? -Infinity : lastMock + MockSpacing
-          const day = inWeek.filter((each) => each >= after).at(-1)
-          if (day === undefined) continue
-          wanted.push({ days: [day], sections: sectionIds })
-          lastMock = day
+          const day = inWeek.filter((each) =>
+            each <= next - MockSpacing && fixed.every((other) => other > each || each >= other + MockSpacing)
+          ).at(-1)
+          if (day === undefined) {
+            unplaced(inWeek.at(-1)!, "No study day in its week is at least 3 days from the Mocks before and after it.")
+            continue
+          }
+          wanted.push({ days: [day], sections: sectionIds, missed: [] })
+          next = day
         } else {
-          const had = new Set(taken.filter((event) => event.kind === "sectional" && weekOf(event.number) === week).map((event) => event.section))
-          const sections = sectionIds.filter((section) => !had.has(section))
-          if (sections.length === 0) continue
-          wanted.push({ days: inWeek.slice(-sections.length), sections })
+          const count = Math.min(sections.length, inWeek.length)
+          wanted.push({
+            days: inWeek.slice(inWeek.length - count),
+            sections: sections.slice(sections.length - count),
+            missed: sections.slice(0, sections.length - count)
+          })
         }
       }
-      // The Mocks nearest the test are kept first, as far as the start check
+      // The weeks nearest the test are kept first, as far as the start check
       // allows.
-      for (const { days: eventDays, sections } of wanted.toReversed()) {
+      for (const { days: eventDays, sections, missed } of wanted) {
         if (mockMode) {
           const day = eventDays[0]!
           if (canServe(sectionIds)) {
@@ -379,17 +420,21 @@ export const buildPlan = ({ settings, state }: PlanInputs): Plan => {
             dropped.push({ ...item(day, { kind: "mock", minutes: MockMinutes }), reason: "" })
           }
         } else {
+          for (const section of missed) {
+            dropped.push({
+              ...item(eventDays[0]!, { kind: "sectional", section, minutes: SectionalMinutes }),
+              reason: "The week has too few study days left before the test for all three Sectionals."
+            })
+          }
           sections.forEach((section, index) => {
-            const day = eventDays[index]
-            if (day !== undefined && canServe([section])) {
+            const day = eventDays[index]!
+            if (canServe([section])) {
               events.set(day, item(day, { kind: "sectional", section, minutes: SectionalMinutes }))
               serve([section])
             } else {
               dropped.push({
-                ...item(day ?? eventDays.at(-1)!, { kind: "sectional", section, minutes: SectionalMinutes }),
-                reason: day === undefined
-                  ? "The week has too few study days before the test for all three Sectionals."
-                  : "The Question Bank cannot serve another Sectional of this Section."
+                ...item(day, { kind: "sectional", section, minutes: SectionalMinutes }),
+                reason: "The Question Bank cannot serve another Sectional of this Section."
               })
             }
           })
@@ -540,13 +585,18 @@ export const buildPlan = ({ settings, state }: PlanInputs): Plan => {
   }
 
   // Today's work so far: the Weak Areas of its sets are not worked on
-  // again (a Lesson is followed by its set), its mixed sets carry the turn
-  // of Sections on, and its Retries count against the day's share for them.
+  // again (a Lesson is followed by its set), each of its mixed sets takes
+  // its Section's next place in the turn, and its Retries count against the
+  // day's share for them.
   const workedToday = new Set(
     state.todayWork.flatMap((each) => (each.kind === "practice" && each.weakArea !== null ? [each.weakArea.id] : []))
   )
   const areaSetsToday = state.todayWork.filter((each) => each.kind === "practice" && each.weakArea !== null).length
-  const mixedToday = state.todayWork.filter((each) => each.kind === "practice" && each.weakArea === null).length
+  const mixedToday = new Map<SectionId, number>()
+  for (const each of state.todayWork) {
+    if (each.kind !== "practice" || each.weakArea !== null || each.practice === null) continue
+    mixedToday.set(each.practice.section, (mixedToday.get(each.practice.section) ?? 0) + 1)
+  }
   const retriesToday = minutesOf(state.todayWork.filter((each) => each.kind === "retries"))
 
   // The study days from the start to today, for the turns.
@@ -670,12 +720,18 @@ export const buildPlan = ({ settings, state }: PlanInputs): Plan => {
       }
     }
 
-    // Timed mixed sets fill the rest, a Section at a time in turn, carrying
-    // on after today's.
+    // Timed mixed sets fill the rest, a Section at a time in turn. A set
+    // done today takes its Section's next place, so a Section done first
+    // does not come round again before the others.
     if (!mockDay) {
-      const first = studyIndex + (isToday ? mixedToday : 0)
+      const done = new Map(isToday ? mixedToday : [])
       for (let turn = 0; sectionIds.some((each) => fittingSize(room, paceOf(each)) !== undefined); turn += 1) {
-        const section = sectionIds[(first + turn) % sectionIds.length]!
+        const section = sectionIds[(studyIndex + turn) % sectionIds.length]!
+        const already = done.get(section) ?? 0
+        if (already > 0) {
+          done.set(section, already - 1)
+          continue
+        }
         const size = fittingSize(room, paceOf(section))
         if (size === undefined) continue
         const minutesNeeded = setMinutes(size, paceOf(section))
