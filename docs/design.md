@@ -233,7 +233,8 @@ Operations:
 |---|---|
 | jobs | kind, parameters, status, checkpoint, spend cap and spend so far, claimant, heartbeat |
 | llm calls | job, task, model, prompt version, tokens in and out, estimated cost, outcome |
-| devices | name, token hash, pairing time, revocation time |
+| devices | name, token hash, pairing time, last seen, revocation time (decision 122) |
+| lan mode | on or off, and when it changed (decision 119) |
 | snapshots | kind, file, time, the host's calendar date, size, checksum, status (ok, failed, removed), error (decision 109) |
 | settings | non-secret settings |
 | taxonomy versions | version, file hash, load time |
@@ -246,7 +247,7 @@ Every Profile operation needs an unlocked Profile on the host or a paired device
 
 | Area | Operations |
 |---|---|
-| Access | create, unlock, lock, update or delete a Profile; export a Profile; unlock as Curator; reset a PIN; make a pairing code; pair, list or revoke devices |
+| Access | create, unlock, lock, update or delete a Profile; export a Profile; unlock as Curator; reset a PIN; turn LAN mode on or off; make a pairing code; pair, list or revoke devices |
 | Sessions | start; get state, including the server's remaining time; claim from another device; submit a Response; set a Bookmark; take or skip the break; pause and resume a Practice Set; change an answer in Review & Edit; finish review; get the report |
 | Learning | get a Debrief; set a Mistake Type; get the Error Log; get due Retries; get Weak Areas; get an analytics view; get the Study Plan; get the Daily Log; write a Daily Log note; add an Official Score; add or remove a Paper Mark; file a Problem Report; open a Lesson; send a Tutor Chat message |
 | Curator | add a Book; list or get Books; read a Book again; start the full run after the cost preview; confirm a Book Map; open a Book's PDF; list, pause, resume or cancel jobs; get the Review Queue; decide a review item; override a key; withdraw a Question; release Reserve Questions; start a generation batch; approve a Lesson; get coverage; read and change settings; take or restore a snapshot; export the install |
@@ -450,7 +451,7 @@ The Curator view shows Question Bank coverage by Skill and Difficulty Band, the 
 - The Curator passphrase is set the first time the Curator tools open. It has 8 to 200 characters, and five wrong entries lock the tools for 5 minutes, as with PINs.
 - The Curator resets PINs, and the passphrase is reset by a command run on the host computer: `gmat-prep reset-passphrase`, which also ends every Curator unlock.
 - Deleting a Profile needs its PIN or the Curator passphrase, and a snapshot is taken first.
-- The server accepts connections from the host only, and answers only requests whose Host header names this computer (127.0.0.1, localhost or [::1]), which stops a web page from reaching it through DNS rebinding. Every response forbids framing and type sniffing. Writes are accepted only from the app's own pages (by Origin) and only as JSON of at most 1 MB, except adding a Book, whose body is the PDF itself, of at most 500 MB. In LAN mode it listens on the local network, and a new device must enter a 6-digit pairing code shown on the host; codes are single-use and expire after 5 minutes, and paired devices can be revoked. LAN traffic is plain HTTP, so LAN mode is for trusted networks.
+- The server accepts connections from the host only, unless LAN mode is on (decisions 119 to 125), and answers only requests whose Host header names this computer (127.0.0.1, localhost or [::1], and in LAN mode its network addresses and host names), which stops a web page from reaching it through DNS rebinding. Every response forbids framing and type sniffing. Writes are accepted only from the app's own pages (by Origin) and only as JSON of at most 1 MB, except adding a Book, whose body is the PDF itself, of at most 500 MB. In LAN mode it listens on the local network, and a new device must enter a 6-digit pairing code shown on the host; codes are single-use and expire after 5 minutes, and paired devices can be revoked. LAN traffic is plain HTTP, so LAN mode is for trusted networks.
 - Profiles cannot see each other's data.
 
 ### LLM adapter
@@ -715,6 +716,13 @@ These came up while building a ticket. Like the starting values above, they can 
 116. The Curator sets a Profile's PIN anew, or takes it away, on the Data page: its failed attempts and any lock clear, and every unlock of the Profile ends, so each browser asks for the new PIN.
 117. A full integrity_check runs once a week on the live database, in the same short process. Its outcome is a file in the snapshots folder, as it is about the database file, so a restore leaves it alone; damage shows on the Overview and the Data page with the advice to restore a snapshot taken before.
 118. A snapshot is also taken before a Key Override, which judges every past Response to the Question again (pre-rescore; the override waits when it fails), and at startup before a Taxonomy the database has not used is recorded (pre-taxonomy; a failure is shown and the app starts).
+119. LAN mode (ticket 20) is off by default. The Curator turns it on or off on the Devices page, on this computer only, and it takes effect at once. It is kept in its own table, lan_mode, which a restore leaves as it is, with the devices, so a restore never opens the app to the network or brings back a revoked device.
+120. In LAN mode the app also listens on each of this computer's IPv4 network addresses, at its own port, beside 127.0.0.1, which never closes. It looks at the addresses every 10 seconds, so it follows a laptop that joins another network, and says on the Devices page where other devices open it and any address it could not listen on. Turning LAN mode off closes those listeners, and requests from other devices still open are refused.
+121. Every request is judged by where it comes from (src/server/access/reach.ts). From this computer, by loopback or any of its own addresses, it goes on as before. From another device it needs LAN mode on, a Host header naming this computer, and the cookie of a paired device not revoked; without that cookie only the app's pages and files, which hold no one's data, and pairing are answered, judged on the path as sent, plain characters only, so no encoding the router undoes reaches an API route. A refusal is 403 with X-GP-Refused saying why, and the app then shows its pairing page.
+122. Pairing: the Curator, on this computer, shows a 6-digit code, every code equally likely, that works once within 5 minutes; a new code ends the one before. Five wrong codes in a row end it, and with no code waiting every try is wrong. The device gives itself a name and gets a token of 32 random bytes in an HttpOnly, SameSite=Strict cookie (gp_device) kept for 400 days; only the token's SHA-256 is stored, with the pairing time and the last time seen, written at most every 5 minutes. A device from this computer needs no pairing.
+123. Revoking a device ends its requests at once, and the open event streams of any device that may no longer reach the app end too. A revoked device pairs again with a new code, as a new device. A Profile's PIN guards it on a paired device as on this computer, and Curator tools work from a paired device with the passphrase, but LAN mode, pairing codes and the devices list answer only on this computer, checked again in their handlers.
+124. LAN traffic is plain HTTP: the Devices page and the pairing page say so, and that LAN mode is for a trusted network such as home Wi-Fi, never public Wi-Fi.
+125. On a narrow screen the Stimulus stands above its Question, and beside it from 64rem. Both layouts share one tree, so turning a tablet keeps the source tab and the table sort the Learner chose.
 
 ### Taxonomy review notes
 

@@ -20,7 +20,7 @@ bun run build       # one executable for this computer, in dist/
 bun run build:all   # Linux, macOS and Windows, x64 and arm64 where Bun supports them
 ```
 
-Each executable holds the web app, the migrations and the Taxonomy. Run it and open the address it prints, normally http://127.0.0.1:4747. It accepts connections from this computer only.
+Each executable holds the web app, the migrations and the Taxonomy. Run it and open the address it prints, normally http://127.0.0.1:4747. It accepts connections from this computer only, unless you turn on LAN mode (see "Use it on a tablet or phone").
 
 | Setting | Default |
 |---|---|
@@ -136,6 +136,12 @@ Scores shows each Section's Score Estimate, and the Total once all three have on
 The app takes a snapshot of its database each day, keeping the last 7 days and one from each of the 4 weeks before them, and before each risky change: an update, a new Taxonomy, a changed key, deleting a Profile and a restore. Snapshots are copied in a process of their own, so the app keeps answering while one is taken. The Curator's Data page lists them, takes one by hand, and restores one: the database goes back to how it was then, and the one it replaces is kept as a snapshot too. A restore waits while a job runs or a Learner is in a Mock, Sectional or timed set. A full check of the database runs each week, and a failed snapshot or a damaged database shows on the Curator's Overview.
 
 From your name at the top, your profile page downloads everything your profile holds as one JSON file, and deletes the profile, with your PIN if it has one. The Curator's Data page sets a new PIN for a Learner who forgot theirs, deletes a Profile with the Curator passphrase entered again, and makes one archive of the whole install: the database, the Books and their page images. To move the install to another computer, unpack that archive into the data folder there before starting the app, and enter the LLM key again. If the Curator passphrase is lost, run `gmat-prep reset-passphrase` on the computer the app runs on.
+
+## Use it on a tablet or phone
+
+LAN mode lets other devices on your network use the app running on this computer. In Curator tools, open Devices and turn on LAN mode; the page lists the addresses to open on the other device, such as http://192.168.1.20:4747. Open one there, and the app asks for a pairing code: on this computer choose Show a pairing code, and enter the 6 digits on the other device with a name for it, such as "Asha's tablet". A code works once, within 5 minutes. Each device then opens Profiles as usual, and a Profile with a PIN still asks for it.
+
+The Devices page lists paired devices with when each was last seen; Revoke shuts one out at once, and it needs a new code to come back. Only this computer can turn LAN mode on or off, show codes and revoke devices. LAN traffic is plain HTTP, which others on the same network could read, so use LAN mode on a network you trust, such as your home Wi-Fi, never on public Wi-Fi. A device pairs for the address it opened, so pair it from the address you will use. On macOS, allow incoming connections for the app if the firewall asks.
 
 ## Check it
 

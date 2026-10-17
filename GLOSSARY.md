@@ -18,6 +18,10 @@ _Avoid_: user, account, login
 The role that feeds Books in and decides what enters the Question Bank. It acts for the whole install.
 _Avoid_: admin, owner
 
+**Paired device**:
+A phone or tablet let in to use GMAT prep over the local network in LAN mode, with a code shown on the computer it runs on. It can be revoked.
+_Avoid_: client, remote
+
 **Question Bank**:
 Every published Question on this install, shared by all Profiles.
 _Avoid_: question pool, item bank
