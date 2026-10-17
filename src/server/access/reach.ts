@@ -29,7 +29,8 @@ export type Refusal = "other-name" | "lan-off" | "host-only" | "not-paired"
 
 export type Verdict =
   | { readonly _tag: "allow"; readonly fromHost: boolean }
-  | { readonly _tag: "refuse"; readonly reason: Refusal }
+  // lan: whether LAN mode was on, which the refusal's words follow.
+  | { readonly _tag: "refuse"; readonly reason: Refusal; readonly lan: boolean }
 
 export const LoopbackNames: ReadonlyArray<string> = ["127.0.0.1", "localhost", "[::1]"]
 
@@ -101,17 +102,18 @@ export const isHostOnly = (url: string) => {
 }
 
 export const judge = (facts: RequestFacts, reach: Reach): Verdict => {
-  if (facts.host === undefined || !reach.ownNames.has(facts.host)) return { _tag: "refuse", reason: "other-name" }
+  const refuse = (reason: Refusal): Verdict => ({ _tag: "refuse", reason, lan: reach.lan })
+  if (facts.host === undefined || !reach.ownNames.has(facts.host)) return refuse("other-name")
   // A request whose address is not known is this computer's only while
   // nothing listens on the network.
   const fromHost = facts.remote === undefined ? !reach.lan : isOwnAddress(facts.remote, reach.ownAddresses)
   if (fromHost) return { _tag: "allow", fromHost }
   // Another device: only in LAN mode, as a listener closing may still be
   // finishing its requests.
-  if (!reach.lan) return { _tag: "refuse", reason: "lan-off" }
-  if (isHostOnly(facts.url)) return { _tag: "refuse", reason: "host-only" }
+  if (!reach.lan) return refuse("lan-off")
+  if (isHostOnly(facts.url)) return refuse("host-only")
   if (facts.paired || openToUnpaired(facts.method, facts.url)) return { _tag: "allow", fromHost }
-  return { _tag: "refuse", reason: "not-paired" }
+  return refuse("not-paired")
 }
 
 export const RefusalTexts: Readonly<Record<Refusal, (lan: boolean) => string>> = {

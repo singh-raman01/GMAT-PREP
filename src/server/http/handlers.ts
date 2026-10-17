@@ -27,6 +27,7 @@ import { AnalyticsHandlers } from "./analytics.ts"
 import { PlanHandlers, SessionDataHandlers } from "./plan.ts"
 import { CuratorLessonsHandlers, LessonsHandlers } from "./lessons.ts"
 import { CuratorTutorHandlers, TutorHandlers } from "./tutor.ts"
+import { CuratorLanHandlers, PairingHandlers } from "./lan.ts"
 import { ScoresHandlers } from "./scores.ts"
 import { SectionalsHandlers } from "./sectionals.ts"
 
@@ -157,7 +158,9 @@ export const ApiRoutes = HttpApiBuilder.layer(Api).pipe(
     CuratorDataHandlers,
     SessionDataHandlers,
     CuratorLessonsHandlers,
-    CuratorTutorHandlers
+    CuratorTutorHandlers,
+    PairingHandlers,
+    CuratorLanHandlers
   ]),
   Layer.provide([ProfileSessionLive, CuratorSessionLive])
 )

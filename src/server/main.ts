@@ -4,9 +4,11 @@ import { FetchHttpClient, HttpRouter, HttpServer } from "effect/http"
 import { rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { MaxBookBytes } from "../api/Books.ts"
+import { Network } from "./access/Network.ts"
 import { AppConfig } from "./AppConfig.ts"
 import { AppRoutes, AppServices } from "./app.ts"
 import { ResetPassphrase } from "./curator/resetPassphrase.ts"
+import { lanListeners } from "./http/listeners.ts"
 import { InstanceLockLive } from "./instanceLock.ts"
 import { LlmTransportHttp } from "./llm/LlmTransport.ts"
 import { fileCommand, SnapshotCopierProcess } from "./snapshots/copier.ts"
@@ -30,6 +32,11 @@ const findFreePort = (preferred: number) =>
     return 0
   })
 
+// Bun refuses larger bodies itself; a Book may be up to MaxBookBytes.
+const MaxRequestBodySize = MaxBookBytes + 1024 * 1024
+
+// The app on 127.0.0.1, and in LAN mode on this computer's network addresses
+// too, at the same port.
 const ServerLive = Layer.unwrap(
   Effect.gen(function*() {
     const { preferredPort } = yield* AppConfig
@@ -37,10 +44,16 @@ const ServerLive = Layer.unwrap(
     if (port !== preferredPort) {
       yield* Effect.logWarning(`Port ${preferredPort} is taken; using ${port === 0 ? "a free port" : port}`)
     }
-    return HttpRouter.serve(AppRoutes, { disableListenLog: true, disableLogger: true }).pipe(
-      // Bun refuses larger bodies itself; a Book may be up to MaxBookBytes.
-      Layer.provideMerge(BunHttpServer.layer({ hostname: Host, port, maxRequestBodySize: MaxBookBytes + 1024 * 1024 }))
-    )
+    return Layer.effectDiscard(
+      Effect.gen(function*() {
+        const app = yield* HttpRouter.toHttpEffect(AppRoutes)
+        const server = yield* HttpServer.HttpServer
+        yield* server.serve(app)
+        const address = server.address
+        const listening = address._tag === "UnixPathAddress" ? port : address.port
+        yield* lanListeners(app, { port: listening, maxRequestBodySize: MaxRequestBodySize })
+      })
+    ).pipe(Layer.provideMerge(BunHttpServer.layer({ hostname: Host, port, maxRequestBodySize: MaxRequestBodySize })))
   })
 )
 
@@ -72,6 +85,8 @@ const MainLive = AnnounceLive.pipe(
   Layer.provide(AppServices),
   // Snapshots are copied by a process of their own.
   Layer.provide(SnapshotCopierProcess),
+  // This computer's addresses, for LAN mode.
+  Layer.provide(Network.live),
   // Tutor Chat's calls go out over HTTP.
   Layer.provide(LlmTransportHttp.pipe(Layer.provide(FetchHttpClient.layer))),
   Layer.provide(InstanceLockLive),

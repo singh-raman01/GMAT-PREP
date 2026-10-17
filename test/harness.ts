@@ -1,5 +1,5 @@
 import { BunHttpServer } from "@effect/platform-bun"
-import { Context, type Duration, Effect, type Fiber, Layer, Ref } from "effect"
+import { Context, type Duration, Effect, type Fiber, Layer, Option, Ref } from "effect"
 import { Cookies, HttpClient, HttpClientRequest, HttpRouter, type HttpServer } from "effect/http"
 import { HttpApiClient } from "effect/http-api"
 import { TestClock } from "effect/testing"
@@ -7,6 +7,8 @@ import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Api } from "../src/api/Api.ts"
+import { Network } from "../src/server/access/Network.ts"
+import type { NetworkAddress } from "../src/server/access/reach.ts"
 import { AppConfig } from "../src/server/AppConfig.ts"
 import { AppRoutes, AppServices, makeAppServices } from "../src/server/app.ts"
 import type { Db } from "../src/server/db/Database.ts"
@@ -48,6 +50,32 @@ export const getWithCookie = (path: string, cookie: string) =>
     return response.status
   })
 
+// This computer's network as a test sets it: no address on a network until
+// the test gives one, and a request from the address its X-Test-Remote
+// header names, so a test can be another device on the network.
+export const TestRemoteHeader = "x-test-remote"
+
+export class TestNetwork extends Context.Service<TestNetwork, {
+  setAddresses(addresses: ReadonlyArray<NetworkAddress>): Effect.Effect<void>
+}>()("gmat-prep/test/TestNetwork") {}
+
+const NetworkTest = Layer.unwrap(
+  Effect.sync(() => {
+    let addresses: ReadonlyArray<NetworkAddress> = [{ address: "127.0.0.1", family: "IPv4", internal: true }]
+    return Layer.mergeAll(
+      Layer.succeed(
+        Network,
+        Network.of({
+          addresses: () => addresses,
+          hostname: () => "study-pc",
+          remoteOf: (request) => request.headers[TestRemoteHeader] ?? Option.getOrUndefined(request.remoteAddress)
+        })
+      ),
+      Layer.succeed(TestNetwork, TestNetwork.of({ setAddresses: (next) => Effect.sync(() => void (addresses = next)) }))
+    )
+  })
+)
+
 // The real routes and services on an ephemeral port, with a fake clock and no
 // worker process.
 export const appLayer = (dataDir: string) =>
@@ -57,6 +85,7 @@ export const appLayer = (dataDir: string) =>
     Layer.provide(AppConfig.layer({ dataDir, preferredPort: 0 })),
     Layer.provide(LlmTransportFake),
     Layer.provide(SnapshotCopierTest),
+    Layer.provide(NetworkTest),
     Layer.provideMerge(BunHttpServer.layerTest),
     Layer.provideMerge(TestClock.layer())
   )
@@ -128,6 +157,7 @@ export type WorkerTestServices =
   | CopierFaults
   | FigureFiles
   | ErrorLog
+  | TestNetwork
 
 // Sets the fake clock before the app starts, as a start later in the day.
 const clockStartsAt = (millis: number | undefined) =>
@@ -138,6 +168,7 @@ export const appWithWorkersLayer = (dataDir: string, kinds: ReadonlyArray<AnyJob
     Layer.provideMerge(makeAppServices(JobKinds.layer(kinds))),
     Layer.provide(WorkerSupervisor.layerIdle),
     Layer.provideMerge(SnapshotCopierTest),
+    Layer.provideMerge(NetworkTest),
     Layer.provideMerge(AppConfig.layer({ dataDir, preferredPort: 0 })),
     Layer.provideMerge(BunHttpServer.layerTest),
     Layer.provideMerge(clockStartsAt(startAt)),

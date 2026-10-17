@@ -7,6 +7,7 @@ import { ErrorLogApi } from "./ErrorLog.ts"
 import { GenerationApi } from "./Generation.ts"
 import { GoldenApi } from "./Golden.ts"
 import { JobsApi } from "./Jobs.ts"
+import { CuratorLanApi, PairingApi } from "./Lan.ts"
 import { MocksApi } from "./Mocks.ts"
 import { PaperMarksApi } from "./PaperMarks.ts"
 import { PracticeApi } from "./Practice.ts"
@@ -76,4 +77,6 @@ export class Api extends HttpApi.make("gmat-prep")
   .add(SessionDataApi)
   .add(CuratorLessonsApi)
   .add(CuratorTutorApi)
+  .add(PairingApi)
+  .add(CuratorLanApi)
 {}

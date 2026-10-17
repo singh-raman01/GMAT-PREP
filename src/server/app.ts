@@ -1,4 +1,5 @@
 import { Effect, Layer } from "effect"
+import { LanAccess } from "./access/LanAccess.ts"
 import { BookFiles } from "./books/BookFiles.ts"
 import { FigureFiles } from "./books/FigureFiles.ts"
 import { Books } from "./books/Books.ts"
@@ -50,7 +51,7 @@ const RemoveUploadLeftovers = Layer.effectDiscard(
 )
 
 // Domain services over the opened, migrated database, for the given job
-// kinds. Requires AppConfig.
+// kinds. Requires AppConfig, and Network for this computer's addresses.
 export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Plans.layer.pipe(
   // The Study Plan, over what it starts and reads.
   Layer.provideMerge(Layer.mergeAll(
@@ -80,8 +81,8 @@ export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Plans.layer.pip
   Layer.provideMerge(LlmAdapter.layer),
   Layer.provideMerge(Layer.mergeAll(Settings.layer, ApiKeyStore.layer, BookFiles.layer, FigureFiles.layer, Taxonomy.layer)),
   // Snapshots, taken before risky changes in the services above, and
-  // exports.
-  Layer.provideMerge(Layer.mergeAll(Snapshots.layer, Exports.layer)),
+  // exports; and who may reach the server.
+  Layer.provideMerge(Layer.mergeAll(Snapshots.layer, Exports.layer, LanAccess.layer)),
   Layer.provideMerge(JobStore.layer),
   Layer.provideMerge(kinds),
   Layer.provideMerge(DatabaseLive)

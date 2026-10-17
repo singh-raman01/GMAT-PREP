@@ -34,11 +34,11 @@ describe("Reaching the server", () => {
   test("with LAN mode off, only this computer's own names are answered, and only from this computer", () => {
     expect(judge(request({ host: "127.0.0.1", remote: "127.0.0.1" }), offline)).toEqual({ _tag: "allow", fromHost: true })
     expect(judge(request({ host: "localhost", remote: undefined }), offline)).toEqual({ _tag: "allow", fromHost: true })
-    expect(judge(request({ host: "evil.example" }), offline)).toEqual({ _tag: "refuse", reason: "other-name" })
-    expect(judge(request({ host: "192.168.1.20" }), offline)).toEqual({ _tag: "refuse", reason: "other-name" })
-    expect(judge(request({ host: undefined }), offline)).toEqual({ _tag: "refuse", reason: "other-name" })
+    expect(judge(request({ host: "evil.example" }), offline)).toMatchObject({ _tag: "refuse", reason: "other-name" })
+    expect(judge(request({ host: "192.168.1.20" }), offline)).toMatchObject({ _tag: "refuse", reason: "other-name" })
+    expect(judge(request({ host: undefined }), offline)).toMatchObject({ _tag: "refuse", reason: "other-name" })
     // A listener still closing when LAN mode went off.
-    expect(judge(request({ host: "127.0.0.1", paired: true }), offline)).toEqual({ _tag: "refuse", reason: "lan-off" })
+    expect(judge(request({ host: "127.0.0.1", paired: true }), offline)).toMatchObject({ _tag: "refuse", reason: "lan-off" })
   })
 
   test("in LAN mode a device must name this computer, as a page using another name could be rebinding it", () => {
@@ -54,7 +54,7 @@ describe("Reaching the server", () => {
     expect(judge(request({ url: "/practice/1f0c?from=plan" }), lan)._tag).toBe("allow")
     expect(judge(request({ url: "/api/pairing" }), lan)._tag).toBe("allow")
     expect(judge(request({ method: "POST", url: "/api/pairing/pair" }), lan)._tag).toBe("allow")
-    expect(judge(request({ url: "/api/profiles" }), lan)).toEqual({ _tag: "refuse", reason: "not-paired" })
+    expect(judge(request({ url: "/api/profiles" }), lan)).toMatchObject({ _tag: "refuse", reason: "not-paired" })
     expect(judge(request({ url: "/api" }), lan)._tag).toBe("refuse")
     expect(judge(request({ method: "POST", url: "/" }), lan)._tag).toBe("refuse")
   })
@@ -87,7 +87,7 @@ describe("Reaching the server", () => {
     expect(judge(request({ url: "/api/curator/books", paired: true }), lan)._tag).toBe("allow")
     expect(judge(request({ url: "/api/curator/lands", paired: true }), lan)._tag).toBe("allow")
     for (const url of ["/api/curator/lan", "/api/curator/lan/code", "/API/Curator/LAN/code", "//api/curator/%6Can/code", "/api/curator/lan;x", "/api/curator/lan/", "/api/%E0%A4%A"]) {
-      expect([url, judge(request({ method: "POST", url, paired: true }), lan)]).toEqual([url, { _tag: "refuse", reason: "host-only" }])
+      expect([url, judge(request({ method: "POST", url, paired: true }), lan)]).toEqual([url, { _tag: "refuse", reason: "host-only", lan: true }])
     }
   })
 
@@ -97,7 +97,7 @@ describe("Reaching the server", () => {
       fromHost: true
     })
     expect(judge(request({ remote: "192.168.1.20", url: "/api/curator/lan" }), lan)).toEqual({ _tag: "allow", fromHost: true })
-    expect(judge(request({ remote: undefined }), lan)).toEqual({ _tag: "refuse", reason: "not-paired" })
+    expect(judge(request({ remote: undefined }), lan)).toMatchObject({ _tag: "refuse", reason: "not-paired" })
     const own = lan.ownAddresses
     expect(isOwnAddress("192.168.1.20", own)).toBe(true)
     expect(isOwnAddress("::FFFF:192.168.1.20", own)).toBe(true)

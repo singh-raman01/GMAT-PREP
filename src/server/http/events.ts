@@ -2,6 +2,7 @@ import { Effect, Schema, Stream } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { CuratorCookie } from "../../api/Curator.ts"
 import { EventsPath, JobChanged, ServerEvent } from "../../api/Events.ts"
+import { LanAccess } from "../access/LanAccess.ts"
 import { Curator } from "../curator/Curator.ts"
 import { JobFeed } from "../events/JobFeed.ts"
 
@@ -28,6 +29,7 @@ const serveEvents = Effect.gen(function*() {
   const request = yield* HttpServerRequest.HttpServerRequest
   const curator = yield* Curator
   const feed = yield* JobFeed
+  const access = yield* LanAccess
   const token = request.cookies[CuratorCookie.key] ?? ""
   const unlocked = yield* curator.check(token).pipe(
     Effect.as(true),
@@ -40,13 +42,17 @@ const serveEvents = Effect.gen(function*() {
     revisionOf(new URL(request.url, "http://localhost").searchParams.get("since"))
   // Keep-alive comments hold the connection open. Each one also checks the
   // unlock without counting as use, so an open stream neither keeps the
-  // Curator unlocked nor outlives a lock.
-  const keepAlive = Stream.tick(KeepAliveEvery).pipe(
-    Stream.mapEffect(() =>
-      curator.stillUnlocked(token).pipe(
-        Effect.flatMap((live) => live ? Effect.void : Effect.fail("locked" as const))
-      )
-    ),
+  // Curator unlocked nor outlives a lock, and checks that the device may
+  // still reach the server, as it does at once when LAN mode goes off or a
+  // device is revoked.
+  const stillAllowed = Effect.gen(function*() {
+    const live = yield* curator.stillUnlocked(token)
+    const verdict = yield* access.judge(request)
+    if (!live) return yield* Effect.fail("locked" as const)
+    if (verdict._tag === "refuse") return yield* Effect.fail("refused" as const)
+  })
+  const keepAlive = Stream.merge(Stream.tick(KeepAliveEvery), access.accessChanges).pipe(
+    Stream.mapEffect(() => stillAllowed),
     Stream.map(() => ": keep-alive\n\n")
   )
   const events = feed.changesAfter(since).pipe(Stream.map((job) => frame(new JobChanged({ job }))))
