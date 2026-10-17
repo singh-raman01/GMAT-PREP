@@ -20,6 +20,7 @@ import { CuratorTutorApi, TutorApi } from "./Tutor.ts"
 import { ReviewApi } from "./Review.ts"
 import { ScoresApi } from "./Scores.ts"
 import { OverviewApi } from "./Overview.ts"
+import { SnapshotsApi } from "./Snapshots.ts"
 import { SiblingsApi } from "./Siblings.ts"
 import { SettingsApi } from "./Settings.ts"
 import { TaxonomyApi } from "./Taxonomy.ts"
@@ -69,6 +70,7 @@ export class Api extends HttpApi.make("gmat-prep")
   .add(GenerationApi)
   .add(SiblingsApi)
   .add(OverviewApi)
+  .add(SnapshotsApi)
   .add(CuratorLessonsApi)
   .add(CuratorTutorApi)
 {}

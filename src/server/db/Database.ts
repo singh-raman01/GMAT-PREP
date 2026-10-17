@@ -17,7 +17,7 @@ export class NewerDatabase extends Schema.TaggedError<NewerDatabase>()("NewerDat
 
 export class Db extends Context.Service<Db, SQLiteBunDrizzle.EffectSQLiteBunDatabase>()("gmat-prep/server/Db") {}
 
-const databaseFile = (dataDir: string) => join(dataDir, "gmat-prep.sqlite")
+export const databaseFile = (dataDir: string) => join(dataDir, "gmat-prep.sqlite")
 
 const SqliteLive = Layer.unwrap(
   Effect.gen(function*() {
@@ -59,15 +59,15 @@ export class MigrationBrokeReferences extends Schema.TaggedError<MigrationBrokeR
 ) {}
 
 // drizzle-kit separates the statements of a migration with this marker.
-const StatementBreak = "--> statement-breakpoint"
+export const StatementBreak = "--> statement-breakpoint"
 
 // The migration's timestamp, from the start of its folder name.
-const migrationTime = (name: string) => {
+export const migrationTime = (name: string) => {
   const stamp = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/.exec(name)
   return stamp === null ? 0 : Date.UTC(+stamp[1]!, +stamp[2]! - 1, +stamp[3]!, +stamp[4]!, +stamp[5]!, +stamp[6]!)
 }
 
-const sha256 = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex")
+export const sha256 = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex")
 
 // Applies migrations, each in its own transaction, recorded in drizzle's
 // table. Foreign keys are off while they run: SQLite ignores a foreign_keys

@@ -962,3 +962,27 @@ export const problemReports = sqliteTable(
   },
   (t) => [index("problem_reports_question").on(t.questionId), index("problem_reports_profile").on(t.profileId, t.createdAt)]
 )
+
+// Each snapshot of the database taken or tried (decision 109): the kept ones
+// can be restored; a failed one is shown until one of its kind succeeds.
+export const snapshots = sqliteTable(
+  "snapshots",
+  {
+    id: text("id").primaryKey(),
+    // daily, pre-migration, pre-taxonomy, pre-rescore, pre-deletion,
+    // pre-restore or manual
+    kind: text("kind").notNull(),
+    // Its file in the snapshots folder; none for a failed attempt.
+    file: text("file"),
+    takenAt: integer("taken_at").notNull(),
+    // The host's calendar date it was taken, as YYYY-MM-DD.
+    day: text("day").notNull(),
+    size: integer("size"),
+    sha256: text("sha256"),
+    // ok, failed, or removed once retention deleted its file
+    status: text("status").notNull(),
+    error: text("error"),
+    removedAt: integer("removed_at")
+  },
+  (t) => [index("snapshots_taken").on(t.takenAt), uniqueIndex("snapshots_file").on(t.file)]
+)

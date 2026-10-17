@@ -15,6 +15,8 @@ import { JobRunner } from "../src/server/jobs/JobRunner.ts"
 import type { JobStore } from "../src/server/jobs/JobStore.ts"
 import { ConnectionTest } from "../src/server/jobs/kinds/connectionTest.ts"
 import { type FakeLlm, LlmTransport, LlmTransportFake } from "../src/server/llm/LlmTransport.ts"
+import { SnapshotCopier, SnapshotCopierInProcess, SnapshotWorkFailed } from "../src/server/snapshots/copier.ts"
+import type { Snapshots } from "../src/server/snapshots/Snapshots.ts"
 import type { ApiKeyStore } from "../src/server/settings/ApiKeyStore.ts"
 import type { Settings } from "../src/server/settings/Settings.ts"
 import { workerServices } from "../src/server/worker/services.ts"
@@ -54,6 +56,7 @@ export const appLayer = (dataDir: string) =>
     Layer.provide(WorkerSupervisor.layerIdle),
     Layer.provide(AppConfig.layer({ dataDir, preferredPort: 0 })),
     Layer.provide(LlmTransportFake),
+    Layer.provide(SnapshotCopierTest),
     Layer.provideMerge(BunHttpServer.layerTest),
     Layer.provideMerge(TestClock.layer())
   )
@@ -62,6 +65,31 @@ export const runWithApp = <A, E>(
   effect: Effect.Effect<A, E, HttpClient.HttpClient | HttpServer.HttpServer>,
   dataDir: string = tempDataDir()
 ): Promise<A> => Effect.runPromise(effect.pipe(Effect.provide(appLayer(dataDir))))
+
+// Snapshot copies in this process, the next ones failing with the details a
+// test queues, as a full disk would make them.
+export class CopierFaults extends Context.Service<CopierFaults, {
+  failNext(...details: ReadonlyArray<string>): Effect.Effect<void>
+}>()("gmat-prep/test/CopierFaults") {}
+
+const SnapshotCopierTest = Layer.unwrap(
+  Effect.gen(function*() {
+    const faults = yield* Ref.make<ReadonlyArray<string>>([])
+    const real = yield* SnapshotCopier.pipe(Effect.provide(SnapshotCopierInProcess))
+    const nextFault = Ref.modify(faults, (queued) => [queued[0], queued.slice(1)] as const)
+    return Layer.mergeAll(
+      Layer.succeed(
+        SnapshotCopier,
+        SnapshotCopier.of({
+          ...real,
+          copy: (from, to) =>
+            nextFault.pipe(Effect.flatMap((detail) => detail === undefined ? real.copy(from, to) : Effect.fail(new SnapshotWorkFailed({ detail }))))
+        })
+      ),
+      Layer.succeed(CopierFaults, CopierFaults.of({ failNext: (...details) => Ref.update(faults, (queued) => [...queued, ...details]) }))
+    )
+  })
+)
 
 // Starts job workers in this process, each on its own database connection
 // with its own worker id, as separate worker processes would be. They share
@@ -96,6 +124,8 @@ export type WorkerTestServices =
   | ApiKeyStore
   | Db
   | AppConfig
+  | Snapshots
+  | CopierFaults
   | FigureFiles
   | ErrorLog
 
@@ -107,6 +137,7 @@ export const appWithWorkersLayer = (dataDir: string, kinds: ReadonlyArray<AnyJob
   const server = HttpRouter.serve(AppRoutes, { disableListenLog: true, disableLogger: true }).pipe(
     Layer.provideMerge(makeAppServices(JobKinds.layer(kinds))),
     Layer.provide(WorkerSupervisor.layerIdle),
+    Layer.provideMerge(SnapshotCopierTest),
     Layer.provideMerge(AppConfig.layer({ dataDir, preferredPort: 0 })),
     Layer.provideMerge(BunHttpServer.layerTest),
     Layer.provideMerge(clockStartsAt(startAt)),

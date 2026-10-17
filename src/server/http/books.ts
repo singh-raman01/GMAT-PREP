@@ -23,6 +23,7 @@ import { Golden } from "../review/Golden.ts"
 import { ReviewQueue } from "../review/ReviewQueue.ts"
 import { SiblingsReport } from "../learning/SiblingsReport.ts"
 import { Overview } from "../review/Overview.ts"
+import { Snapshots } from "../snapshots/Snapshots.ts"
 
 export const BooksHandlers = HttpApiBuilder.group(
   Api,
@@ -202,6 +203,19 @@ export const SiblingsHandlers = HttpApiBuilder.group(
   Effect.fn(function*(handlers) {
     const siblings = yield* SiblingsReport
     return handlers.handleAll({ report: () => siblings.report })
+  })
+)
+
+export const SnapshotsHandlers = HttpApiBuilder.group(
+  Api,
+  "snapshots",
+  Effect.fn(function*(handlers) {
+    const snapshots = yield* Snapshots
+    return handlers.handleAll({
+      list: () => snapshots.list,
+      take: () => snapshots.take("manual").pipe(Effect.andThen(snapshots.list)),
+      restore: ({ params }) => snapshots.restore(params.id)
+    })
   })
 )
 

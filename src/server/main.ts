@@ -9,6 +9,8 @@ import { AppRoutes, AppServices } from "./app.ts"
 import { ResetPassphrase } from "./curator/resetPassphrase.ts"
 import { InstanceLockLive } from "./instanceLock.ts"
 import { LlmTransportHttp } from "./llm/LlmTransport.ts"
+import { fileCommand, SnapshotCopierProcess } from "./snapshots/copier.ts"
+import { Snapshots } from "./snapshots/Snapshots.ts"
 import { WorkerMain } from "./worker/main.ts"
 import { WorkerSupervisor } from "./worker/WorkerSupervisor.ts"
 
@@ -65,7 +67,11 @@ const AnnounceLive = Layer.effectDiscard(
 const MainLive = AnnounceLive.pipe(
   Layer.provideMerge(ServerLive),
   Layer.provide(WorkerSupervisor.layer),
+  // The day's snapshot and the weekly integrity check, at startup and hourly.
+  Layer.provide(Snapshots.schedule),
   Layer.provide(AppServices),
+  // Snapshots are copied by a process of their own.
+  Layer.provide(SnapshotCopierProcess),
   // Tutor Chat's calls go out over HTTP.
   Layer.provide(LlmTransportHttp.pipe(Layer.provide(FetchHttpClient.layer))),
   Layer.provide(InstanceLockLive),
@@ -140,6 +146,12 @@ export const main = () => {
       return BunRuntime.runMain(WorkerMain)
     case "reset-passphrase":
       return BunRuntime.runMain(ResetPassphrase)
+    // Work on a database file in a process of its own (decision 111).
+    case "snapshot-copy":
+    case "snapshot-check":
+    case "snapshot-migrate":
+    case "snapshot-hash":
+      return void fileCommand(process.argv.slice(process.argv.indexOf(command)))
     default:
       return BunRuntime.runMain(runServer)
   }

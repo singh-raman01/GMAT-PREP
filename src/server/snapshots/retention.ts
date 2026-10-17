@@ -1,18 +1,11 @@
+import type { SnapshotKind } from "../../api/Snapshots.ts"
+
+export { type SnapshotKind, SnapshotKinds } from "../../api/Snapshots.ts"
+
 // Which snapshots are kept (docs/design.md, "Data safety and operations",
 // decision 110): the 7 latest daily snapshots, the first daily snapshot of
 // each of the 4 latest weeks before them, and the 10 latest snapshots taken
 // before a change. The rest are deleted.
-
-export const SnapshotKinds = [
-  "daily",
-  "pre-migration",
-  "pre-taxonomy",
-  "pre-rescore",
-  "pre-deletion",
-  "pre-restore",
-  "manual"
-] as const
-export type SnapshotKind = (typeof SnapshotKinds)[number]
 
 export const KeepDaily = 7
 export const KeepWeekly = 4
