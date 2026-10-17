@@ -20,6 +20,7 @@ import m17 from "./20261017020031_study_plan/migration.sql" with { type: "text" 
 import m18 from "./20261017031909_lessons/migration.sql" with { type: "text" }
 import m19 from "./20261017034632_tutor_chat/migration.sql" with { type: "text" }
 import m20 from "./20261017050105_snapshots/migration.sql" with { type: "text" }
+import m21 from "./20261017054631_lan_mode/migration.sql" with { type: "text" }
 
 export const bundledMigrations: ReadonlyArray<{ readonly name: string; readonly sql: string }> = [
   { name: "20261016072200_init", sql: m0 },
@@ -43,4 +44,5 @@ export const bundledMigrations: ReadonlyArray<{ readonly name: string; readonly 
   { name: "20261017031909_lessons", sql: m18 },
   { name: "20261017034632_tutor_chat", sql: m19 },
   { name: "20261017050105_snapshots", sql: m20 },
+  { name: "20261017054631_lan_mode", sql: m21 },
 ]
