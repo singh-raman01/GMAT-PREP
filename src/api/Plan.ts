@@ -50,7 +50,7 @@ export const PlanItemStatus = Schema.Literals(["planned", "started", "done", "dr
 export class PlanItemView extends Schema.Class<PlanItemView>("gmat-prep/api/PlanItemView")({
   id: PlanItemId,
   day: Day,
-  kind: Schema.Literals(["mock", "sectional", "retries", "practice"]),
+  kind: Schema.Literals(["mock", "sectional", "retries", "practice", "lesson"]),
   diagnostic: Schema.Boolean,
   // What it is, in words: "Percents, 10 Questions, untimed".
   title: Schema.String,
@@ -66,7 +66,10 @@ export class PlanItemView extends Schema.Class<PlanItemView>("gmat-prep/api/Plan
   // Why it was dropped.
   reason: Schema.NullOr(Schema.String),
   // The Session started from it, to go back to.
-  sessionId: Schema.NullOr(SessionId)
+  sessionId: Schema.NullOr(SessionId),
+  // A Lesson to read (decision 101): its subject, and the whole Lesson or
+  // its methods alone. Its page is opened, not started.
+  lesson: Schema.NullOr(Schema.Struct({ subject: Named, part: Schema.Literals(["whole", "methods"]) }))
 }) {}
 
 export class PlanDayView extends Schema.Class<PlanDayView>("gmat-prep/api/PlanDayView")({
@@ -125,6 +128,13 @@ export class PlanItemNotFound extends Schema.TaggedError<PlanItemNotFound>()(
   { httpApiStatus: 404 }
 ) {}
 
+// A Lesson item opens its Lesson's page; there is no Session to start.
+export class PlanItemIsLesson extends Schema.TaggedError<PlanItemIsLesson>()(
+  "PlanItemIsLesson",
+  {},
+  { httpApiStatus: 409 }
+) {}
+
 // The item is not one of today's planned ones: from another day or an older
 // version of the plan, dropped, or done.
 export class PlanItemNotOpen extends Schema.TaggedError<PlanItemNotOpen>()(
@@ -170,6 +180,7 @@ export class PlanApi extends HttpApiGroup.make("plan")
       error: [
         PlanItemNotFound,
         PlanItemNotOpen,
+        PlanItemIsLesson,
         FiltersInvalid,
         BookNotFound,
         NoQuestionsMatch,

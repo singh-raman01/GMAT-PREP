@@ -4,6 +4,7 @@ import { call } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
 import { calendarDay, hoursAndMinutes, longDay } from "../format.ts"
 import { linkProps, navigate } from "../router.ts"
+import { lessonPath } from "../lessons/paths.ts"
 import { DailyLog } from "./DailyLog.tsx"
 import { PlanSettingsForm } from "./PlanSettings.tsx"
 
@@ -102,6 +103,12 @@ const forText = (item: PlanItemView, today: boolean) => {
   if (item.kind === "mock") return "One of your Mock weeks."
   if (item.kind === "sectional") return "In place of a Mock, as your weekly time is under one."
   if (item.kind === "retries") return today ? "Questions you missed, due back today." : "Questions you missed, due back by that day."
+  if (item.kind === "lesson") {
+    const area = item.weakArea?.scope.name ?? item.lesson?.subject.name ?? "a Weak Area"
+    return item.lesson?.part === "methods"
+      ? `For ${area}, a Weak Area whose misses most often take the wrong approach: its Lesson's ways to solve it.`
+      : `For ${area}, a Weak Area whose misses are most often a concept gap: its Lesson, then the Lesson's 5-Question check.`
+  }
   if (item.weakArea === null) return `Mixed practice in ${item.section?.name ?? "a Section"}.`
   const area = item.weakArea.scope.name
   const section = item.section?.name ?? "its Section"
@@ -184,12 +191,18 @@ const ItemRow = (
           </select>
         </label>
       )}
-      {today && item.status === "planned" && (
+      {today && item.kind === "lesson" && item.lesson !== null && (item.status === "planned" || item.status === "started") && (
+        <a className="button button-quiet" {...linkProps(`${lessonPath(item.lesson.subject.id, item.lesson.part)}?item=${item.id}`)}>
+          {item.status === "planned" ? "Read it" : "Go back to it"}
+          <span className="visually-hidden">: {item.title}</span>
+        </a>
+      )}
+      {today && item.kind !== "lesson" && item.status === "planned" && (
         <button type="button" className="button button-quiet" onClick={() => void start()}>
           Start<span className="visually-hidden"> {item.title}</span>
         </button>
       )}
-      {item.status === "started" && (
+      {item.kind !== "lesson" && item.status === "started" && (
         <button type="button" className="button button-quiet" onClick={goBack}>
           Go back to it<span className="visually-hidden">: {item.title}</span>
         </button>

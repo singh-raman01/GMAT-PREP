@@ -98,6 +98,21 @@ export interface PlanState {
   // Minutes of planned work already done today, and whether a Mock was.
   readonly doneToday: number
   readonly mockToday: boolean
+  // The approved Lessons on the Weak Areas' subjects (decision 101).
+  readonly lessons: ReadonlyArray<LessonState>
+}
+
+export interface LessonState {
+  // The Skill or Question Type it teaches.
+  readonly subject: string
+  readonly lessonId: string
+  // Minutes to read it all and take its check, and to read its methods.
+  readonly minutes: number
+  readonly methodsMinutes: number
+  // Whether the Learner has done it since this version was approved: the
+  // whole Lesson by finishing its check, the methods by marking them read.
+  readonly done: boolean
+  readonly methodsDone: boolean
 }
 
 export interface PlanInputs {
@@ -118,7 +133,7 @@ export interface PracticeParams {
 
 export interface PlannedItem {
   readonly day: string
-  readonly kind: "mock" | "sectional" | "retries" | "practice"
+  readonly kind: "mock" | "sectional" | "retries" | "practice" | "lesson"
   readonly diagnostic: boolean
   readonly timed: boolean
   readonly section: SectionId | null
@@ -128,6 +143,8 @@ export interface PlannedItem {
   readonly weakArea: { readonly kind: "skill" | "questionType"; readonly id: string; readonly name: string; readonly priority: number } | null
   // The Mistake Type the set remedies, or "slow".
   readonly remedy: string | null
+  // A Lesson to read: the whole of it with its check, or its methods.
+  readonly lesson: { readonly id: string; readonly subject: string; readonly part: "whole" | "methods" } | null
   readonly minutes: number
 }
 
@@ -181,6 +198,7 @@ const item = (day: number, fields: Partial<PlannedItem> & Pick<PlannedItem, "kin
   practice: null,
   weakArea: null,
   remedy: null,
+  lesson: null,
   ...fields
 })
 
@@ -357,6 +375,22 @@ export const buildPlan = ({ settings, state }: PlanInputs): Plan => {
   const paceOf = (section: SectionId) => sectionOf.get(section)?.paceMs ?? 120_000
 
   const top = state.weakAreas.slice(0, TopWeakAreas)
+  // A Lesson comes before a Weak Area's set when its misses are most often a
+  // Concept gap (the whole Lesson) or a Wrong approach (its methods), once
+  // in the plan, until the Learner has done it (decision 101).
+  const lessonOf = new Map(state.lessons.map((lesson) => [lesson.subject, lesson] as const))
+  const lessonFor = (area: WeakAreaState) => {
+    const lesson = lessonOf.get(area.id)
+    if (lesson === undefined || lesson.done) return undefined
+    if (area.topMistake === "concept-gap") return { lesson, part: "whole" as const, minutes: lesson.minutes }
+    if (area.topMistake === "wrong-approach" && !lesson.methodsDone) {
+      return { lesson, part: "methods" as const, minutes: lesson.methodsMinutes }
+    }
+    return undefined
+  }
+  const lessonsPlaced = new Set<string>()
+  // A Lesson tried on a day without room for it, until a later day has room.
+  const lessonsWaiting = new Map<string, DroppedItem>()
   if (top.length === 0) {
     notes.push("No Weak Area shows yet, so the plan sets mixed practice until your timed answers show where you lose points.")
   }
@@ -433,8 +467,29 @@ export const buildPlan = ({ settings, state }: PlanInputs): Plan => {
       for (const area of picks) {
         const { remedy, params } = remedyOf(area)
         const pace = paceOf(area.section)
-        const size = fittingSize(room, pace)
         const weakArea = { kind: area.kind, id: area.id, name: area.name, priority: area.priority }
+        const wanted = lessonFor(area)
+        if (wanted !== undefined && !lessonsPlaced.has(wanted.lesson.lessonId)) {
+          const lessonItem = item(day, {
+            kind: "lesson",
+            lesson: { id: wanted.lesson.lessonId, subject: area.id, part: wanted.part },
+            weakArea,
+            remedy,
+            minutes: wanted.minutes
+          })
+          if (wanted.minutes <= room) {
+            chosen.push(lessonItem)
+            room -= wanted.minutes
+            lessonsPlaced.add(wanted.lesson.lessonId)
+            lessonsWaiting.delete(wanted.lesson.lessonId)
+          } else if (!lessonsWaiting.has(wanted.lesson.lessonId)) {
+            lessonsWaiting.set(wanted.lesson.lessonId, {
+              ...lessonItem,
+              reason: `No study day in the plan has room for its ${wanted.minutes} minutes.`
+            })
+          }
+        }
+        const size = fittingSize(room, pace)
         const pitch = near(area.section, params.trapPattern === undefined ? area.ability : undefined)
         if (size === undefined) {
           dropped.push({
@@ -477,5 +532,7 @@ export const buildPlan = ({ settings, state }: PlanInputs): Plan => {
     studyIndex += 1
   }
 
+  // A Lesson no day had room for is dropped where it was first tried.
+  dropped.push(...lessonsWaiting.values())
   return { days: planDays, dropped: dropped.toSorted((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0)), notes }
 }

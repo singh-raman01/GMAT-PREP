@@ -8,6 +8,7 @@ import {
   DiagnosticView,
   PlanDayView,
   PlanItemId,
+  PlanItemIsLesson,
   PlanItemNotFound,
   PlanItemNotOpen,
   PlanItemView,
@@ -23,8 +24,10 @@ import { type DayRule, nextRolloverUnder, studyDaysUnder, studyDayStartUnder } f
 import { DefaultTargetSeconds } from "../../api/targetTimes.ts"
 import { Analytics } from "../analytics/Analytics.ts"
 import { Db } from "../db/Database.ts"
-import { dailyNotes, planItems, planSettings, planVersions, profileDays, sessions } from "../db/schema.ts"
+import { dailyNotes, lessonViews, planItems, planSettings, planVersions, profileDays, sessions } from "../db/schema.ts"
 import { Retries } from "../learning/Retries.ts"
+import { Lessons, minutesFor } from "../lessons/Lessons.ts"
+import { CheckCount } from "../lessons/pick.ts"
 import { namesOf } from "../practice/content.ts"
 import { type Caller, Practice } from "../practice/Practice.ts"
 import { dayRulesOf, DefaultRules } from "../profiles/days.ts"
@@ -38,11 +41,13 @@ import {
   dayNumber,
   dayOfNumber,
   type DiagnosticState,
+  type LessonState,
   MockMinutes,
   type Plan,
   type PlanDay,
   type PlanInputs,
   type PlannedItem,
+  setMinutes,
   WarmUpRated
 } from "./build.ts"
 
@@ -72,6 +77,8 @@ interface Basis {
   readonly diagnostic: DiagnosticState
   readonly diagnosticSections: ReadonlyArray<string>
   readonly warm: ReadonlyArray<boolean>
+  // The Weak Areas' approved Lessons, and whether each is done.
+  readonly lessons: ReadonlyArray<readonly [string, boolean, boolean]>
 }
 
 const isTimeZone = (timeZone: string) => {
@@ -101,6 +108,7 @@ export class Plans extends Context.Service<Plans, {
       const db = yield* Db
       const analytics = yield* Analytics
       const retries = yield* Retries
+      const lessons = yield* Lessons
       const practice = yield* Practice
       const sectionals = yield* Sectionals
       const mocks = yield* Mocks
@@ -130,6 +138,83 @@ export class Plans extends Context.Service<Plans, {
             Effect.orDie,
             Effect.map((rows) => new Map(rows.map((row) => [row.planItemId!, row] as const)))
           )
+
+      // A Lesson item's page opened, or marked read, from the item.
+      const lessonMarksOf = (profileId: string) =>
+        db.select({ planItemId: lessonViews.planItemId, kind: lessonViews.kind, at: lessonViews.viewedAt }).from(lessonViews)
+          .where(and(eq(lessonViews.profileId, profileId), isNotNull(lessonViews.planItemId)))
+          .pipe(
+            Effect.orDie,
+            Effect.map((rows) => {
+              const marks = new Map<string, { opened: boolean; readAt: number | null }>()
+              for (const row of rows) {
+                const mark = marks.get(row.planItemId!) ?? { opened: false, readAt: null }
+                if (row.kind === "read") mark.readAt = Math.min(mark.readAt ?? row.at, row.at)
+                else mark.opened = true
+                marks.set(row.planItemId!, mark)
+              }
+              return marks as ReadonlyMap<string, { readonly opened: boolean; readonly readAt: number | null }>
+            })
+          )
+
+      // Where each item stands: the Sessions started from items, and the
+      // Lesson pages opened from them.
+      const progressOf = (profileId: string) =>
+        Effect.gen(function*() {
+          return { sessions: yield* startedOf(profileId), marks: yield* lessonMarksOf(profileId) }
+        })
+      type Progress = Effect.Success<ReturnType<typeof progressOf>>
+
+      // An item's state: a Session's from it ends it, as does marking a
+      // Lesson's methods read from it; a whole Lesson ends with its check.
+      const statusOf = (row: { readonly id: string; readonly item: string; readonly status: string }, progress: Progress) => {
+        if (row.status === "dropped") return "dropped" as const
+        const item = readJson<PlannedItem>(row.item)
+        const session = progress.sessions.get(row.id)
+        const mark = progress.marks.get(row.id)
+        if (item.kind === "lesson" && item.lesson?.part === "methods") {
+          return mark?.readAt != null ? "done" as const : mark?.opened === true ? "started" as const : "planned" as const
+        }
+        if (session !== undefined) return session.status === "finished" ? "done" as const : "started" as const
+        return mark?.opened === true ? "started" as const : "planned" as const
+      }
+
+      // When an item was done, if it was.
+      const doneAt = (row: { readonly id: string; readonly item: string; readonly status: string }, progress: Progress) => {
+        if (statusOf(row, progress) !== "done") return undefined
+        return progress.sessions.get(row.id)?.finishedAt ?? progress.marks.get(row.id)?.readAt ?? undefined
+      }
+
+      // What the Profile has done with the approved Lessons on these
+      // subjects (decision 101): the whole Lesson once a check of it ended,
+      // the methods once any part was marked read.
+      const lessonStatesOf = (profileId: string, subjects: ReadonlySet<string>) =>
+        Effect.gen(function*() {
+          const approved = [...(yield* lessons.approved).values()].filter((lesson) => subjects.has(lesson.subjectId))
+          if (approved.length === 0) return [] as ReadonlyArray<LessonState>
+          const ids = approved.map((lesson) => lesson.id)
+          const checked = new Set(
+            (yield* db.select({ lessonId: sql<string | null>`json_extract(${sessions.config}, '$.lesson.id')` }).from(sessions)
+              .where(and(eq(sessions.profileId, profileId), eq(sessions.kind, "practice"), eq(sessions.status, "finished")))
+              .pipe(Effect.orDie)).flatMap((row) => (row.lessonId === null ? [] : [row.lessonId]))
+          )
+          const read = new Set(
+            (yield* db.select({ lessonId: lessonViews.lessonId }).from(lessonViews)
+              .where(and(eq(lessonViews.profileId, profileId), eq(lessonViews.kind, "read"), inArray(lessonViews.lessonId, ids)))
+              .pipe(Effect.orDie)).map((row) => row.lessonId)
+          )
+          return approved.map((lesson): LessonState => {
+            const section = lesson.subjectId.slice(0, lesson.subjectId.indexOf("."))
+            return {
+              subject: lesson.subjectId,
+              lessonId: lesson.id,
+              minutes: minutesFor(lesson.words) + setMinutes(CheckCount, (DefaultTargetSeconds[section] ?? 120) * 1000),
+              methodsMinutes: minutesFor(lesson.methodsWords),
+              done: checked.has(lesson.id),
+              methodsDone: checked.has(lesson.id) || read.has(lesson.id)
+            }
+          })
+        })
 
       // How many more times each Section's Questions can be served in a Mock
       // or Sectional: the fewest of its Blueprint groups' unseen over needed.
@@ -185,16 +270,23 @@ export class Plans extends Context.Service<Plans, {
           const found = yield* analytics.planAnalytics(profileId)
           const forecast = yield* retries.forecast(profileId)
           const allowed = yield* allowedOf(profileId)
-          const started = yield* startedOf(profileId)
+          const progress = yield* progressOf(profileId)
+          const started = progress.sessions
           const diagnostic = yield* diagnosticOf(profileId, row.diagnosticSkipped, allowed, started)
-          // Today's planned work already done, from any version.
-          const doneIds = [...started].filter(([, session]) =>
-            session.status === "finished" && session.finishedAt !== null && dayOf(session.finishedAt) === today
-          ).map(([itemId]) => itemId)
-          const doneItems = doneIds.length === 0
+          // Today's planned work already done, from any version: Sessions
+          // ended today, and Lesson methods marked read today.
+          const doneIds = [
+            ...[...started].filter(([, session]) =>
+              session.status === "finished" && session.finishedAt !== null && dayOf(session.finishedAt) === today
+            ).map(([itemId]) => itemId),
+            ...[...progress.marks].filter(([, mark]) => mark.readAt !== null && dayOf(mark.readAt) === today).map(([itemId]) => itemId)
+          ]
+          const doneItems = (doneIds.length === 0
             ? []
-            : yield* db.select({ minutes: planItems.minutes, kind: planItems.kind, day: planItems.day }).from(planItems)
-              .where(inArray(planItems.id, doneIds)).pipe(Effect.orDie)
+            : yield* db.select({ id: planItems.id, item: planItems.item, status: planItems.status, minutes: planItems.minutes })
+              .from(planItems).where(inArray(planItems.id, doneIds)).pipe(Effect.orDie))
+            .filter((each) => statusOf(each, progress) === "done")
+          const lessonStates = yield* lessonStatesOf(profileId, new Set(found.weakAreas.map((area) => area.id)))
           const mockToday = (yield* db.select({ finishedAt: sessions.finishedAt }).from(sessions)
             .where(and(eq(sessions.profileId, profileId), eq(sessions.kind, "mock"), eq(sessions.status, "finished")))
             .pipe(Effect.orDie)).some((mock) => mock.finishedAt !== null && dayOf(mock.finishedAt) === today)
@@ -224,7 +316,8 @@ export class Plans extends Context.Service<Plans, {
               diagnostic: diagnostic.state,
               diagnosticSections: diagnostic.sectionsLeft,
               doneToday: doneItems.reduce((sum, item) => sum + item.minutes, 0),
-              mockToday
+              mockToday,
+              lessons: lessonStates
             }
           }
           const basis: Basis = {
@@ -233,9 +326,10 @@ export class Plans extends Context.Service<Plans, {
             mocks: diagnostic.mocks,
             diagnostic: diagnostic.state,
             diagnosticSections: diagnostic.sectionsLeft,
-            warm: found.sections.map((section) => section.rated >= WarmUpRated)
+            warm: found.sections.map((section) => section.rated >= WarmUpRated),
+            lessons: lessonStates.map((lesson) => [lesson.lessonId, lesson.done, lesson.methodsDone] as const)
           }
-          return { inputs, basis, today, rules, now, started }
+          return { inputs, basis, today, rules, now, started, progress }
         })
 
       // The latest version, built again first when its basis has changed.
@@ -299,6 +393,10 @@ export class Plans extends Context.Service<Plans, {
             return `${item.diagnostic ? "Diagnostic: " : ""}${sectionName(item.section!).name} Sectional`
           case "retries":
             return `${item.timed ? "Timed Retries" : "Retries"}, ${item.count} ${item.count === 1 ? "Question" : "Questions"}`
+          case "lesson":
+            return item.lesson!.part === "methods"
+              ? `Lesson: ${named(item.lesson!.subject).name}, the ways to solve it`
+              : `Lesson: ${named(item.lesson!.subject).name}`
           case "practice": {
             const params = item.practice!
             const what = params.trapPattern !== undefined
@@ -318,17 +416,11 @@ export class Plans extends Context.Service<Plans, {
 
       const itemView = (
         row: { readonly id: string; readonly item: string; readonly status: string; readonly reason: string | null },
-        started: ReadonlyMap<string, { readonly id: string; readonly status: string }>
+        progress: Progress
       ) => {
         const item = readJson<PlannedItem>(row.item)
-        const session = started.get(row.id)
-        const status = row.status === "dropped"
-          ? "dropped" as const
-          : session === undefined
-          ? "planned" as const
-          : session.status === "finished"
-          ? "done" as const
-          : "started" as const
+        const session = progress.sessions.get(row.id)
+        const status = statusOf(row, progress)
         return new PlanItemView({
           id: PlanItemId.make(row.id),
           day: item.day,
@@ -349,7 +441,10 @@ export class Plans extends Context.Service<Plans, {
           minutes: item.minutes,
           status,
           reason: row.reason,
-          sessionId: session === undefined ? null : SessionId.make(session.id)
+          sessionId: session === undefined ? null : SessionId.make(session.id),
+          lesson: item.lesson === null || item.lesson === undefined
+            ? null
+            : { subject: named(item.lesson.subject), part: item.lesson.part }
         })
       }
 
@@ -400,7 +495,7 @@ export class Plans extends Context.Service<Plans, {
               targets: null
             })
           }
-          const { version, inputs, started } = ensured
+          const { version, inputs, progress } = ensured
           const settingsRow = (yield* settingsRowOf(profileId))!
           const outline = readJson<Outline>(version.outline)
           const rows = yield* db.select().from(planItems).where(eq(planItems.versionId, version.id))
@@ -411,15 +506,14 @@ export class Plans extends Context.Service<Plans, {
             .from(planItems).innerJoin(planVersions, eq(planVersions.id, planItems.versionId))
             .where(and(eq(planVersions.profileId, profileId), eq(planItems.day, today), eq(planItems.status, "planned")))
             .pipe(Effect.orDie)
-          const doneEarlier = earlierToday.filter((row) => row.id !== undefined && started.get(row.id)?.status === "finished" &&
-            !rows.some((each) => each.id === row.id))
+          const doneEarlier = earlierToday.filter((row) => statusOf(row, progress) === "done" && !rows.some((each) => each.id === row.id))
           const planned = rows.filter((row) => row.status === "planned")
           const days = outline.days.filter((day) => day.day >= today).map((day) =>
             new PlanDayView({
               ...day,
               items: [
-                ...(day.day === today ? doneEarlier : []).map((row) => itemView(row, started)),
-                ...planned.filter((row) => row.day === day.day).map((row) => itemView(row, started))
+                ...(day.day === today ? doneEarlier : []).map((row) => itemView(row, progress)),
+                ...planned.filter((row) => row.day === day.day).map((row) => itemView(row, progress))
               ]
             })
           )
@@ -437,7 +531,7 @@ export class Plans extends Context.Service<Plans, {
             version: version.version,
             builtAt: version.builtAt,
             plan: days,
-            dropped: rows.filter((row) => row.status === "dropped").map((row) => itemView(row, started)),
+            dropped: rows.filter((row) => row.status === "dropped").map((row) => itemView(row, progress)),
             notes: outline.notes,
             diagnostic: new DiagnosticView({
               state: inputs.state.diagnostic,
@@ -507,9 +601,10 @@ export class Plans extends Context.Service<Plans, {
             .innerJoin(planVersions, eq(planVersions.id, planItems.versionId))
             .where(and(eq(planItems.id, id), eq(planVersions.profileId, caller.profileId))).pipe(Effect.orDie)
           if (found === undefined) return yield* new PlanItemNotFound()
+          const item = readJson<PlannedItem>(found.item.item)
+          if (item.kind === "lesson") return yield* new PlanItemIsLesson()
           const planView = yield* view(caller.profileId)
           const started = (yield* startedOf(caller.profileId)).get(id)
-          const item = readJson<PlannedItem>(found.item.item)
           // A Session started from it and not ended is the one to go back to.
           if (started !== undefined && started.status !== "finished") {
             return new PlanStarted({
@@ -566,7 +661,7 @@ export class Plans extends Context.Service<Plans, {
           const today = studyDaysUnder(rules)(now)
           const from = today - LogDays + 1
           const study = yield* analytics.study(profileId)
-          const started = yield* startedOf(profileId)
+          const progress = yield* progressOf(profileId)
           const versions = yield* db.select().from(planVersions).where(eq(planVersions.profileId, profileId))
             .orderBy(asc(planVersions.version)).pipe(Effect.orDie)
           const rows = versions.length === 0
@@ -590,9 +685,7 @@ export class Plans extends Context.Service<Plans, {
             const ends = studyDayStartUnder(rules, day + 1)
             const version = versions.filter((each) => each.builtAt < ends && each.fromDay <= text).at(-1)
             const forDay = rows.filter((row) => row.day === text)
-            const shown = forDay.filter((row) =>
-              row.versionId === version?.id || started.get(row.id)?.status === "finished"
-            )
+            const shown = forDay.filter((row) => row.versionId === version?.id || statusOf(row, progress) === "done")
             const work = study.days.find((each) => each.day === text)
             const note = noteOf.get(text)
             return new DailyLogDay({
@@ -601,7 +694,7 @@ export class Plans extends Context.Service<Plans, {
               questions: work?.questions ?? 0,
               sections: work?.sections ?? [],
               mocks: work?.mocks ?? 0,
-              items: shown.map((row) => itemView(row, started)),
+              items: shown.map((row) => itemView(row, progress)),
               note: note === undefined || note === "" ? null : note
             })
           }
@@ -631,4 +724,4 @@ export type PlanStartError = Effect.Error<
   | ReturnType<Retries["Service"]["start"]>
   | ReturnType<Sectionals["Service"]["start"]>
   | ReturnType<Mocks["Service"]["start"]>
-> | PlanItemNotFound | PlanItemNotOpen
+> | PlanItemNotFound | PlanItemNotOpen | PlanItemIsLesson
