@@ -315,7 +315,12 @@ export class Snapshots extends Context.Service<Snapshots, {
   static readonly schedule = Layer.effectDiscard(
     Effect.gen(function*() {
       const snapshots = yield* Snapshots
-      yield* Effect.forkScoped(snapshots.tend.pipe(Effect.repeat(Schedule.spaced("1 hour"))))
+      // A round that stops on something unforeseen is logged, and the next
+      // one comes an hour later all the same.
+      const round = snapshots.tend.pipe(
+        Effect.catchCause((cause) => Effect.logError("The snapshot round stopped", cause))
+      )
+      yield* Effect.forkScoped(round.pipe(Effect.repeat(Schedule.spaced("1 hour"))))
     })
   )
 }

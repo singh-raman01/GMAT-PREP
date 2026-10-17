@@ -159,6 +159,18 @@ describe("Restoring a snapshot", () => {
       expect(readdirSync(yield* folderOf).some((name) => name.startsWith("restore-"))).toBe(false)
     })))
 
+  test("leaves the weekly check's outcome as it was, as it is about the database file", () =>
+    run(Effect.gen(function*() {
+      const curator = yield* curatorBrowser
+      const first = (yield* curator.api.snapshots.take()).snapshots[0]!
+      yield* TestClock.adjust("1 minute")
+      yield* (yield* Snapshots).tend
+      const checked = (yield* curator.api.snapshots.list()).integrity
+      expect(checked).toMatchObject({ ok: true })
+      yield* curator.api.snapshots.restore({ params: { id: first.id } })
+      expect((yield* curator.api.snapshots.list()).integrity).toEqual(checked)
+    })))
+
   test("brings an older snapshot to this version's tables first", () =>
     run(Effect.gen(function*() {
       const curator = yield* curatorBrowser

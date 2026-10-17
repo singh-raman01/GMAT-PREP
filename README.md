@@ -131,6 +131,12 @@ Today lists the day's items, each with a Start button; an item is done once the 
 
 Scores shows each Section's Score Estimate, and the Total once all three have one, against the targets your Study Plan sets, with the trend of each Study Day's estimates, the targets and your Official Scores marked on it. Enter an Official Score from an official practice exam or the GMAT itself to calibrate them: each one is matched with your estimates as they stood that day, so it calibrates only the Sections you had an estimate for by then. One shifts each Section's scale to match it, and two or more fit it, as long as your estimates on those days were far enough apart to say how the scale runs.
 
+## Your data
+
+The app takes a snapshot of its database each day, keeping the last 7 days and one from each of the 4 weeks before them, and before each risky change: an update, a new Taxonomy, a changed key, deleting a Profile and a restore. Snapshots are copied in a process of their own, so the app keeps answering while one is taken. The Curator's Data page lists them, takes one by hand, and restores one: the database goes back to how it was then, and the one it replaces is kept as a snapshot too. A restore waits while a job runs or a Learner is in a Mock, Sectional or timed set. A full check of the database runs each week, and a failed snapshot or a damaged database shows on the Curator's Overview.
+
+From your name at the top, your profile page downloads everything your profile holds as one JSON file, and deletes the profile, with your PIN if it has one. The Curator's Data page sets a new PIN for a Learner who forgot theirs, deletes a Profile with the Curator passphrase entered again, and makes one archive of the whole install: the database, the Books and their page images. To move the install to another computer, unpack that archive into the data folder there before starting the app, and enter the LLM key again. If the Curator passphrase is lost, run `gmat-prep reset-passphrase` on the computer the app runs on.
+
 ## Check it
 
 ```sh
