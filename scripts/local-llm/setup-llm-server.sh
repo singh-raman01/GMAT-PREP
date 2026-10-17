@@ -156,11 +156,14 @@ SKIP_CLEANUP=0
 # --yes alone never deletes models or environments; these options allow it.
 DELETE_OLD_MODELS=0
 DELETE_OLD_ENVS=0
+# A real run over SSH must run inside tmux or screen unless --no-tmux.
+ALLOW_NO_TMUX=0
 # The 35B-A3B's vision projector, off while the app sends no images.
 VISION="off"
 BUILD_JOBS=""
 # The SSH ports, from detect_ssh_ports.
 SSH_PORTS=""
+SSH_PORTS_CONFIG=""
 SSH_PORTS_ALL=""
 SSH_PORTS_SURE=0
 SSH_PORTS_NOTE=""
@@ -350,6 +353,27 @@ write_secret_file() {
   write_file "$path" "$mode" "$owner"
 }
 
+# replace_file PATH [MODE]: replaces PATH with the content on stdin in one
+# rename, keeping the old file's mode and owner (MODE for a new file), so
+# nothing ever sees, or is left with, half a file.
+replace_file() {
+  local path=$1 mode=${2:-0644} tmp
+  tmp=$(mktemp "$(dirname "$path")/.gmat-llm.XXXXXX") || return 1
+  if ! cat >"$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if [[ -e "$path" ]]; then
+    if ! chmod --reference="$path" "$tmp" || ! chown --reference="$path" "$tmp"; then
+      rm -f "$tmp"
+      return 1
+    fi
+  else
+    chmod "$mode" "$tmp"
+  fi
+  mv -f "$tmp" "$path"
+}
+
 # Whether PATH would change if CONTENT (stdin) were written to it.
 file_differs() {
   local path=$1 tmp result=0
@@ -472,13 +496,20 @@ dir_size_bytes() {
 }
 
 # Whether dpkg has the package installed.
+# dpkg's status of a package, such as "install ok installed", "hold ok
+# installed" or "deinstall ok config-files".
+pkg_status() {
+  dpkg-query -W -f='${Status}' "$1" 2>/dev/null || true
+}
+
+# Whether dpkg has the package installed, held or not.
 pkg_installed() {
-  dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'
+  [[ "$(pkg_status "$1")" == *" ok installed" ]]
 }
 
 # Installed packages whose names match the given shell patterns.
 installed_matching() {
-  dpkg-query -W -f='${Status}\t${Package}\n' "$@" 2>/dev/null | awk -F'\t' '$1 == "install ok installed" {print $2}' || true
+  dpkg-query -W -f='${Status}\t${Package}\n' "$@" 2>/dev/null | awk -F'\t' '$1 ~ / ok installed$/ {print $2}' || true
 }
 
 free_bytes_for() {
@@ -578,6 +609,9 @@ Setup options:
   --delete-old-models  with --yes, also delete old LLM models and caches
   --delete-old-envs  with --yes, also delete old llama.cpp source trees and
                      Python environments of LLM servers
+  --no-tmux          run over SSH outside tmux or screen anyway; a dropped
+                     connection can then stop apt or the driver install
+                     halfway
   --port N           port of the local endpoint on 127.0.0.1 (default $DEFAULT_PORT)
   --quant NAME       quantization of the 35B-A3B model: UD-Q3_K_XL or
                      UD-Q2_K_XL; by default setup picks the one that fits RAM
@@ -605,7 +639,8 @@ Commands (gmat-llm):
   restart                restart the endpoint
   logs [-f]              show the endpoint's log
   test                   check that every model answers
-  uninstall              remove what setup installed, asking first
+  uninstall [--no-tmux]  remove what setup installed, asking first; over SSH
+                         it runs inside tmux or screen, like setup
   setup [options]        run the setup again
 EOF
 }
@@ -729,6 +764,20 @@ detect_ssh_session() {
     pid=$ppid
   done
   return 0
+}
+
+# A real run over SSH outside tmux or screen stops here, before any change:
+# a dropped connection would hang up apt, dpkg or the driver install in the
+# middle of their work. --no-tmux goes on anyway.
+require_multiplexer() {
+  ((DRY_RUN)) && return 0
+  [[ -n "$SSH_SESSION_PEER" ]] || return 0
+  ((IN_MULTIPLEXER)) && return 0
+  if ((ALLOW_NO_TMUX)); then
+    warn "Running over SSH outside tmux or screen (--no-tmux): if the connection drops, the step running then stops, possibly halfway."
+    return 0
+  fi
+  die "You are connected over SSH, outside tmux or screen. If the connection drops while apt, the driver install or the build runs, that step can stop halfway. Start tmux and run this inside it: tmux new -s gmat (after a dropped connection, log in again and run: tmux attach -t gmat). tmux comes with Ubuntu Server. Or pass --no-tmux to go on anyway. Nothing was changed."
 }
 
 # Whether this session, or any SSH session open now, comes from this computer
@@ -996,8 +1045,8 @@ check_network() {
   fi
   if ((IN_MULTIPLEXER)); then
     info "This runs inside tmux or screen, so a dropped SSH connection does not stop it."
-  elif [[ -n "$SSH_SESSION_PEER" ]]; then
-    info "If the SSH connection drops, this run stops; running it again carries on. Inside tmux (sudo apt install tmux, then tmux) a dropped connection does not stop it."
+  elif [[ -n "$SSH_SESSION_PEER" ]] && ((DRY_RUN)); then
+    info "The real run over SSH needs tmux or screen (tmux new -s gmat), or --no-tmux; outside them it stops before changing anything."
   fi
 }
 
@@ -1012,6 +1061,7 @@ preflight() {
   done
   check_privileges
   detect_ssh_session
+  require_multiplexer
   detect_ssh_ports
   report_ssh_ports
   check_gpu
@@ -1143,8 +1193,53 @@ volumes_of_containers() {
   done | sed '/^$/d' | sort -u
 }
 
+# Where a known LLM image keeps its data inside the container (its docs run
+# it with a volume there): Ollama its models, Open WebUI its chats and
+# accounts.
+container_data_path() {
+  local ref=${1,,}
+  ref=${ref%%@*}
+  if [[ "${ref##*/}" == *:* ]]; then ref=${ref%:*}; fi
+  ref=${ref#docker.io/}
+  ref=${ref#index.docker.io/}
+  ref=${ref#library/}
+  case "$ref" in
+    ollama/ollama) printf '/root/.ollama' ;;
+    ghcr.io/open-webui/open-webui) printf '/app/backend/data' ;;
+  esac
+}
+
+# What removing a container would delete: the size of its own writable
+# layer, and whether the image's data folder is on a volume or bind mount.
+container_data_note() {
+  local tool=$1 id=$2 image=$3 rw mounts path dest covered=0 note
+  rw=$("$tool" inspect --size --format '{{.SizeRw}}' "$id" 2>/dev/null || true)
+  [[ "$rw" =~ ^[0-9]+$ ]] || rw=""
+  mounts=$("$tool" inspect --format '{{range .Mounts}}{{.Type}} {{.Destination}}{{"\n"}}{{end}}' "$id" 2>/dev/null || true)
+  path=$(container_data_path "$image")
+  if [[ -n "$path" ]]; then
+    while read -r _ dest; do
+      [[ -n "$dest" ]] || continue
+      dest=${dest%/}
+      if [[ "$path" == "$dest" || "$path" == "$dest"/* ]]; then covered=1; fi
+    done <<<"$mounts"
+  fi
+  if [[ -n "$rw" ]]; then note="its own layer holds $(human_bytes "$rw")"; else note="the size of its own layer is unknown"; fi
+  if [[ -n "$path" ]] && ((!covered)); then
+    note+="; it keeps its data in $path, which is on no volume, so that data is in this layer and goes with the container"
+  elif [[ -n "$path" ]]; then
+    note+="; its data in $path is on a volume or bind mount, which stays"
+  fi
+  printf '%s' "$note"
+}
+
+# Containers of LLM software are stopped and kept from starting again at
+# boot, but removed only when asked one by one: removing a container deletes
+# what it keeps in its own layer, such as Ollama's models when it ran without
+# a volume. Images no container uses can go (by reference, so other tags of
+# the same image stay); volumes no container uses are asked about one by one.
 cleanup_containers() {
-  local tool containers images="" volumes id image name status ref size vol mount users others ids=()
+  local tool containers images="" volumes id image name status ref size vol mount users in_use note ids=()
   tool=$(container_tool)
   if [[ -z "$tool" ]]; then
     info "No Docker or Podman engine running."
@@ -1155,7 +1250,7 @@ cleanup_containers() {
     [[ -n "$id" ]] || continue
     ids+=("$id")
   done <<<"$containers"
-  # Volumes are listed before the containers go, while their mounts still show.
+  # Volumes are listed before any container goes, while its mounts still show.
   volumes=""
   if ((${#ids[@]} > 0)); then volumes=$(volumes_of_containers "$tool" "${ids[@]}"); fi
   if [[ -n "$containers" ]]; then
@@ -1164,17 +1259,35 @@ cleanup_containers() {
       [[ -n "$id" ]] || continue
       info "$name ($image, $status)"
     done <<<"$containers"
-    info "Files a container keeps outside its volumes go with it."
-    if confirm "Stop and remove these containers?" y; then
-      for id in "${ids[@]}"; do run "$tool" rm -f "$id" || warn "Could not remove container $id"; done
+    if confirm "Stop these containers, and keep them from starting again at boot (restart policy no)?" y; then
+      for id in "${ids[@]}"; do
+        run "$tool" update --restart=no "$id" || warn "Could not change the restart policy of container $id"
+        run "$tool" stop "$id" || warn "Could not stop container $id"
+      done
     fi
+    say "Removing a container deletes everything it keeps in its own layer, outside its volumes. Each one is asked about on its own; the default is no:"
+    while IFS=$'\t' read -r id image name status; do
+      [[ -n "$id" ]] || continue
+      note=$(container_data_note "$tool" "$id" "$image")
+      info "$name: $note."
+      if confirm_delete ask "Remove the container $name?" n; then
+        run "$tool" rm -f "$id" || warn "Could not remove container $name"
+      fi
+    done <<<"$containers"
   fi
+  # Images that a container still uses stay with it.
+  in_use=$("$tool" ps -a --format '{{.Image}}' 2>/dev/null || true)
   while IFS=$'\t' read -r ref id size; do
     [[ -n "$ref" ]] || continue
-    if is_llm_image "$ref"; then images+="$ref"$'\t'"$id"$'\t'"$size"$'\n'; fi
+    is_llm_image "$ref" || continue
+    if grep -qxF -e "$ref" -e "${ref%:latest}" -e "$id" <<<"$in_use"; then
+      info "The image $ref stays: a container uses it."
+      continue
+    fi
+    images+="$ref"$'\t'"$id"$'\t'"$size"$'\n'
   done < <("$tool" images --format '{{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.Size}}' 2>/dev/null || true)
   if [[ -n "$images" ]]; then
-    say "$tool images of LLM software:"
+    say "$tool images of LLM software that no container uses:"
     while IFS=$'\t' read -r ref id size; do
       [[ -n "$ref" ]] || continue
       info "$ref ($size)"
@@ -1182,12 +1295,13 @@ cleanup_containers() {
     if confirm "Remove these images (they can be pulled again)?" y; then
       while IFS=$'\t' read -r ref id _; do
         [[ -n "$ref" ]] || continue
-        run "$tool" rmi -f "$id" || warn "Could not remove $ref"
+        run "$tool" rmi "$ref" || warn "Could not remove $ref"
       done <<<"$images"
     fi
   fi
-  # Volumes hold chat histories, accounts and models. Each one is asked about
-  # on its own, defaults to no and is never removed by --yes.
+  # Volumes hold chat histories, accounts and models. One that a container
+  # still uses stays; the others are asked about one by one, default to no
+  # and are never removed by --yes.
   if [[ -n "$volumes" ]]; then
     say "Volumes those containers used:"
     while IFS= read -r vol; do
@@ -1195,17 +1309,13 @@ cleanup_containers() {
       mount=$("$tool" volume inspect --format '{{.Mountpoint}}' "$vol" 2>/dev/null || true)
       size=$(human_bytes "$(dir_size_bytes "$mount")")
       users=$("$tool" ps -a --filter "volume=$vol" --format '{{.Names}}' 2>/dev/null | tr '\n' ' ' || true)
-      others=""
-      for name in $users; do
-        grep -qxF "$name" <(cut -f3 <<<"$containers") || others+="$name "
-      done
-      if [[ -n "$others" ]]; then
-        info "$vol ($size): also used by ${others% }; left alone."
+      if [[ -n "${users// /}" ]]; then
+        info "$vol ($size): used by ${users% }; it stays."
         continue
       fi
-      info "$vol ($size)${users:+, used by ${users% }}"
+      info "$vol ($size): no container uses it"
       if confirm_delete ask "Delete the volume $vol and everything in it ($size)?" n; then
-        run "$tool" volume rm "$vol" || warn "Could not remove the volume $vol (a container still uses it?)"
+        run "$tool" volume rm "$vol" || warn "Could not remove the volume $vol"
       fi
     done <<<"$volumes"
   fi
@@ -1441,11 +1551,98 @@ git_as_owner() {
   fi
 }
 
+# Whether a file in a llama.cpp tree, by its path relative to the tree, is a
+# model or other weights. The small vocab files llama.cpp ships in models/
+# are part of its source.
+is_model_file() {
+  local rel=${1,,}
+  case "$rel" in
+    models/ggml-vocab-*) return 1 ;;
+    *.gguf | *.gguf.part | *.bin | *.safetensors | *.pt | *.pth | *.ckpt | *.onnx | *.ggml | *.llamafile | *.dat) return 0 ;;
+  esac
+  return 1
+}
+
+# Whether a relative path is in one of a llama.cpp tree's build folders
+# (build*, .build), and which one.
+build_dir_of() {
+  local top=${1%%/*}
+  [[ "$1" == */* ]] || return 1
+  case "$top" in build* | .build) printf '%s' "$top" ;; *) return 1 ;; esac
+}
+
+# The files in a llama.cpp tree that may be someone's own: one
+# "bytes<TAB>relative path" per line. In a git checkout these are the files
+# git does not track, ignored ones included (llama.cpp's .gitignore covers
+# *.gguf, *.bin and models/*), except build output and Python caches; in a
+# tree without git, model files and any file over 20 MB outside the build
+# folders. Model files inside a build folder are listed too. Fails when the
+# files cannot be listed.
+tree_own_files() {
+  local tree=$1 entry rel top
+  if [[ -d "$tree/.git" ]]; then
+    git_as_owner "$tree" status --porcelain >/dev/null 2>&1 || return 1
+    while IFS= read -r -d '' entry; do
+      case "$entry" in
+        "?? "* | "!! "*) rel=${entry:3} ;;
+        *) continue ;;
+      esac
+      [[ "$rel" == */ ]] && continue
+      if top=$(build_dir_of "$rel"); then
+        is_model_file "$rel" || continue
+      else
+        case "$rel" in __pycache__/* | */__pycache__/* | *.pyc) continue ;; esac
+      fi
+      printf '%s\t%s\n' "$(stat -c %s -- "$tree/$rel" 2>/dev/null || echo 0)" "$rel"
+    done < <(git_as_owner "$tree" status --porcelain --ignored --untracked-files=all -z 2>/dev/null)
+  else
+    [[ -d "$tree" ]] || return 1
+    while IFS= read -r -d '' rel; do
+      rel=${rel#./}
+      if build_dir_of "$rel" >/dev/null; then
+        is_model_file "$rel" || continue
+      fi
+      case "$rel" in models/ggml-vocab-*) continue ;; esac
+      printf '%s\t%s\n' "$(stat -c %s -- "$tree/$rel" 2>/dev/null || echo 0)" "$rel"
+    done < <(cd "$tree" && find . -xdev -name .git -prune -o -type f \( -size +20M -o -iname '*.gguf' -o -iname '*.gguf.part' -o -iname '*.bin' -o -iname '*.safetensors' -o -iname '*.pt' -o -iname '*.pth' -o -iname '*.ckpt' -o -iname '*.onnx' -o -iname '*.ggml' -o -iname '*.llamafile' -o -iname '*.dat' \) -print0 2>/dev/null)
+  fi
+  return 0
+}
+
+# Why a git checkout with nothing to commit still holds someone's work:
+# commits that no remote branch or tag holds, a stash, or other work trees
+# linked to it. Prints the reason; fails when there is none. When git cannot
+# tell, that is the reason.
+git_unpublished_work() {
+  local tree=$1 out
+  if ! out=$(git_as_owner "$tree" rev-list --max-count=1 HEAD --branches --not --remotes --tags 2>/dev/null); then
+    printf 'git cannot list its commits'
+    return 0
+  fi
+  if [[ -n "$out" ]]; then
+    printf 'it has commits that no remote branch or tag holds'
+    return 0
+  fi
+  if git_as_owner "$tree" rev-parse -q --verify refs/stash >/dev/null 2>&1; then
+    printf 'it has stashed changes'
+    return 0
+  fi
+  out=$(git_as_owner "$tree" worktree list --porcelain 2>/dev/null | grep -c '^worktree ' || true)
+  if ((${out:-0} > 1)); then
+    printf 'other work trees are linked to it'
+    return 0
+  fi
+  return 1
+}
+
 # Old llama.cpp source trees and builds, and llama.cpp programs in
-# /usr/local/bin. Trees with work not committed, and trees inside another
+# /usr/local/bin. A whole tree is offered only when it is a git checkout with
+# nothing git does not track besides build output, and no commit, stash or
+# work tree of its own; otherwise only its build folders are, unless they
+# hold model files. Trees with work not committed, and trees inside another
 # project (vendored or a submodule), are left alone.
 cleanup_llama_builds() {
-  local roots=() r trees tree list="" bytes bins=() b status
+  local roots=() r trees tree list="" builds="" bytes bins=() b status own count total d brel reason
   for r in /home /root /opt /srv /usr/local/src; do
     if [[ -d "$r" ]]; then roots+=("$r"); fi
   done
@@ -1467,14 +1664,46 @@ cleanup_llama_builds() {
         info "$tree has changes that are not committed; left alone."
         continue
       fi
+      if reason=$(git_unpublished_work "$tree"); then
+        info "$tree: $reason; left alone."
+        continue
+      fi
     fi
-    bytes=$(dir_size_bytes "$tree")
-    list+="$tree"$'\t'"$bytes"$'\n'
+    if ! own=$(tree_own_files "$tree"); then
+      info "$tree: its files cannot be listed; left alone."
+      continue
+    fi
+    if [[ -z "$own" && -d "$tree/.git" ]]; then
+      bytes=$(dir_size_bytes "$tree")
+      list+="$tree"$'\t'"$bytes"$'\n'
+      continue
+    fi
+    if [[ -n "$own" ]]; then
+      count=$(grep -c . <<<"$own")
+      total=$(awk -F'\t' '{s += $1} END {print s + 0}' <<<"$own")
+      say "$tree holds $count file(s) that may be yours ($(human_bytes "$total") in all), so it stays:"
+      # sed reads all its input, so sort never gets SIGPIPE.
+      sort -rn <<<"$own" | sed -n 1,5p | while IFS=$'\t' read -r bytes r; do info "$r ($(human_bytes "$bytes"))"; done
+      if ((count > 5)); then info "and $((count - 5)) more"; fi
+    else
+      info "$tree is not a git checkout, so setup cannot tell which of its files are yours; it stays."
+    fi
+    # Its build folders hold compiled programs only, unless a model was put
+    # in one.
+    for d in "$tree"/build* "$tree"/.build; do
+      [[ -d "$d" && ! -L "$d" ]] || continue
+      brel=${d##*/}
+      if awk -F'\t' -v p="$brel/" 'index($2, p) == 1 {found = 1} END {exit !found}' <<<"$own"; then
+        info "$d holds model files; it stays too."
+        continue
+      fi
+      builds+="$d"$'\t'"$(dir_size_bytes "$d")"$'\n'
+    done
   done <<<"$trees"
   for b in /usr/local/bin/llama-* /usr/local/bin/llama /usr/local/lib/libllama* /usr/local/lib/libggml*; do
     if [[ -e "$b" ]]; then bins+=("$b"); fi
   done
-  if [[ -z "$list" && ${#bins[@]} -eq 0 ]]; then
+  if [[ -z "$list$builds" && ${#bins[@]} -eq 0 ]]; then
     info "No old llama.cpp builds."
     return 0
   fi
@@ -1486,7 +1715,7 @@ cleanup_llama_builds() {
     fi
   fi
   if [[ -n "$list" ]]; then
-    say "Old llama.cpp source trees with no work in progress:"
+    say "Old llama.cpp checkouts with nothing in them that git does not track, apart from build output:"
     while IFS=$'\t' read -r tree bytes; do
       [[ -n "$tree" ]] || continue
       info "$tree ($(human_bytes "$bytes"))"
@@ -1496,6 +1725,19 @@ cleanup_llama_builds() {
         [[ -n "$tree" ]] || continue
         remove_path "$tree"
       done <<<"$list"
+    fi
+  fi
+  if [[ -n "$builds" ]]; then
+    say "Build folders of the llama.cpp trees that stay (compiled programs only):"
+    while IFS=$'\t' read -r d bytes; do
+      [[ -n "$d" ]] || continue
+      info "$d ($(human_bytes "$bytes"))"
+    done <<<"$builds"
+    if confirm_delete envs "Delete these build folders? The trees themselves stay." y; then
+      while IFS=$'\t' read -r d bytes; do
+        [[ -n "$d" ]] || continue
+        remove_path "$d"
+      done <<<"$builds"
     fi
   fi
   return 0
@@ -1831,15 +2073,28 @@ reload_sshd() {
   info "The SSH server is not running as a service right now; it reads the new config when it next starts."
 }
 
+# Whether an address from ss (127.0.0.1:22, [::1]:22, [::ffff:127.0.0.1]:22)
+# is on the loopback interface.
+is_loopback_addr() {
+  case "$1" in
+    127.* | "[::1]"* | ::1:* | "[::ffff:127."*) return 0 ;;
+  esac
+  return 1
+}
+
 # Works out the ports SSH really uses, from four places: the listening
 # sockets of sshd (or of systemd for Ubuntu 24.04's ssh.socket), the ports
-# sshd's config names (sshd -T), the ports ssh.socket names, and the server
-# ports of the SSH sessions open now. Sets:
-#   SSH_PORTS       the ports to keep open: those listened on and in use
-#   SSH_PORTS_ALL   every port any source names, never to be closed
-#   SSH_PORTS_SURE  1 when the sources agree, else 0 with SSH_PORTS_NOTE
+# sshd's config names (sshd -T), the ports ssh.socket names, and the SSH
+# sessions open now. Listeners on 127.0.0.1 or ::1, such as the remote
+# forwards of a session, do not count, and a connection counts as a session
+# only on a port sshd listens on, so the forwards that sessions carry do not
+# either. Sets:
+#   SSH_PORTS        the ports to keep open: those sshd listens on
+#   SSH_PORTS_CONFIG the ports sshd's config, or ssh.socket, names
+#   SSH_PORTS_ALL    every port any source names, never to be closed
+#   SSH_PORTS_SURE   1 when the sources agree, else 0 with SSH_PORTS_NOTE
 detect_ssh_ports() {
-  local out cfg_ports="" socket_ports="" socket_active=0 listen_ports="" session_ports="" line addr port users expected
+  local out cfg_ports="" socket_ports="" socket_active=0 listen_ports="" line addr port users expected
   if [[ -n "$(sshd_binary)" ]] && out=$(sshd_run -T 2>/dev/null); then
     # ListenAddress lines carry the port sshd uses; Port lines are only a
     # default for addresses without one.
@@ -1855,6 +2110,7 @@ detect_ssh_ports() {
     addr=$(awk '{print $4}' <<<"$line")
     port=${addr##*:}
     [[ "$port" =~ ^[0-9]+$ ]] || continue
+    is_loopback_addr "$addr" && continue
     users=$(grep -o 'users:(.*' <<<"$line" || true)
     if grep -qE '\("sshd(-session)?",' <<<"$users"; then
       listen_ports+="$port"$'\n'
@@ -1868,40 +2124,32 @@ detect_ssh_ports() {
     grep -qE '\("sshd(-session)?",' <<<"$line" || continue
     addr=$(awk '{print $3}' <<<"$line")
     port=${addr##*:}
-    if [[ "$port" =~ ^[0-9]+$ ]]; then session_ports+="$port"$'\n'; fi
+    [[ "$port" =~ ^[0-9]+$ ]] || continue
+    grep -qx "$port" <<<"$listen_ports" || continue
     # A session from this computer itself may come through a reverse tunnel.
-    case "$(awk '{print $4}' <<<"$line")" in
-      127.* | "[::1]"* | "[::ffff:127."*) SSH_LOOPBACK_SESSION=1 ;;
-    esac
+    if is_loopback_addr "$(awk '{print $4}' <<<"$line")"; then SSH_LOOPBACK_SESSION=1; fi
   done < <(ss -tnpH state established 2>/dev/null || true)
-  if [[ -n "$SSH_SESSION_PORT" ]]; then session_ports+="$SSH_SESSION_PORT"$'\n'; fi
-  session_ports=$(sed '/^$/d' <<<"$session_ports" | sort -un)
   if ((socket_active)); then expected=$socket_ports; else expected=$cfg_ports; fi
-  SSH_PORTS=$(printf '%s\n%s\n' "$listen_ports" "$session_ports" | sed '/^$/d' | sort -un | tr '\n' ' ')
+  SSH_PORTS=$(tr '\n' ' ' <<<"$listen_ports")
   SSH_PORTS=${SSH_PORTS% }
-  SSH_PORTS_ALL=$(printf '%s\n%s\n%s\n%s\n' "$listen_ports" "$session_ports" "$cfg_ports" "$socket_ports" | sed '/^$/d' | sort -un | tr '\n' ' ')
+  SSH_PORTS=${SSH_PORTS# }
+  SSH_PORTS_CONFIG=$(tr '\n' ' ' <<<"$expected")
+  SSH_PORTS_CONFIG=${SSH_PORTS_CONFIG% }
+  SSH_PORTS_CONFIG=${SSH_PORTS_CONFIG# }
+  SSH_PORTS_ALL=$(printf '%s\n%s\n%s\n%s\n' "$listen_ports" "$cfg_ports" "$socket_ports" "${SSH_SESSION_PORT:-}" | sed '/^$/d' | sort -un | tr '\n' ' ')
   SSH_PORTS_ALL=${SSH_PORTS_ALL% }
   SSH_PORTS_SURE=0
   SSH_PORTS_NOTE=""
   if [[ -z "$listen_ports" ]]; then
-    SSH_PORTS_NOTE="ss shows no SSH server listening"
+    SSH_PORTS_NOTE="ss shows no SSH server listening on the network"
   elif [[ -z "$expected" ]]; then
     SSH_PORTS_NOTE="sshd -T could not show the ports sshd's config names"
   elif [[ "$(tr '\n' ' ' <<<"$expected")" != "$(tr '\n' ' ' <<<"$listen_ports")" ]]; then
-    local named heard
-    named=$(tr '\n' ' ' <<<"$expected")
+    local heard
     heard=$(tr '\n' ' ' <<<"$listen_ports")
-    SSH_PORTS_NOTE="the config names port(s) ${named% } but sshd listens on ${heard% }"
+    SSH_PORTS_NOTE="the config names port(s) $SSH_PORTS_CONFIG but sshd listens on ${heard% }"
   else
-    local stray=""
-    for port in $session_ports; do
-      grep -qx "$port" <<<"$listen_ports" || stray+="$port "
-    done
-    if [[ -n "$stray" ]]; then
-      SSH_PORTS_NOTE="an open SSH session uses port(s) ${stray}that sshd no longer listens on"
-    else
-      SSH_PORTS_SURE=1
-    fi
+    SSH_PORTS_SURE=1
   fi
 }
 
@@ -2065,7 +2313,9 @@ sshd_apply() {
     rm -rf "$work"
     return 0
   fi
-  # The live change, with a copy of every file to go back to.
+  # The live change, with a copy of every file to go back to. Ctrl+C or a
+  # hangup is held off until the change has been checked, or rolled back.
+  sshd_hold_signals
   mkdir -p "$work/restore"
   (cd /etc/ssh && find . \( -type f -o -type l \) ! -name 'ssh_host_*' ! -name moduli -exec cp -a --parents {} "$work/restore/" \;)
   (cd /etc/ssh && find . \( -type f -o -type l \) ! -name 'ssh_host_*' ! -name moduli | sort) >"$work/files-before"
@@ -2076,28 +2326,54 @@ sshd_apply() {
   if sshd_run -t >"$work/err" 2>&1 && [[ "$(sshd_login_snapshot "")" == "$before" ]] && { [[ -z "$check" ]] || "$check" ""; }; then
     if [[ "$(sshd_config_checksum)" != "$sum_before" ]]; then SSHD_CHANGED=1; fi
     rm -rf "$work"
+    sshd_release_signals
     return 0
   fi
   warn "The SSH server config did not check out after $what; putting every file back."
-  sshd_restore "$work"
+  sshd_restore "$work" "$before"
   rm -rf "$work"
+  sshd_release_signals
   return 1
 }
 
-# Puts /etc/ssh back from sshd_apply's copy: files the change added go, the
-# others come back as they were.
+# INT, TERM and HUP are ignored while the live SSH server config changes, by
+# this script and by the programs it runs; afterwards the earlier handlers
+# come back, and if the terminal went away meanwhile, the run stops as it
+# would have on the hangup.
+SSHD_SAVED_TRAPS=""
+sshd_hold_signals() {
+  SSHD_SAVED_TRAPS=$(trap -p INT TERM HUP)
+  trap '' INT TERM HUP
+}
+
+sshd_release_signals() {
+  trap - INT TERM HUP
+  if [[ -n "$SSHD_SAVED_TRAPS" ]]; then eval "$SSHD_SAVED_TRAPS"; fi
+  SSHD_SAVED_TRAPS=""
+  if ((HAVE_TTY)) && ! { : >/dev/tty; } 2>/dev/null; then on_hangup; fi
+}
+
+# Puts /etc/ssh back from sshd_apply's copy: files the change added go, and
+# each file that differs comes back in one rename. Then sshd -t and the login
+# settings (BEFORE, sshd_login_snapshot's output) must be what they were.
 sshd_restore() {
-  local work=$1 f
+  local work=$1 before=${2:-} f tmp
   (cd /etc/ssh && find . \( -type f -o -type l \) ! -name 'ssh_host_*' ! -name moduli | sort) >"$work/files-after"
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
     rm -f -- "/etc/ssh/${f#./}"
   done < <(comm -13 "$work/files-before" "$work/files-after")
-  (cd "$work/restore" && find . \( -type f -o -type l \) -exec cp -a --parents {} /etc/ssh/ \;)
-  if sshd_run -t >/dev/null 2>&1; then
+  while IFS= read -r -d '' f; do
+    f=${f#./}
+    if [[ -e "/etc/ssh/$f" ]] && cmp -s -- "$work/restore/$f" "/etc/ssh/$f"; then continue; fi
+    mkdir -p "$(dirname "/etc/ssh/$f")"
+    tmp="$(dirname "/etc/ssh/$f")/.gmat-llm-restore.$$"
+    cp -a -- "$work/restore/$f" "$tmp" && mv -f -- "$tmp" "/etc/ssh/$f"
+  done < <(cd "$work/restore" && find . \( -type f -o -type l \) -print0)
+  if sshd_run -t >/dev/null 2>&1 && { [[ -z "$before" ]] || [[ "$(sshd_login_snapshot "")" == "$before" ]]; }; then
     info "The SSH server config is as it was before."
   else
-    die "The SSH server config could not be put back. Copy the files from $BACKUP_DIR/etc/ssh to /etc/ssh before sshd restarts, and run sudo sshd -t."
+    die "The SSH server config could not be put back as it was. Copy the files from $BACKUP_DIR/etc/ssh to /etc/ssh before sshd restarts, and run sudo sshd -t."
   fi
 }
 
@@ -2120,21 +2396,17 @@ SSHD_COMMENT_LINES=""
 SSHD_RESET_CONTENT=""
 
 change_forwarding_cleanup() {
-  local root=$1 rel nums tmp
+  local root=$1 rel nums
   while IFS=$'\t' read -r rel nums; do
     [[ -n "$rel" && -f "$root/$rel" ]] || continue
-    tmp=$(mktemp)
     awk -v nums="$nums" '
       BEGIN { n = split(nums, list, " "); for (i = 1; i <= n; i++) pick[list[i]] = 1 }
       (FNR in pick) { print "# disabled by gmat-llm setup: " $0; next }
-      { print }' "$root/$rel" >"$tmp"
-    cat "$tmp" >"$root/$rel"
-    rm -f "$tmp"
+      { print }' "$root/$rel" | replace_file "$root/$rel"
   done <<<"$SSHD_COMMENT_LINES"
   if [[ -n "$SSHD_RESET_CONTENT" ]]; then
     mkdir -p "$root/sshd_config.d"
-    printf '%s\n' "$SSHD_RESET_CONTENT" >"$root/sshd_config.d/${SSHD_RESET_DROPIN##*/}"
-    chmod 0644 "$root/sshd_config.d/${SSHD_RESET_DROPIN##*/}"
+    printf '%s\n' "$SSHD_RESET_CONTENT" | replace_file "$root/sshd_config.d/${SSHD_RESET_DROPIN##*/}" 0644
   fi
 }
 
@@ -2303,7 +2575,7 @@ cleanup_old_setup() {
   fi
   say "Looking for services, containers, processes, models and SSH tunnels of earlier setups."
   say "Nothing is removed without a yes. --yes alone removes programs and services of LLM software, never models,"
-  say "environments or container volumes (see --delete-old-models and --delete-old-envs)."
+  say "environments (see --delete-old-models and --delete-old-envs), containers or container volumes; containers are only stopped."
   cleanup_units
   cleanup_containers
   cleanup_listeners
@@ -2352,7 +2624,7 @@ missing_packages() {
 # The names of all installed packages, sorted, to tell afterwards which ones
 # an install brought in.
 installed_package_list() {
-  dpkg-query -W -f='${Status}\t${Package}\n' 2>/dev/null | awk -F'\t' '$1 == "install ok installed" {print $2}' | sort -u
+  dpkg-query -W -f='${Status}\t${Package}\n' 2>/dev/null | awk -F'\t' '$1 ~ / ok installed$/ {print $2}' | sort -u
 }
 
 # Records every package that is installed now and was not in BEFORE (a file
@@ -2364,6 +2636,19 @@ record_new_packages() {
     [[ -n "$pkg" ]] || continue
     record_installed "apt:$pkg"
   done < <(comm -13 "$before" <(installed_package_list))
+}
+
+# The uninstall of an earlier version removed cuda-keyring without purging
+# it. That leaves NVIDIA's apt entry without its key, and every apt update
+# fails until what is left of the package is purged.
+repair_removed_cuda_keyring() {
+  [[ "$(pkg_status cuda-keyring)" == *" config-files" ]] || return 0
+  say "cuda-keyring was removed but not purged: NVIDIA's apt entry is still there without its key, so apt update fails."
+  if confirm "Purge what is left of it (dpkg --purge cuda-keyring)?" y; then
+    run dpkg --purge cuda-keyring
+  else
+    warn "apt update will keep failing until you run: sudo dpkg --purge cuda-keyring"
+  fi
 }
 
 install_base_packages() {
@@ -2513,7 +2798,7 @@ disable_conflicting_cuda_sources() {
       DISABLED_CUDA_SOURCES+=("$f")
     done
   else
-    warn "apt update may fail with \"Conflicting values set for option Signed-By\" until these entries are removed."
+    die "With these entries on, adding cuda-keyring would make apt update fail (\"Conflicting values set for option Signed-By\"), so setup stops here; nothing was added. Turn them off or remove them, then run setup again."
   fi
 }
 
@@ -2535,6 +2820,16 @@ restore_cuda_sources() {
 
 install_cuda_toolkit() {
   NVCC=""
+  # NVIDIA's repository may be set up already, by hand or again after an
+  # uninstall; the driver pin belongs with it.
+  if pkg_installed cuda-keyring && [[ ! -f "$APT_PIN_FILE" ]]; then
+    say "NVIDIA's repository is set up (cuda-keyring is installed), but the pin that keeps the NVIDIA driver on Ubuntu's packages is missing."
+    if confirm "Write the driver pin $APT_PIN_FILE?" y; then
+      write_driver_pin
+    else
+      warn "Without the pin, apt may take the NVIDIA driver from NVIDIA's repository, which can mismatch Ubuntu's kernel modules."
+    fi
+  fi
   if NVCC=$(find_suitable_nvcc); then
     info "Using the CUDA compiler $NVCC (CUDA $(nvcc_version "$NVCC"))"
     return 0
@@ -2649,7 +2944,8 @@ install_llama_cpp() {
     if [[ -d "$src/.git" ]] && [[ "$(git -C "$src" rev-parse HEAD 2>/dev/null || true)" == "$LLAMA_CPP_COMMIT" ]]; then
       info "The llama.cpp $LLAMA_CPP_TAG source is present."
     else
-      say "Downloading the llama.cpp $LLAMA_CPP_TAG source (about 40 MB)."
+      say "Setup builds llama.cpp $LLAMA_CPP_TAG from source: about 40 MB to download from GitHub."
+      confirm "Download it?" y || die "The endpoint needs llama.cpp; nothing was downloaded. Run setup again when you are ready."
       remove_path "$src"
       run mkdir -p "$root"
       run git clone --depth 1 --branch "$LLAMA_CPP_TAG" "$LLAMA_CPP_GIT" "$src"
@@ -2717,7 +3013,8 @@ install_llama_swap() {
   if [[ -x "$dir/llama-swap" ]] && [[ -f "$dir/.sha256" ]] && [[ "$(cat "$dir/.sha256")" == "$LLAMA_SWAP_SHA256" ]]; then
     info "llama-swap v$LLAMA_SWAP_VERSION is installed."
   else
-    say "Downloading llama-swap v$LLAMA_SWAP_VERSION (about 22 MB)."
+    say "llama-swap v$LLAMA_SWAP_VERSION, the endpoint's proxy: about 22 MB to download from GitHub."
+    confirm "Download it?" y || die "The endpoint needs llama-swap; nothing was downloaded. Run setup again when you are ready."
     tmpdir=$(mktemp -d)
     run curl -fsSL --retry 5 -o "$tmpdir/$LLAMA_SWAP_ASSET" "$LLAMA_SWAP_BASE_URL/$LLAMA_SWAP_ASSET"
     run curl -fsSL --retry 5 -o "$tmpdir/$LLAMA_SWAP_CHECKSUMS" "$LLAMA_SWAP_BASE_URL/$LLAMA_SWAP_CHECKSUMS"
@@ -2742,14 +3039,19 @@ install_llama_swap() {
 
 install_software() {
   step "3. Install the build tools, CUDA, llama.cpp and llama-swap"
+  repair_removed_cuda_keyring
   install_base_packages
   install_cuda_toolkit
   install_llama_cpp
   install_llama_swap
-  if ((!DRY_RUN)); then
-    systemctl enable --now avahi-daemon.service >/dev/null 2>&1 || warn "Could not start avahi-daemon; the Mac will find this computer by scanning the network instead."
+  if confirm "Start avahi-daemon, so the Mac can find this computer by name ($(hostname).local)?" y; then
+    if ((!DRY_RUN)); then
+      systemctl enable --now avahi-daemon.service >/dev/null 2>&1 || warn "Could not start avahi-daemon; the Mac will find this computer by scanning the hotspot instead."
+    else
+      run systemctl enable --now avahi-daemon.service
+    fi
   else
-    run systemctl enable --now avahi-daemon.service
+    info "avahi-daemon is left as it is; the Mac finds this computer by scanning the hotspot, or with --address."
   fi
 }
 
@@ -2968,7 +3270,8 @@ plan_has_model() {
 }
 
 # Model folders and files this script made that the profile no longer uses,
-# such as an earlier quantization of the same model.
+# such as an earlier quantization of the same model or the vision file. They
+# cost a download to get back, so --yes alone keeps them.
 remove_stale_models() {
   local dir id f name
   [[ -d "$MODELS_DIR" ]] || return 0
@@ -2979,14 +3282,14 @@ remove_stale_models() {
       for f in "$dir"/*.gguf "$dir"/*.gguf.part; do
         name=$(basename "$f")
         plan_has_file "$id" "${name%.part}" && continue
-        if confirm "Delete $name ($(human_bytes "$(stat -c %s "$f")")), which the $PROFILE profile no longer uses?" y; then
+        if confirm_delete models "Delete $name ($(human_bytes "$(stat -c %s "$f")")), which the $PROFILE profile no longer uses?" y; then
           remove_path "$f"
           remove_path "$f.verified"
         fi
       done
       continue
     fi
-    if confirm "Delete $dir ($(human_bytes "$(dir_size_bytes "$dir")")), a model the $PROFILE profile does not use?" y; then
+    if confirm_delete models "Delete $dir ($(human_bytes "$(dir_size_bytes "$dir")")), a model the $PROFILE profile does not use?" y; then
       remove_path "$dir"
     fi
   done
@@ -3490,14 +3793,16 @@ EOT
 readonly SSHD_BLOCK_BEGIN="# BEGIN gmat-llm tunnel rules (written by gmat-llm setup; remove this block to undo)"
 readonly SSHD_BLOCK_END="# END gmat-llm tunnel rules"
 
+# FILE without the marked block, on standard output.
+without_sshd_block() {
+  awk -v begin="$SSHD_BLOCK_BEGIN" -v end="$SSHD_BLOCK_END" '$0 == begin {skip = 1} !skip {print} $0 == end {skip = 0}' "$1"
+}
+
 # Removes the marked block from FILE, if it is there.
 drop_sshd_block() {
-  local file=$1 tmp
+  local file=$1
   grep -qxF "$SSHD_BLOCK_BEGIN" "$file" 2>/dev/null || return 0
-  tmp=$(mktemp)
-  awk -v begin="$SSHD_BLOCK_BEGIN" -v end="$SSHD_BLOCK_END" '$0 == begin {skip = 1} !skip {print} $0 == end {skip = 0}' "$file" >"$tmp"
-  cat "$tmp" >"$file"
-  rm -f "$tmp"
+  without_sshd_block "$file" | replace_file "$file"
 }
 
 # Writes the tunnel user's rules under ROOT (/etc/ssh or a copy): as a
@@ -3507,19 +3812,19 @@ drop_sshd_block() {
 change_tunnel_rules() {
   local root=$1 main="$1/sshd_config" dropin
   dropin="$root/sshd_config.d/${SSHD_DROPIN##*/}"
-  drop_sshd_block "$main"
   if [[ "$SSHD_PLACEMENT" == dropin ]]; then
     mkdir -p "$root/sshd_config.d"
-    sshd_dropin >"$dropin"
-    chmod 0644 "$dropin"
+    sshd_dropin | replace_file "$dropin" 0644
+    drop_sshd_block "$main"
   else
     rm -f "$dropin"
-    if [[ -s "$main" && "$(tail -c 1 "$main")" != "" ]]; then printf '\n' >>"$main"; fi
+    # awk ends every line with a newline, so the block starts on its own line.
     {
+      without_sshd_block "$main"
       printf '%s\n' "$SSHD_BLOCK_BEGIN"
       sshd_dropin
       printf '%s\n' "$SSHD_BLOCK_END"
-    } >>"$main"
+    } | replace_file "$main"
   fi
 }
 
@@ -3550,8 +3855,34 @@ sshd_placements() {
   if sshd_reads_dropins; then printf '%s\n' dropin block; else printf '%s\n' block; fi
 }
 
+# Whether the tunnel user exists and setup's own rules are in the SSH server
+# config word for word and take effect, so that there is nothing to change.
+tunnel_access_in_place() {
+  local current
+  getent passwd "$TUNNEL_USER" >/dev/null 2>&1 || return 1
+  [[ -f /etc/ssh/sshd_config ]] || return 1
+  if [[ -f "$SSHD_DROPIN" ]]; then
+    current=$(cat "$SSHD_DROPIN")
+  else
+    current=$(awk -v b="$SSHD_BLOCK_BEGIN" -v e="$SSHD_BLOCK_END" '$0 == e {f = 0} f {print} $0 == b {f = 1}' /etc/ssh/sshd_config)
+  fi
+  [[ -n "$current" && "$current" == "$(sshd_dropin)" ]] || return 1
+  check_tunnel_rules "" >/dev/null 2>&1
+}
+
 setup_ssh_access() {
   local placement applied=0
+  if tunnel_access_in_place; then
+    info "The tunnel user $TUNNEL_USER and its SSH rules are in place and take effect; nothing to change."
+    # Its key file, which setup owns, is made again if it went missing.
+    ensure_tunnel_user
+    if [[ -f "$SSHD_DROPIN" ]]; then record_installed "file:$SSHD_DROPIN"; else record_installed "sshd-block"; fi
+    return 0
+  fi
+  say "The Mac reaches the endpoint through SSH as the system user $TUNNEL_USER, which has no password and no shell. These SSH server rules apply to that user only:"
+  sshd_dropin | indent
+  info "Before the change, setup checks on a copy of the config that the logins of every other user stay exactly as they are; open sessions stay open."
+  confirm "Add the user $TUNNEL_USER and these rules?" y || die "The Mac needs this user and these rules to open its tunnel; nothing was changed. Run setup again when you want them."
   ensure_tunnel_user
   if [[ ! -f /etc/ssh/sshd_config ]]; then
     if ((DRY_RUN)); then
@@ -3572,11 +3903,10 @@ $(sshd_dropin)"
   for placement in $(sshd_placements); do
     SSHD_PLACEMENT=$placement
     if [[ "$placement" == dropin ]]; then
-      say "The tunnel user's rules go in $SSHD_DROPIN, which sshd_config already reads:"
+      info "They go in $SSHD_DROPIN, which sshd_config already reads."
     else
-      say "The tunnel user's rules go in a marked block at the end of /etc/ssh/sshd_config. Setup does not make sshd_config read sshd_config.d, which would turn on the files there:"
+      info "They go in a marked block at the end of /etc/ssh/sshd_config. Setup does not make sshd_config read sshd_config.d, which would turn on the files there."
     fi
-    sshd_dropin | indent
     if sshd_apply change_tunnel_rules "the tunnel rules" check_tunnel_rules; then
       applied=1
       break
@@ -3620,39 +3950,174 @@ warn_network_listeners() {
   fi
 }
 
+# How ufw's rules treat new TCP connections to PORT, read from ufw show
+# added: one "kind<TAB>rule" line for each rule that covers the port. Kinds:
+# open (allow or limit from anywhere), restricted (allow or limit from some
+# addresses, to one address or on one interface only), blocked (deny or
+# reject from anywhere) and denied-some (deny or reject from some addresses).
+ufw_rules_for_port() {
+  local port=$1 rule spec words=() i w action dir src dst iface dport app proto simple covers restricted item first last kind
+  while IFS= read -r rule; do
+    [[ "$rule" == "ufw "* ]] || continue
+    spec=${rule#ufw }
+    spec=${spec%% comment *}
+    read -r -a words <<<"$spec"
+    ((${#words[@]} >= 2)) || continue
+    action=${words[0]}
+    case "$action" in allow | limit | deny | reject) ;; *) continue ;; esac
+    dir=in src="" dst="" iface="" dport="" app="" proto="" simple=""
+    i=1
+    while ((i < ${#words[@]})); do
+      w=${words[i]}
+      case "$w" in
+        in | log | log-all) ;;
+        out) dir=out ;;
+        on)
+          i=$((i + 1))
+          iface=${words[i]:-}
+          ;;
+        proto)
+          i=$((i + 1))
+          proto=${words[i]:-}
+          ;;
+        from)
+          i=$((i + 1))
+          src=${words[i]:-}
+          # A source port or application says nothing about the SSH port.
+          if [[ "${words[i + 1]:-}" == port || "${words[i + 1]:-}" == app ]]; then i=$((i + 2)); fi
+          ;;
+        to)
+          i=$((i + 1))
+          dst=${words[i]:-}
+          if [[ "${words[i + 1]:-}" == port ]]; then
+            i=$((i + 2))
+            dport=${words[i]:-}
+          elif [[ "${words[i + 1]:-}" == app ]]; then
+            i=$((i + 2))
+            app=${words[i]:-}
+          fi
+          ;;
+        *) simple=$w ;;
+      esac
+      i=$((i + 1))
+    done
+    [[ "$dir" == in ]] || continue
+    # The short form names a port, a service or an application profile.
+    if [[ -n "$simple" && -z "$dport" && -z "$app" ]]; then
+      if [[ "$simple" =~ ^([0-9:,]+|ssh)(/(tcp|udp))?$ ]]; then dport=$simple; else app=$simple; fi
+    fi
+    covers=0
+    if [[ -n "$dport" ]]; then
+      case "$dport" in */tcp) proto=tcp ;; */udp) proto=udp ;; esac
+      dport=${dport%/*}
+      [[ "$dport" == ssh ]] && dport=22
+      for item in ${dport//,/ }; do
+        if [[ "$item" == *:* ]]; then first=${item%%:*} last=${item##*:}; else first=$item last=$item; fi
+        [[ "$first" =~ ^[0-9]+$ && "$last" =~ ^[0-9]+$ ]] || continue
+        if ((port >= first && port <= last)); then covers=1; fi
+      done
+    elif [[ -n "$app" ]]; then
+      case "${app,,}" in openssh | ssh) [[ "$port" == 22 ]] && covers=1 ;; esac
+    else
+      # No port: the rule covers every port.
+      covers=1
+    fi
+    [[ "$proto" == udp ]] && covers=0
+    ((covers)) || continue
+    restricted=0
+    if [[ -n "$iface" ]]; then restricted=1; fi
+    case "$src" in "" | any | 0.0.0.0/0 | ::/0) ;; *) restricted=1 ;; esac
+    case "$dst" in "" | any | 0.0.0.0/0 | ::/0) ;; *) restricted=1 ;; esac
+    case "$action" in
+      allow | limit) if ((restricted)); then kind=restricted; else kind=open; fi ;;
+      *) if ((restricted)); then kind=denied-some; else kind=blocked; fi ;;
+    esac
+    printf '%s\t%s\n' "$kind" "$rule"
+  done < <(ufw show added 2>/dev/null || true)
+}
+
+# The firewall. Nothing here widens who can reach SSH or changes a rule:
+# when ufw is on, none of its rules are touched (the LLM endpoint listens on
+# 127.0.0.1 only and needs no rule); when it is off, it is turned on only if
+# every rule for the SSH port allows it from anywhere (or there is none, and
+# setup adds a rate-limited one), and the person agrees.
 setup_firewall() {
-  local status port
+  local status port active=0 rules rule policy add=() kept=""
   status=$(ufw status 2>/dev/null | first_line || true)
+  [[ "$status" == *"Status: active"* ]] && active=1
   detect_ssh_ports
   say "Firewall (ufw): ${status:-ufw not installed}"
   if ((!SSH_PORTS_SURE)); then
     FIREWALL_SKIPPED=1
     warn "The firewall is left as it is: the SSH port could not be worked out with confidence ($SSH_PORTS_NOTE), and a wrong guess would lock SSH out."
-    say "Check the port sshd listens on (sudo ss -ltnp | grep sshd), then turn the firewall on yourself:"
-    for port in ${SSH_PORTS_ALL:-22}; do info "sudo ufw limit $port/tcp"; done
-    info "sudo ufw default deny incoming"
-    info "sudo ufw enable"
+    if ((!active)); then
+      say "Check the port sshd listens on (sudo ss -ltnp | grep sshd), then turn the firewall on yourself:"
+      # The ports sshd's config names, and the one this session came in on.
+      for port in $(printf '%s %s\n' "${SSH_PORTS_CONFIG:-22}" "${SSH_SESSION_PORT:-}" | tr ' ' '\n' | sed '/^$/d' | sort -un); do info "sudo ufw limit $port/tcp"; done
+      info "sudo ufw default deny incoming"
+      info "sudo ufw enable"
+    fi
     return 0
   fi
-  if [[ "$status" == *"Status: active"* ]]; then
-    say "ufw is already on. Setup adds a rate-limited rule for SSH port(s) $SSH_PORTS and changes nothing else."
+  if ((active)); then
+    say "ufw is already on. Setup changes none of its rules: the LLM endpoint listens on 127.0.0.1 only and needs none, and SSH stays reachable exactly as it is now."
+    policy=$(ufw status verbose 2>/dev/null | sed -n 's/^Default: \([a-z]*\) (incoming).*/\1/p' | first_line || true)
     for port in $SSH_PORTS; do
-      run ufw limit "$port/tcp" comment "SSH, kept open by gmat-llm"
-      record_installed "ufw:limit $port/tcp"
+      rules=$(ufw_rules_for_port "$port")
+      if grep -q '^open' <<<"$rules"; then
+        info "SSH port $port is allowed by: $(grep '^open' <<<"$rules" | cut -f2- | first_line)"
+      elif grep -q '^restricted' <<<"$rules"; then
+        info "SSH port $port is allowed only by:"
+        grep '^restricted' <<<"$rules" | cut -f2- | indent
+        info "The Mac must connect from an address these allow; an iPhone hotspot gives addresses in 172.20.10.0/28."
+      elif [[ "$policy" == allow ]]; then
+        info "SSH port $port is allowed by ufw's default policy (allow incoming)."
+      else
+        warn "No ufw rule allows SSH port $port, so new SSH connections, the Mac's included, are refused. To allow the hotspot only: sudo ufw allow from 172.20.10.0/28 to any port $port proto tcp"
+      fi
+      if grep -q '^blocked' <<<"$rules"; then
+        warn "These ufw rules refuse SSH port $port from every address: $(grep '^blocked' <<<"$rules" | cut -f2- | tr '\n' ' ')"
+      fi
+      if grep -q '^denied-some' <<<"$rules"; then
+        info "These ufw rules refuse SSH port $port from some addresses: $(grep '^denied-some' <<<"$rules" | cut -f2- | tr '\n' ' ')"
+      fi
     done
     return 0
   fi
+  for port in $SSH_PORTS; do
+    rules=$(ufw_rules_for_port "$port")
+    if grep -q '^blocked' <<<"$rules"; then
+      FIREWALL_SKIPPED=1
+      warn "The firewall stays off: ufw has a rule that refuses SSH port $port from every address ($(grep '^blocked' <<<"$rules" | cut -f2- | first_line)), so turning it on would refuse new SSH connections."
+      return 0
+    fi
+    if grep -qE '^(restricted|denied-some)' <<<"$rules"; then
+      FIREWALL_SKIPPED=1
+      warn "The firewall stays off: ufw has rules that would decide, once it is on, which addresses reach SSH port $port, and setup cannot tell whether they let the Mac in:"
+      grep -E '^(restricted|denied-some)' <<<"$rules" | cut -f2- | indent >&2
+      say "Turned on, ufw would refuse SSH from the addresses these leave out. If they allow the addresses you connect from (an iPhone hotspot gives 172.20.10.0/28), turn it on yourself: sudo ufw enable"
+      return 0
+    elif grep -q '^open' <<<"$rules"; then
+      kept+="$(grep '^open' <<<"$rules" | cut -f2- | first_line)"$'\n'
+    else
+      add+=("$port")
+    fi
+  done
   warn_network_listeners
-  say "Setup can turn on the firewall with these rules:"
-  for port in $SSH_PORTS; do info "ufw limit $port/tcp: SSH, refusing an address that opens 6 or more connections within 30 seconds"; done
-  info "ufw default deny incoming, ufw default allow outgoing"
+  say "Setup can turn on the firewall:"
+  for port in "${add[@]}"; do info "add: ufw limit $port/tcp (SSH; refuses an address that opens 6 or more connections within 30 seconds)"; done
+  while IFS= read -r rule; do
+    [[ -n "$rule" ]] || continue
+    info "keep: $rule (your rule for SSH; setup does not change it)"
+  done <<<"$kept"
+  info "then: ufw default deny incoming, ufw default allow outgoing, ufw enable"
   info "mDNS (UDP 5353 to 224.0.0.251) stays allowed by ufw's default rules, so $(hostname).local keeps working."
-  if ! confirm "Turn on the firewall with these rules?" y; then
+  if ! confirm "Turn on the firewall like this?" y; then
     FIREWALL_SKIPPED=1
     say "The firewall stays off."
     return 0
   fi
-  for port in $SSH_PORTS; do
+  for port in "${add[@]}"; do
     run ufw limit "$port/tcp" comment "SSH, kept open by gmat-llm"
     record_installed "ufw:limit $port/tcp"
   done
@@ -4083,6 +4548,13 @@ print_summary() {
   say "Manage the server with: sudo gmat-llm status | test | logs | restart | add-client | remove-client | uninstall"
   if [[ -n "$BACKUP_DIR" ]] && ((!DRY_RUN)); then say "Backups of changed files: $BACKUP_DIR"; fi
   say "Log of this run: $LOG_FILE"
+  if [[ -n "$SSH_SESSION_PEER" ]] && ((!DRY_RUN)); then
+    say ""
+    say "Before you close this SSH session, check from the Mac that a new SSH login works:"
+    info "ssh ${INVOKING_USER:-you}@$(hostname).local true"
+    info "If it does not, fix it from this session, which stays open: sudo ufw disable turns the firewall off."
+    if [[ -n "$BACKUP_DIR" && -d "$BACKUP_DIR/etc/ssh" ]]; then info "The SSH server config from before this run is in $BACKUP_DIR/etc/ssh."; fi
+  fi
 }
 
 # ===========================================================================
@@ -4361,12 +4833,14 @@ change_remove_reset_dropin() {
   rm -f "$1/sshd_config.d/${SSHD_RESET_DROPIN##*/}"
 }
 
-# Removes packages setup installed, after apt shows what would go: when apt
-# would also remove a package setup did not install, it asks first.
+# Purges packages setup installed, after apt shows what would go: when apt
+# would also remove a package setup did not install, it asks first. Purging
+# also takes the packages' config files: cuda-keyring's include NVIDIA's
+# sources entry, which without the package's key would make apt update fail.
 remove_recorded_packages() {
   local pkgs=$1 plan extra p
   # shellcheck disable=SC2086 # package names, one word each
-  plan=$(apt-get -s remove $pkgs 2>/dev/null | awk '$1 == "Remv" {print $2}' || true)
+  plan=$(apt-get -s purge $pkgs 2>/dev/null | awk '$1 == "Purg" || $1 == "Remv" {print $2}' || true)
   extra=""
   for p in $plan; do
     grep -qxF "apt:$p" "$STATE_RECORD" 2>/dev/null || extra+="$p "
@@ -4379,21 +4853,24 @@ remove_recorded_packages() {
     }
   fi
   # shellcheck disable=SC2086 # package names, one word each
-  DEBIAN_FRONTEND=noninteractive apt-get remove -y $pkgs || warn "apt-get remove failed; the packages may still be installed."
+  DEBIAN_FRONTEND=noninteractive apt-get purge -y $pkgs || warn "apt-get purge failed; the packages may still be installed."
 }
 
 cmd_uninstall() {
   require_root
   require_installed
-  local models_bytes cuda_pkgs="" keep_cuda=1
+  local models_bytes cuda_pkgs=""
+  if [[ "${1:-}" == --no-tmux ]]; then ALLOW_NO_TMUX=1; fi
+  INVOKING_USER="${SUDO_USER:-}"
+  # The session's address is one of those the change is checked for. Over
+  # SSH, apt purges packages here too, so tmux is needed as for setup.
+  detect_ssh_session
+  require_multiplexer
   say "This removes the GMAT prep LLM server: the service, llama.cpp, llama-swap, the config and keys, the tunnel user and its SSH rules."
   confirm "Go on?" n || exit 0
   systemctl disable --now "$SERVICE_NAME" 2>/dev/null || true
   rm -f "$SERVICE_FILE"
   systemctl daemon-reload
-  INVOKING_USER="${SUDO_USER:-}"
-  # The session's address is one of those the change is checked for.
-  detect_ssh_session
   SSHD_CHANGED=0
   if [[ -f "$SSHD_DROPIN" ]] || grep -qxF "$SSHD_BLOCK_BEGIN" /etc/ssh/sshd_config 2>/dev/null; then
     if ! sshd_apply change_remove_tunnel_rules "removing the tunnel rules"; then
@@ -4419,12 +4896,16 @@ cmd_uninstall() {
     cuda_pkgs=$(grep -E '^apt:' "$STATE_RECORD" | sed 's/^apt://' | grep -E '^(cuda-|libcublas|libnvjitlink|libnvptxcompiler|libcufft|libcurand|libcusolver|libcusparse|libnpp|nsight)' | tr '\n' ' ' || true)
     if [[ -n "${cuda_pkgs// /}" ]] && confirm "Remove the CUDA toolkit packages setup installed ($cuda_pkgs)?" n; then
       remove_recorded_packages "$cuda_pkgs"
-      if ! pkg_installed cuda-keyring; then keep_cuda=0; fi
+    fi
+    # A removed but not purged cuda-keyring leaves NVIDIA's sources entry
+    # without its key, which makes every apt update fail: its leftovers go.
+    if grep -qxF "apt:cuda-keyring" "$STATE_RECORD" && [[ "$(pkg_status cuda-keyring)" == *" config-files" ]]; then
+      dpkg --purge cuda-keyring || warn "Could not purge what is left of cuda-keyring; run: sudo dpkg --purge cuda-keyring"
     fi
     # The driver pin goes only with NVIDIA's repository: while the repository
     # is there, the pin keeps apt from taking the driver from it.
     if grep -qxF "file:$APT_PIN_FILE" "$STATE_RECORD"; then
-      if ((keep_cuda == 0)) || ! pkg_installed cuda-keyring; then
+      if ! pkg_installed cuda-keyring; then
         rm -f "$APT_PIN_FILE"
         info "Removed the driver pin $APT_PIN_FILE, as NVIDIA's repository is gone."
       else
@@ -4492,6 +4973,10 @@ parse_setup_args() {
         DELETE_OLD_ENVS=1
         shift
         ;;
+      --no-tmux)
+        ALLOW_NO_TMUX=1
+        shift
+        ;;
       -h | --help)
         usage
         exit 0
@@ -4522,7 +5007,12 @@ start_log() {
     umask 077
     : >"$LOG_FILE"
   )
-  exec > >(tee -a "$LOG_FILE") 2>&1
+  # tee ignores SIGHUP, so a dropped connection cannot take the log, or a
+  # program still writing to it, down with it.
+  exec > >(
+    trap '' HUP
+    exec tee -a "$LOG_FILE"
+  ) 2>&1
   say "gmat-llm setup $GMAT_LLM_SCRIPT_VERSION, $(date -R)$( ((DRY_RUN)) && printf ', dry run: changes are shown, not made')"
   say "Log: $LOG_FILE"
 }
