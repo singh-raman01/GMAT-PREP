@@ -3,6 +3,7 @@ import { Effect, Option, Schema } from "effect"
 import { HttpClient, HttpClientRequest, HttpServer } from "effect/http"
 import { existsSync, readdirSync } from "node:fs"
 import { join } from "node:path"
+import { PDFDocument, StandardFonts } from "pdf-lib"
 import {
   AddedBook,
   type BookDetail,
@@ -391,6 +392,88 @@ describe("The cost preview", () => {
         expect(runRequests.flatMap((request) => quotedPages(request).map((page) => page.number))).toEqual(
           Array.from({ length: 25 }, (_, i) => i + 1).filter((number) => number !== 24)
         )
+      }),
+      AllJobKinds
+    ))
+
+  // A made-up book of numbered lines on each page after a title page.
+  const linedBook = async (title: string, pages: ReadonlyArray<ReadonlyArray<string>>) => {
+    const doc = await PDFDocument.create()
+    doc.setTitle(title)
+    doc.setCreationDate(new Date(Date.UTC(2026, 0, 1)))
+    doc.setModificationDate(new Date(Date.UTC(2026, 0, 1)))
+    const font = await doc.embedFont(StandardFonts.Helvetica)
+    for (const lines of [[title, "A made-up book"], ...pages]) {
+      const added = doc.addPage([612, 792])
+      lines.forEach((line, i) => added.drawText(line, { x: 40, y: 760 - i * 16, size: 9, font }))
+    }
+    return doc.save()
+  }
+
+  test("counts a passage's questions on a sampled page after the passage's first", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure()
+        yield* surveyByHeading
+        const curator = yield* curatorBrowser
+        const question = (n: number) => [
+          `${n}. According to the passage, item ${n} about topic ${Math.ceil(n / 4)} shows that`,
+          ...["first", "second", "third", "fourth", "fifth"].map((word, i) => `(${"ABCDE"[i]}) the ${word} reading of item ${n}`)
+        ]
+        // Ten passages, each with two questions on its page and two more on
+        // the next: 40 questions on 22 pages.
+        const pages = Array.from({ length: 10 }, (_, k) => {
+          const n = 4 * k + 1
+          return [
+            [
+              "Reading Comprehension",
+              `Questions ${n} to ${n + 3} refer to the passage below.`,
+              `Passage ${k + 1} tells how the town council of district ${k + 1} chose a site for its library.`,
+              `It met ${k + 2} times before the vote, and the records of district ${k + 1} are uneven.`,
+              ...question(n),
+              ...question(n + 1)
+            ],
+            ["Reading Comprehension", ...question(n + 2), ...question(n + 3)]
+          ]
+        }).flat()
+        const bytes = yield* Effect.promise(() =>
+          linedBook("Long Passages", [...pages, ["Reading Comprehension Answer Key", ...Array.from({ length: 40 }, (_, i) => `${i + 1}. C`)]])
+        )
+        const { book: view } = added(yield* upload(curator.cookie, bytes, { title: "Long Passages" }))
+        const previewed = yield* waitForStatus(curator.api, view.id, "previewed")
+        // Half the sampled pages start a passage and half carry on one; each
+        // holds two questions, so the 22 pages hold about 44.
+        expect(previewed.book.preview!.steps[2]).toMatchObject({ unit: "question", projectedPages: 44, costed: true })
+      }),
+      AllJobKinds
+    ))
+
+  test("counts the questions of a second set that numbers from 1 again", () =>
+    runWithWorker(
+      Effect.gen(function*() {
+        yield* configure()
+        yield* surveyByHeading
+        const curator = yield* curatorBrowser
+        // Two practice sets of 15 questions, three a page, each numbered from 1.
+        const pages = [1, 2].flatMap((set) =>
+          Array.from({ length: 5 }, (_, p) => [
+            "Problem Solving",
+            ...[1, 2, 3].flatMap((q) => {
+              const n = 3 * p + q
+              return [
+                `${n}. In practice set ${set}, what is ${n} plus ${set * 100}?`,
+                `(A) ${n}   (B) ${n + 1}   (C) ${n + set * 100}   (D) ${n + 2}   (E) ${n + 3}`
+              ]
+            })
+          ])
+        )
+        const bytes = yield* Effect.promise(() =>
+          linedBook("Two Practice Sets", [...pages, ["Answer Key", ...Array.from({ length: 15 }, (_, i) => `${i + 1}. C`)]])
+        )
+        const { book: view } = added(yield* upload(curator.cookie, bytes, { title: "Two Practice Sets" }))
+        const previewed = yield* waitForStatus(curator.api, view.id, "previewed")
+        // The sample's eight pages of questions hold 24, so the 12 pages hold about 29.
+        expect(previewed.book.preview!.steps[2]).toMatchObject({ unit: "question", projectedPages: 29 })
       }),
       AllJobKinds
     ))

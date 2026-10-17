@@ -60,6 +60,9 @@ export interface Candidate {
   // tabs of an MSR set; null when it stands alone, or when the readings do
   // not give what an RC question asks about.
   readonly stimulus: StimulusDraft | null
+  // Another passage, or another MSR set, on the same page that names it
+  // too: the passage's first words, or the set's tab titles.
+  readonly rival: string | null
   readonly stem: string
   readonly parts: ReadonlyArray<CandidatePart>
   readonly figure: boolean
@@ -92,28 +95,52 @@ export const DsOptions: ReadonlyArray<{ readonly label: Letter; readonly text: s
 export const dsStem = (question: string, statements: ReadonlyArray<string>) =>
   [question.trim(), ...statements.map((statement, index) => `(${index + 1}) ${statement.trim()}`)].join("\n\n")
 
+// The question a verbal stem asks: its last paragraph, and of that the last
+// sentence that asks something, so the words of an argument do not count.
+const askedIn = (stem: string) => {
+  const paragraph = stem.trim().split(/\n\s*\n/).at(-1) ?? stem
+  const sentences = paragraph.split(/(?<=[.!?:])\s+(?=[A-Z(])/)
+  return sentences.findLast((sentence) => /[?:]\s*$|\bEXCEPT\b/.test(sentence)) ?? sentences.at(-1) ?? paragraph
+}
+
+// Words that name support a claim has without asking to add any, as in "the
+// evidence offered in support of the conclusion" or "judging the support for
+// it"; "the most support for" still asks to add some.
+const SupportFor = /\b(?:in support of|the support for|supported by)\b/gi
+const Strengthens = /\b(?:strengthen|support)/i
+const Weakens = /\b(?:weaken|undermin|casts? doubt|calls? into question)/i
+const Flaw = /\bflaw|\bcriticism\b|\bcriticize|\bvulnerable\b|\bquestionable\b/i
+// Portions printed in boldface, however the question words it; a bold claim
+// is not one.
+const Boldface = /\bbold(?:faced?|[- ]faced|ed)\b|\bin bold\b|\bbold type\b/i
+
 // The Taxonomy's rules for a verbal question's type, where the question's own
-// words settle it: a question about portions in boldface or about how an
-// argument proceeds is Argument structure; an EXCEPT question takes the task
-// its sentence names, so "each strengthens EXCEPT" is a strengthen question;
-// and a passage question about what, if true, would strengthen or weaken a
-// claim is Application. Otherwise the type the reading gave stands.
+// words settle it: a question about portions in boldface is Argument
+// structure, and so is one about an argument's method of reasoning or how it
+// proceeds, unless it asks for a flaw; an EXCEPT question that the reading
+// typed as the opposite of the task its sentence names, strengthen for
+// weaken or weaken for strengthen, takes that task; and a passage question
+// about what, if true, would strengthen or weaken a claim is Application.
+// Otherwise the type the reading gave stands.
 export const settledType = (group: "cr" | "rc", stem: string, type: string) => {
-  // A Critical Reasoning stem is its argument, then the question asked.
-  const asked = stem.split(/\n\s*\n/).at(-1) ?? stem
+  const asked = askedIn(stem)
+  const named = asked.replace(SupportFor, "")
   if (group === "cr") {
-    if (/\bbold\s?faced?\b|\bmethods? of reasoning\b|\bproceeds by\b|\bargumentative (?:technique|strategy)\b/i.test(asked)) {
+    if (Boldface.test(asked)) return "verbal.cr-structure"
+    if (/\bmethods? of reasoning\b|\bproceeds by\b|\bargumentative (?:technique|strategy)\b/i.test(asked) && !Flaw.test(asked)) {
       return "verbal.cr-structure"
     }
-    const except = /[^.?!\n]*\bEXCEPT\b[^.?!\n]*/.exec(asked)?.[0]
-    if (except !== undefined && /\b(?:strengthen|support)/i.test(except)) return "verbal.cr-strengthen"
-    if (except !== undefined && /\b(?:weaken|undermine|casts? doubt|calls? into question)/i.test(except)) {
-      return "verbal.cr-weaken"
+    const except = /[^.?!\n]*\bEXCEPT\b[^.?!\n]*/.exec(named)?.[0]
+    if (except !== undefined) {
+      const strengthens = Strengthens.test(except)
+      const weakens = Weakens.test(except)
+      if (type === "verbal.cr-weaken" && strengthens && !weakens) return "verbal.cr-strengthen"
+      if (type === "verbal.cr-strengthen" && weakens && !strengthens) return "verbal.cr-weaken"
     }
   }
   if (
-    group === "rc" && /\bif true\b/i.test(asked) &&
-    /\b(?:strengthen|weaken|undermine|support|casts? doubt|calls? into question)/i.test(asked)
+    group === "rc" && /\bif (?:true|it were true|accurate|correct|valid)\b/i.test(asked) &&
+    (Strengthens.test(named) || Weakens.test(named))
   ) {
     return "verbal.rc-application"
   }
@@ -234,6 +261,7 @@ interface ReadItem {
   readonly section: string
   readonly questionType: string
   readonly stimulus: StimulusDraft | null
+  readonly rival?: string | null
   readonly stem: string
   readonly parts: ReadonlyArray<Omit<CandidatePart, "key">>
   readonly figure: boolean
@@ -285,12 +313,16 @@ const tpaItem = (item: TpaItem, page: number): ReadItem => ({
   difficulty: item.difficulty
 })
 
-const msrItem = (item: MsrQuestion, page: number, tabs: StimulusDraft | null): ReadItem => ({
+const msrItem = (
+  item: MsrQuestion,
+  page: number,
+  claim: { readonly stimulus: StimulusDraft | null; readonly rival: string | null }
+): ReadItem => ({
   number: item.number,
   page,
   section: "di",
   questionType: "di.msr",
-  stimulus: tabs,
+  ...claim,
   stem: item.stem,
   parts: item.options.length > 0
     ? [{ kind: "single-choice" as const, prompt: null, options: item.options.map((option) => ({ ...option, text: option.text.trim() })) }]
@@ -299,27 +331,48 @@ const msrItem = (item: MsrQuestion, page: number, tabs: StimulusDraft | null): R
   difficulty: item.difficulty
 })
 
-// Each MSR set's tabs, by the numbers of the questions about it, from every
-// question page of the set, in page order.
-const msrTabs = (sources: ReadonlyArray<MsrSource>) => {
-  const sets = new Map<string, Array<MsrSource>>()
-  for (const source of sources) {
-    const key = [...source.questions].toSorted((a, b) => a - b).join(",")
-    sets.set(key, [...(sets.get(key) ?? []), source])
+// Each MSR set's tabs, with the page its first source is on and the numbers
+// of the questions about it, from every question page of the set.
+const msrSets = (sources: ReadonlyArray<{ readonly page: number; readonly source: MsrSource }>) => {
+  const sets = new Map<string, Array<{ readonly page: number; readonly source: MsrSource }>>()
+  for (const entry of sources) {
+    const key = [...entry.source.questions].toSorted((a, b) => a - b).join(",")
+    sets.set(key, [...(sets.get(key) ?? []), entry])
   }
-  const byQuestion = new Map<number, StimulusDraft>()
-  for (const members of sets.values()) {
-    const tabs: StimulusDraft = {
+  return [...sets.values()].map((members): Claim => ({
+    page: Math.min(...members.map((member) => member.page)),
+    numbers: new Set(members[0]!.source.questions),
+    name: members.map((member) => member.source.title.trim()).join(", "),
+    stimulus: {
       kind: "tabs",
-      tabs: members.map((source) =>
+      tabs: members.map(({ source }) =>
         source.kind === "table" && source.table !== null
           ? { kind: "table" as const, title: source.title.trim(), body: source.text.trim(), table: tableDraft(source.table) }
           : { kind: "passage" as const, title: source.title.trim(), body: source.text.trim() }
       )
     }
-    for (const number of members[0]!.questions) if (!byQuestion.has(number)) byQuestion.set(number, tabs)
-  }
-  return byQuestion
+  }))
+}
+
+// A passage or an MSR set, with the page it starts on and the numbers of the
+// questions about it.
+interface Claim {
+  readonly page: number
+  readonly numbers: ReadonlySet<number>
+  // Its first words, or its tab titles, for naming it.
+  readonly name: string
+  readonly stimulus: StimulusDraft
+}
+
+// What a question asks about: the passage or set that names it on the
+// nearest page at or before its own, so a chapter that numbers each
+// passage's questions from 1 gives each its own. Two that name it on that
+// page are rivals, and the question waits for the Curator.
+const claimed = (claims: ReadonlyArray<Claim>, number: number, page: number) => {
+  const naming = claims.filter((claim) => claim.page <= page && claim.numbers.has(number))
+  const nearest = Math.max(...naming.map((claim) => claim.page))
+  const distinct = [...new Map(naming.filter((claim) => claim.page === nearest).map((claim) => [claim.name, claim] as const)).values()]
+  return { stimulus: distinct[0]?.stimulus ?? null, rival: distinct[1]?.name ?? null }
 }
 
 export const linkSet = (readings: SetReadings): ReadonlyArray<LinkedItem> => {
@@ -352,36 +405,50 @@ export const linkSet = (readings: SetReadings): ReadonlyArray<LinkedItem> => {
   }
 
   // A number seen before in the set is a second item with that number, which
-  // is skipped and counted rather than linked to the first item's key; the
-  // same item read again, as when a question runs onto the next page, is not.
-  const seen = new Map<number, string | null>()
+  // is skipped and counted rather than linked to the first item's key. Only
+  // the same item read again on the next page, as when a question runs onto
+  // it, is not: its text and options read alike, about the same Stimulus.
+  interface Seen {
+    readonly page: number
+    readonly text: string | null
+    readonly about: string | null
+  }
+  const seen = new Map<number, Seen>()
   const linked: Array<LinkedItem> = []
-  const repeated = (number: number, page: number, stem: string | null) => {
-    if (!seen.has(number)) {
-      seen.set(number, stem)
+  const repeated = (number: number, item: Seen) => {
+    const first = seen.get(number)
+    if (first === undefined) {
+      seen.set(number, item)
       return false
     }
-    const first = seen.get(number) ?? null
-    const sameItem = first === null || stem === null ||
-      similarity(trigrams(normalizeText(first)), trigrams(normalizeText(stem))) >= SameItem
-    if (!sameItem) linked.push({ _tag: "Skip", number, page, reason: "repeated-number" })
+    const readAgain = item.page === first.page + 1 && item.about === first.about &&
+      (first.text === null || item.text === null || similarity(trigrams(first.text), trigrams(item.text)) >= SameItem)
+    if (!readAgain) linked.push({ _tag: "Skip", number, page: item.page, reason: "repeated-number" })
     return true
   }
-  // Each passage, by the numbers of the questions about it; a number two
-  // passages claim keeps the first.
-  const passages = new Map<number, string>()
-  const sources: Array<MsrSource> = []
-  for (const { reading } of readings.questions) {
+  const seenAs = (item: ReadItem): Seen => ({
+    page: item.page,
+    text: comparableText(item.stem, item.parts),
+    about: item.stimulus === null ? null : JSON.stringify(item.stimulus)
+  })
+  // The passages and MSR sets, each naming the questions about it. A
+  // passage read with no text names nothing.
+  const passages: Array<Claim> = []
+  const sources: Array<{ readonly page: number; readonly source: MsrSource }> = []
+  for (const { page, reading } of readings.questions) {
     if (reading.role !== "questions") continue
     if (reading.group === "rc") {
       for (const passage of reading.value.passages) {
-        for (const number of passage.questions) if (!passages.has(number)) passages.set(number, passage.text.trim())
+        const body = passage.text.trim()
+        if (body !== "") {
+          passages.push({ page, numbers: new Set(passage.questions), name: opening(body), stimulus: { kind: "passage", body } })
+        }
       }
     }
-    if (reading.group === "msr") sources.push(...reading.value.sources)
-    if (reading.group === "ir") sources.push(...reading.value.msr.sources)
+    if (reading.group === "msr") sources.push(...reading.value.sources.map((source) => ({ page, source })))
+    if (reading.group === "ir") sources.push(...reading.value.msr.sources.map((source) => ({ page, source })))
   }
-  const tabs = msrTabs(sources)
+  const sets = msrSets(sources)
   const found = (number: number) => ({
     printed: printed.get(number) ?? [],
     explanation: explanations.get(number),
@@ -389,7 +456,7 @@ export const linkSet = (readings: SetReadings): ReadonlyArray<LinkedItem> => {
     label: onlyValue(labels.get(number))
   })
   const add = (item: ReadItem) => {
-    if (repeated(item.number, item.page, item.stem)) return
+    if (repeated(item.number, seenAs(item))) return
     linked.push(candidateOf(item, found(item.number)))
   }
   for (const { page, reading } of readings.questions) {
@@ -397,12 +464,15 @@ export const linkSet = (readings: SetReadings): ReadonlyArray<LinkedItem> => {
     switch (reading.group) {
       case "sc":
         for (const number of reading.value.numbers) {
-          if (!repeated(number, page, null)) linked.push({ _tag: "Skip", number, page, reason: "sentence-correction" })
+          if (!repeated(number, { page, text: null, about: null })) {
+            linked.push({ _tag: "Skip", number, page, reason: "sentence-correction" })
+          }
         }
         break
       case "ps":
         for (const item of reading.value.questions) {
-          if (repeated(item.number, page, item.stem)) continue
+          const parts = [{ kind: "single-choice" as const, prompt: null, options: item.options }]
+          if (repeated(item.number, { page, text: comparableText(item.stem, parts), about: null })) continue
           if (item.retired !== null) {
             linked.push({ _tag: "Skip", number: item.number, page, reason: item.retired })
             continue
@@ -414,7 +484,7 @@ export const linkSet = (readings: SetReadings): ReadonlyArray<LinkedItem> => {
             questionType: "quant.ps",
             stimulus: null,
             stem: item.stem,
-            parts: [{ kind: "single-choice", prompt: null, options: item.options }],
+            parts,
             figure: item.figure,
             difficulty: item.difficulty
           }, found(item.number)))
@@ -423,7 +493,7 @@ export const linkSet = (readings: SetReadings): ReadonlyArray<LinkedItem> => {
       case "ds":
         for (const item of reading.value.questions) {
           const stem = dsStem(item.question, item.statements)
-          if (repeated(item.number, page, stem)) continue
+          if (repeated(item.number, { page, text: comparableText(stem, []), about: null })) continue
           if (item.retired !== null) {
             linked.push({ _tag: "Skip", number: item.number, page, reason: item.retired })
             continue
@@ -444,13 +514,12 @@ export const linkSet = (readings: SetReadings): ReadonlyArray<LinkedItem> => {
       case "cr":
       case "rc":
         for (const item of reading.value.questions) {
-          const passage = reading.group === "rc" ? passages.get(item.number) : undefined
           add({
             number: item.number,
             page,
             section: "verbal",
             questionType: settledType(reading.group, item.stem, item.type),
-            stimulus: passage === undefined ? null : { kind: "passage", body: passage },
+            ...(reading.group === "rc" ? claimed(passages, item.number, page) : { stimulus: null, rival: null }),
             stem: item.stem,
             parts: [{ kind: "single-choice", prompt: null, options: item.options }],
             figure: false,
@@ -468,14 +537,14 @@ export const linkSet = (readings: SetReadings): ReadonlyArray<LinkedItem> => {
         for (const item of reading.value.questions) add(tpaItem(item, page))
         break
       case "msr":
-        for (const item of reading.value.questions) add(msrItem(item, page, tabs.get(item.number) ?? null))
+        for (const item of reading.value.questions) add(msrItem(item, page, claimed(sets, item.number, page)))
         break
       case "ir":
         // An older Book's Integrated Reasoning, each item as the type it maps onto.
         for (const item of reading.value.ta) add(taItem(item, page))
         for (const item of reading.value.gi) add(giItem(item, page))
         for (const item of reading.value.tpa) add(tpaItem(item, page))
-        for (const item of reading.value.msr.questions) add(msrItem(item, page, tabs.get(item.number) ?? null))
+        for (const item of reading.value.msr.questions) add(msrItem(item, page, claimed(sets, item.number, page)))
         break
     }
   }
@@ -519,6 +588,7 @@ const candidateOf = (
     section: item.section,
     questionType: item.questionType,
     stimulus: item.stimulus,
+    rival: item.rival ?? null,
     stem: item.stem.trim(),
     parts: item.parts.map((part, index) => ({
       kind: part.kind,
@@ -616,16 +686,44 @@ export const tableProblems = (table: TableDraft): ReadonlyArray<string> => {
 const contents = (stimulus: StimulusDraft | null): ReadonlyArray<ContentDraft & { readonly title?: string }> =>
   stimulus === null ? [] : stimulus.kind === "tabs" ? stimulus.tabs : [stimulus]
 
+// An RC question whose passage no reading names.
+export const NoPassage: Reason = { code: "structure", detail: "The readings do not say which passage it asks about." }
+
+// An MSR question whose sources no reading names.
+export const NoSources: Reason = { code: "structure", detail: "The readings do not give the sources it asks about." }
+
+// Whether a reason is that the passage does not render, which another
+// reading of the same passage can settle.
+export const isPassageRender = (reason: Reason) =>
+  reason.code === "render" && reason.detail.startsWith("The passage does not render")
+
+// A passage's first words, for naming it.
+const opening = (text: string) => {
+  const words = text.split(/\s+/)
+  return words.length <= 8 ? text : `${words.slice(0, 8).join(" ")}…`
+}
+
 // Every problem a Question has on its own, before it is compared with the
 // Question Bank.
-export const candidateProblems = (candidate: Candidate): ReadonlyArray<Reason> => {
+export const candidateProblems = (
+  candidate: Candidate,
+  // What it asks about as Learners will see it, when that is another
+  // Book's reading of the same passage.
+  shown: StimulusDraft | null = candidate.stimulus
+): ReadonlyArray<Reason> => {
   const reasons: Array<Reason> = [...partProblems(candidate)]
   if (candidate.stem === "") reasons.push({ code: "structure", detail: "Its question text is empty." })
-  if (candidate.questionType.startsWith("verbal.rc-") && candidate.stimulus === null) {
-    reasons.push({ code: "structure", detail: "The readings do not say which passage it asks about." })
-  }
-  if (candidate.questionType === "di.msr" && candidate.stimulus === null) {
-    reasons.push({ code: "structure", detail: "The readings do not give the sources it asks about." })
+  if (candidate.questionType.startsWith("verbal.rc-") && candidate.stimulus === null) reasons.push(NoPassage)
+  if (candidate.questionType === "di.msr" && candidate.stimulus === null) reasons.push(NoSources)
+  if (candidate.rival !== null && candidate.stimulus !== null) {
+    reasons.push({
+      code: "structure",
+      detail: candidate.stimulus.kind === "tabs"
+        ? `Two sets of sources on its page name it: ${contentsName(candidate.stimulus)} and ${candidate.rival}.`
+        : `Two passages on its page name it: "${
+          candidate.stimulus.kind === "passage" ? opening(candidate.stimulus.body) : ""
+        }" and "${candidate.rival}".`
+    })
   }
   for (const content of contents(candidate.stimulus)) {
     if (content.kind !== "table" && content.kind !== "chart") continue
@@ -671,9 +769,15 @@ export const candidateProblems = (candidate: Candidate): ReadonlyArray<Reason> =
       detail: `The answer key says ${candidate.answerKey}, but the explanation says ${candidate.explanationAnswer}.`
     })
   }
+  // A passage's problem and the question's own are kept apart, so another
+  // Book's reading of the passage can settle the first without the second.
+  for (const content of contents(shown)) {
+    const problem = content.kind === "passage" && content.body !== "" ? renderProblem(content.body) : undefined
+    if (problem !== undefined) reasons.push({ code: "render", detail: `The passage does not render: ${problem}` })
+  }
   const texts: ReadonlyArray<readonly [string, string]> = [
-    ...contents(candidate.stimulus).flatMap((content) =>
-      content.body === "" ? [] : [[content.kind === "passage" ? "passage" : "text with its figure", content.body] as const]
+    ...contents(shown).flatMap((content) =>
+      content.kind === "passage" || content.body === "" ? [] : [["text with its figure", content.body] as const]
     ),
     ["question", candidate.stem],
     ...candidate.parts.flatMap((part, index) => [
@@ -696,6 +800,10 @@ export const candidateProblems = (candidate: Candidate): ReadonlyArray<Reason> =
   return reasons
 }
 
+// An MSR set's tab titles, for naming it.
+const contentsName = (stimulus: StimulusDraft) =>
+  stimulus.kind === "tabs" ? stimulus.tabs.map((tab) => tab.title).join(", ") : stimulus.kind
+
 // The text compared when looking for the same Question in the Bank: its
 // question, and each Part's words and options.
 export const comparableText = (
@@ -706,6 +814,15 @@ export const comparableText = (
     [stem, ...parts.flatMap((part) => [...(part.prompt === null ? [] : [part.prompt]), ...part.options.map((option) => option.text)])]
       .join(" | ")
   )
+
+// The text compared when looking for near matches: a Data Sufficiency
+// Question's question and statements alone, since every one has the same
+// five choices, which would make different ones look alike.
+export const nearText = (
+  questionType: string,
+  stem: string,
+  parts: ReadonlyArray<{ readonly prompt: string | null; readonly options: ReadonlyArray<{ readonly text: string }> }>
+) => comparableText(stem, questionType === "di.ds" ? [] : parts)
 
 // Three-character pieces of the text with every number as #, for finding
 // near matches. A Variant is a copy with changed numbers or wording, so

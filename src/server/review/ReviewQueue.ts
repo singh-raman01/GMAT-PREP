@@ -9,6 +9,7 @@ import {
   KeysDiffer,
   KeyOverrideView,
   MergeTargetChecking,
+  NoOtherPassage,
   OptionNoteView,
   PublishableReasons,
   QuestionId,
@@ -21,7 +22,16 @@ import {
   ReviewReason,
   SourceView
 } from "../../api/Review.ts"
-import { KeyCodes, readLinkReasons, recheckSources, RepeatCodes, UnsureCodes } from "../books/bankWrites.ts"
+import {
+  KeyCodes,
+  loadBank,
+  moveQuestion,
+  readLinkReasons,
+  recheckSources,
+  RepeatCodes,
+  repeatOf,
+  UnsureCodes
+} from "../books/bankWrites.ts"
 import { Db } from "../db/Database.ts"
 import {
   approaches,
@@ -35,14 +45,15 @@ import {
   questions,
   reviewItems,
   solverRuns,
-  sources
+  sources,
+  stimuli
 } from "../db/schema.ts"
 import { SolverRuns } from "../books/enrichment.ts"
 import { JobStore } from "../jobs/JobStore.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { runGate } from "./gate.ts"
 import { QuestionRefresh, RefreshCap } from "./refreshJob.ts"
-import { assignUndecided } from "./reserve.ts"
+import { assignUndecided, releaseUnfitting } from "./reserve.ts"
 import { drafts } from "./stranded.ts"
 import { stimulusViews } from "../stimuli/stimuli.ts"
 
@@ -89,6 +100,7 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
   publish(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | CannotPublish>
   withdraw(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen>
   keepAsVariant(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen>
+  usePassage(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | NoOtherPassage>
   merge(
     id: ReviewItemId
   ): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | KeysDiffer | MergeTargetChecking>
@@ -314,6 +326,9 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
       // Reserve decision now; one published while the run goes on waits for
       // the run's end.
       const decideReserve = assignUndecided.pipe(Effect.provideService(Db, db), Effect.orDie)
+      // A passage in the Reserve that loses a Question may no longer fit a
+      // Blueprint slot.
+      const releaseShrunk = releaseUnfitting.pipe(Effect.provideService(Db, db), Effect.orDie)
 
       // Questions that went back to draft are checked again by a job, which
       // can write new Approaches and notes.
@@ -340,6 +355,7 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
         inTransaction(Effect.gen(function*() {
           const row = yield* openItem(id, isQuestion)
           yield* setQuestionStatus(row.questionId!, "withdrawn")
+          yield* releaseShrunk
           return yield* decide(row, "withdrawn")
         })).pipe(Effect.flatMap(viewOf), oneAtATime)
 
@@ -364,6 +380,50 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
           const [updated] = yield* db.select().from(reviewItems).where(eq(reviewItems.id, row.id)).pipe(Effect.orDie)
           return updated!
         })).pipe(Effect.flatMap(viewOf), oneAtATime)
+
+      // The same passage as the related Question's, which this one's nearly
+      // copies: the Question keeps its words and moves to that passage, and
+      // goes back through enrichment and the Publish Gate in a job. It is
+      // then compared with that passage's Questions, as linking would.
+      const usePassage = (id: ReviewItemId) =>
+        Effect.gen(function*() {
+          const row = yield* inTransaction(Effect.gen(function*() {
+            const row = yield* openItem(id, repeats)
+            const questionId = row.questionId!
+            const [question] = yield* db.select().from(questions).where(eq(questions.id, questionId)).pipe(Effect.orDie)
+            const [other] = yield* db.select({ stimulusId: questions.stimulusId }).from(questions)
+              .where(eq(questions.id, row.relatedQuestionId!)).pipe(Effect.orDie)
+            const [passage] = other?.stimulusId === null || other?.stimulusId === undefined
+              ? []
+              : yield* db.select().from(stimuli).where(eq(stimuli.id, other.stimulusId)).pipe(Effect.orDie)
+            if (
+              question === undefined || question.stimulusId === null || passage === undefined ||
+              passage.kind !== "passage" || passage.id === question.stimulusId
+            ) {
+              return yield* new NoOtherPassage()
+            }
+            const hash = yield* moveQuestion(questionId, { id: passage.id, hash: passage.normalizedHash }).pipe(
+              Effect.provideService(Db, db),
+              Effect.orDie
+            )
+            const bank = yield* loadBank(question.section).pipe(Effect.provideService(Db, db))
+            const pieces = bank.find((entry) => entry.id === questionId)?.trigrams ?? new Set<string>()
+            const repeat = repeatOf(questionId, hash!, pieces, passage.id, bank)
+            const kept = readLinkReasons(question.linkReasons).filter((reason) => !RepeatReasons.has(reason.code))
+            const now = yield* Clock.currentTimeMillis
+            yield* db.update(questions).set({
+              linkReasons: JSON.stringify(repeat === undefined ? kept : [...kept, repeat.reason]),
+              relatedQuestionId: repeat?.related ?? null,
+              status: "draft",
+              updatedAt: now
+            }).where(eq(questions.id, questionId)).pipe(Effect.orDie)
+            yield* db.update(reviewItems).set({ relatedQuestionId: repeat?.related ?? null }).where(eq(reviewItems.id, row.id))
+              .pipe(Effect.orDie)
+            yield* refresh([questionId], "Checking a Question moved to another passage")
+            return row
+          }))
+          return yield* viewOf((yield* db.select().from(reviewItems).where(eq(reviewItems.id, row.id)).pipe(Effect.orDie))[0]!)
+        }).pipe(oneAtATime)
 
       // The same Question: its Sources join the related one, and it is
       // withdrawn, marked as merged into it, so a Learner's history with it
@@ -423,6 +483,7 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
             const now = yield* Clock.currentTimeMillis
             yield* db.update(questions).set({ status: "withdrawn", mergedInto: target, updatedAt: now })
               .where(eq(questions.id, row.questionId!)).pipe(Effect.orDie)
+            yield* releaseShrunk
             yield* recheckSources(target).pipe(Effect.provideService(Db, db), Effect.orDie)
             yield* refresh([target], "Checking a merged Question again")
             return updated
@@ -524,6 +585,7 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
         publish,
         withdraw,
         keepAsVariant,
+        usePassage,
         merge,
         dismiss,
         overrideKey,

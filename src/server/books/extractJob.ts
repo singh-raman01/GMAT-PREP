@@ -17,6 +17,7 @@ import {
   type Linked,
   linkCandidate,
   loadBank,
+  loadPassages,
   recordSkip,
   retireStale
 } from "./bankWrites.ts"
@@ -223,19 +224,42 @@ const linkStep = (params: typeof Params.Type, setsLinked: number, stepsDone: num
         banks.set(section, loaded)
         return loaded
       })
+    const passages = yield* loadPassages
     const counts: Record<Linked, number> = { created: 0, merged: 0, relinked: 0, unchanged: 0, skipped: 0 }
     for (const item of linked) {
       const reader = readers.get(item.page)
-      const outcome = item._tag === "Skip"
-        ? yield* recordSkip(params.bookId, set.name, params.mapVersion, item)
-        : yield* linkCandidate({
-          bookId: params.bookId,
-          set: set.name,
-          mapVersion: params.mapVersion,
-          candidate: item,
-          origin: { model: reader?.model ?? "", promptVersion: reader?.promptVersion ?? "" }
-        }, yield* bankFor(item.section))
-      counts[outcome] += 1
+      if (item._tag === "Skip") {
+        counts[yield* recordSkip(params.bookId, set.name, params.mapVersion, item)] += 1
+        continue
+      }
+      const bank = yield* bankFor(item.section)
+      // Questions of other Books the item sent back to the Publish Gate,
+      // such as those a repaired passage settles, get a job of their own,
+      // queued with the change so none is left waiting.
+      const outcome = yield* db.transaction(() =>
+        Effect.gen(function*() {
+          const outcome = yield* linkCandidate({
+            bookId: params.bookId,
+            set: set.name,
+            mapVersion: params.mapVersion,
+            candidate: item,
+            origin: { model: reader?.model ?? "", promptVersion: reader?.promptVersion ?? "" }
+          }, bank, passages)
+          if (outcome.sentBack.length === 0) return outcome
+          const inBook = yield* db.selectDistinct({ id: sources.questionId }).from(sources)
+            .where(and(eq(sources.bookId, params.bookId), inArray(sources.questionId, [...outcome.sentBack])))
+          const unchecked = outcome.sentBack.filter((id) => !inBook.some((row) => row.id === id))
+          if (unchecked.length > 0) {
+            yield* queueJob(
+              QuestionRefresh,
+              { questionIds: unchecked, reason: `Checking Questions ${params.title} changed` },
+              RefreshCap
+            )
+          }
+          return outcome
+        })
+      ).pipe(Effect.orDie)
+      counts[outcome.linked] += 1
     }
     const summary = [
       counts.created > 0 ? `${counts.created} new` : undefined,

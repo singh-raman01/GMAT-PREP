@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull } from "drizzle-orm"
+import { and, eq, inArray, isNull, ne } from "drizzle-orm"
 import { Clock, Context, Effect, Layer, Semaphore } from "effect"
 import { ReserveSection, SkillCount, ThinSkillThreshold, UnknownSection } from "../../api/Bank.ts"
 import { bandOf } from "../../api/difficulty.ts"
@@ -71,6 +71,7 @@ export class Bank extends Context.Service<Bank, {
           if (!taxonomy.sections.some((each) => each.id === section)) return yield* new UnknownSection({ section })
           const held = yield* db.select({
             id: questions.id,
+            status: questions.status,
             questionType: questions.questionType,
             hash: questions.normalizedHash,
             difficulty: currentDifficulty,
@@ -81,17 +82,22 @@ export class Bank extends Context.Service<Bank, {
             .leftJoin(stimuli, eq(stimuli.id, questions.stimulusId))
             .where(and(
               eq(questions.section, section),
-              eq(questions.status, "published"),
+              ne(questions.status, "withdrawn"),
               eq(questions.reserve, true),
               isNull(questions.releasedAt)
             ))
             .pipe(Effect.orDie)
-          // A passage's Questions are released together.
-          const units = Map.groupBy(held, (question) => question.stimulusId ?? question.id)
+          // A passage's Questions are released together, with any being
+          // checked again at the time, so none stays held for Mocks alone.
+          const units = new Map(
+            [...Map.groupBy(held, (question) => question.stimulusId ?? question.id)]
+              .filter(([, members]) => members.some((member) => member.status === "published"))
+          )
           const chosen = releaseOrder(
             [...units].map(([id, members]) => ({
               id,
-              size: members.length,
+              // Counted as the Reserve table counts it: published Questions.
+              size: members.filter((member) => member.status === "published").length,
               questionType: members[0]!.questionType,
               band: bandOf(members.reduce((total, member) => total + Number(member.difficulty), 0) / members.length),
               hash: members[0]!.stimulusHash ?? members[0]!.hash

@@ -42,18 +42,18 @@ Each extracted question is enriched: tagged with its Skills from the Taxonomy, g
 
 The rest wait in the Review Queue, each with every reason:
 
-- answer choices that are not A to E, a passage question with no passage, or text whose math does not render;
+- answer choices that are not A to E, a passage question with no passage or with two, or text whose math does not render;
 - no key, a key that disagrees with the explanation, or another book giving another key;
 - a figure the text does not hold;
-- a near match, or the same text with another key, to a question already in the bank;
+- a near match, or the same text with another key, to a question already in the bank, including a question about a passage another edition prints with a few words changed;
 - tags that do not fit the Taxonomy;
 - a solve that disagrees with the key, or an Approach that misses it;
 - a missing note on a wrong choice;
 - a book's difficulty label two bands from the estimate.
 
-You can publish past a solver's doubt or a difficulty mismatch, change the key with a reason (the question's Approaches and notes are written again and it is checked again), keep a near match as a Variant or merge it into the other question, or withdraw it. Fixing the Book Map checks each question again, and questions it no longer covers leave the bank. The book's page shows what became of every question it held.
+You can publish past a solver's doubt or a difficulty mismatch, change the key with a reason (the question's Approaches and notes are written again and it is checked again), keep a near match as a Variant or merge it into the other question, move a question about a passage another edition reprints to the other question's passage when they are the same passage, or withdraw it. Fixing the Book Map checks each question again, and questions it no longer covers leave the bank. The book's page shows what became of every question it held.
 
-A quarter of each book's questions is held back for Mocks, spread over question types and difficulty bands, with a passage's questions kept together. The Books screen shows how many each Section holds back and can release some into Practice Sets; release cannot be undone. It also lists Skills with fewer than 15 questions.
+A quarter of each book's questions is held back for Mocks, spread over question types and difficulty bands, with a passage's questions kept together, whichever book they come from. A passage that grows or shrinks past what a Mock could serve is released. The Books screen shows how many each Section holds back and can release some into Practice Sets, a passage at a time; release cannot be undone. It also lists Skills with fewer than 15 questions.
 
 If a reply was unusable, "Check again" asks once more for the tags, solves, Approaches or notes. Questions waiting for a check that no job will run, as after a cancelled job, are counted at the top of the Review Queue with a button to check them.
 

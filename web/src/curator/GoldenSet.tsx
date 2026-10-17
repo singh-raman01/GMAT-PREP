@@ -6,7 +6,9 @@ import { call } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
 import { dayAndTime } from "../format.ts"
 import { linkProps } from "../router.ts"
-import { RichInline, RichText } from "../RichText.tsx"
+import { RichText } from "../RichText.tsx"
+import { StimulusDetails } from "../stimulus/StimulusPane.tsx"
+import { PartsWithKeys } from "./QuestionParts.tsx"
 import { afterStreamClosed, useJobEvents } from "./jobEvents.ts"
 
 // The golden set: the Curator approves the first Book's Questions with their
@@ -323,26 +325,9 @@ const Candidate = (
         {candidate.approved && <span className="tag golden-tag">Approved</span>}
       </h3>
       <div className="question-body">
-        {candidate.passage !== null && (
-          <details className="explanation">
-            <summary>The passage</summary>
-            <RichText source={candidate.passage} />
-          </details>
-        )}
+        {candidate.stimulus !== null && <StimulusDetails stimulus={candidate.stimulus} />}
         <RichText source={candidate.stem} />
-        <ol className="choices">
-          {candidate.options.map((option) => (
-            <li key={option.label} className={option.label === candidate.key ? "choice is-key" : "choice"}>
-              <span className="choice-letter">
-                {option.label === candidate.key ? <span className="mark">{option.label}</span> : option.label}
-              </span>
-              <span className="choice-text">
-                <RichInline source={option.text} />
-                {option.label === candidate.key && <span className="visually-hidden">(the key)</span>}
-              </span>
-            </li>
-          ))}
-        </ol>
+        <PartsWithKeys parts={candidate.parts} joinedKey={candidate.key} />
       </div>
       <p className="quiet">
         {candidate.approved ? "Your Skills" : "The model's Skills"}: {skillName(candidate.primarySkill)}

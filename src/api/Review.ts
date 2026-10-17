@@ -167,6 +167,10 @@ export const KeyOverrideReason = Schema.String.check(
   })
 )
 
+// Moving a Question to the related Question's passage needs both to ask
+// about passages, different ones.
+export class NoOtherPassage extends Schema.TaggedError<NoOtherPassage>()("NoOtherPassage", {}, { httpApiStatus: 409 }) {}
+
 // A merge would lose a key the Curator chose: the Question's key is a Key
 // Override that the related Question's key does not match.
 export class KeysDiffer extends Schema.TaggedError<KeysDiffer>()(
@@ -210,6 +214,13 @@ export class ReviewApi extends HttpApiGroup.make("review")
     HttpApiEndpoint.post("keepAsVariant", "/review/:id/variant", {
       ...decided,
       error: [ReviewItemNotFound, ReviewItemNotOpen]
+    }),
+    // A near match whose passage nearly copies the related Question's: the
+    // same passage, so the Question keeps its words and moves to that
+    // passage, and is checked again.
+    HttpApiEndpoint.post("usePassage", "/review/:id/passage", {
+      ...decided,
+      error: [ReviewItemNotFound, ReviewItemNotOpen, NoOtherPassage]
     }),
     // A near match or same text: the same Question, so this one's Sources
     // join the related Question and this one goes, with any golden-set

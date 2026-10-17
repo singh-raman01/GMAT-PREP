@@ -71,8 +71,9 @@ export interface Picked {
 // any status, unseen Questions come before Seen ones; under a Skill, those
 // whose primary Skill it is come before those that have it as a secondary.
 // A passage's matching Questions are taken together, in the order the Bank
-// holds them, at the place of the best of them, so a set serves them one
-// after another; the set size may cut the last passage short.
+// holds them, which is the order the Book prints them, at the place of the
+// best of them, so a set serves them one after another; the set size may
+// cut the last passage short.
 export const pickByFilters = (
   pool: ReadonlyArray<PoolQuestion>,
   history: History,
@@ -108,7 +109,9 @@ export interface SimilarTarget {
 const Slack = 1e-9
 
 // Unseen Questions open to the Profile with the target's primary Skill and
-// Question Type and a Difficulty within 0.5 of its own, nearest first.
+// Question Type and a Difficulty within 0.5 of its own, nearest first. Those
+// picked about one passage come together, at the place of the nearest of
+// them, in the order the Bank holds them.
 export const pickSimilar = (
   pool: ReadonlyArray<PoolQuestion>,
   seen: ReadonlySet<string>,
@@ -126,7 +129,11 @@ export const pickSimilar = (
     question.primarySkill === target.primarySkill &&
     gap(question) <= SimilarDifficulty + Slack
   )
-  return hashOrder(near, salt).toSorted((a, b) => gap(a) - gap(b)).slice(0, count).map((question) => question.id)
+  const picked = hashOrder(near, salt).toSorted((a, b) => gap(a) - gap(b)).slice(0, count)
+  const place = new Map(pool.map((question, index) => [question.id, index] as const))
+  return [...Map.groupBy(picked, (question) => question.stimulusId ?? question.id).values()]
+    .flatMap((members) => members.toSorted((a, b) => place.get(a.id)! - place.get(b.id)!))
+    .map((question) => question.id)
 }
 
 // One of a Book's items, with its Question.
