@@ -26,6 +26,14 @@ export interface Marker {
   readonly label: string
 }
 
+// A level to read the lines against, such as a target, drawn dashed across
+// the chart.
+export interface Guide {
+  readonly id: string
+  readonly y: number
+  readonly label: string
+}
+
 // A chart is drawn at the width it is shown, up to MaxWidth, so its text is
 // the page's size on a phone as on a desktop rather than scaled down.
 const MaxWidth = 640
@@ -58,11 +66,12 @@ const scale = (domain: readonly [number, number], range: readonly [number, numbe
 }
 
 export const LineChart = (
-  { description, series, markers = [], xDomain, xSteps = QuestionSteps, yDomain, xLabel, yTicks, yLabel }: {
+  { description, series, markers = [], guides = [], xDomain, xSteps = QuestionSteps, yDomain, xLabel, yTicks, yLabel }: {
     // What the chart shows, in words, for a screen reader.
     readonly description: string
     readonly series: ReadonlyArray<LineSeries>
     readonly markers?: ReadonlyArray<Marker>
+    readonly guides?: ReadonlyArray<Guide>
     readonly xDomain: readonly [number, number]
     // The steps the x axis's labels may take, such as weeks for days.
     readonly xSteps?: ReadonlyArray<number>
@@ -101,6 +110,12 @@ export const LineChart = (
           />
         )
       )}
+      {guides.map((guide) => (
+        <g key={`guide-${guide.id}`} className="chart-line tone-guide dashed">
+          <polyline points={`${Margin.left},${clampY(guide.y)} ${width - Margin.right},${clampY(guide.y)}`} />
+          <title>{guide.label}</title>
+        </g>
+      ))}
       {series.map((each) => (
         <g key={each.id} className={`chart-line tone-${each.tone}${each.dashed === true ? " dashed" : ""}`}>
           {each.points.length > 1 && (

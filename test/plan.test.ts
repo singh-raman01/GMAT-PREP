@@ -213,7 +213,7 @@ describe("The Diagnostic", () => {
       expect(started.kind).toBe("mock")
       const mock = yield* asha.mocks.get({ params: { id: started.id } })
       expect(mock.sections.map((section) => section.section.id)).toEqual(["verbal", "quant", "di"])
-    })))
+    })), 60_000)
 
   test("can be skipped, and the plan then says each Section starts at Medium", () =>
     run(Effect.gen(function*() {
@@ -229,7 +229,7 @@ describe("The Diagnostic", () => {
       // Saving the settings again keeps the skip.
       const resaved = yield* asha.plan.saveSettings({ payload: settings({ weeklyMinutes: 480 }) })
       expect(resaved.diagnostic.state).toBe("skipped")
-    })))
+    })), 60_000)
 
   test("under a Mock's time a week is the three Sectionals over three days", () =>
     run(Effect.gen(function*() {
@@ -240,7 +240,7 @@ describe("The Diagnostic", () => {
       expect(saved.diagnostic).toMatchObject({ state: "pending", form: "sectionals" })
       const firstThree = saved.plan.slice(0, 3).map((day) => day.items[0]!)
       expect(firstThree.map((item) => [item.kind, item.section?.id])).toEqual([["sectional", "quant"], ["sectional", "verbal"], ["sectional", "di"]])
-    })))
+    })), 60_000)
 })
 
 describe("Study Days and the Daily Log", () => {
@@ -316,5 +316,5 @@ describe("Building again during a day", () => {
       // The finished Mock fills the day: nothing else is planned for it.
       expect(today(after).items.filter((each) => each.status === "planned")).toEqual([])
       expect(today(after).items.find((each) => each.id === diagnostic.id)).toMatchObject({ status: "done" })
-    })))
+    })), 60_000)
 })

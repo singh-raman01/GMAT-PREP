@@ -97,7 +97,7 @@ Every Question you answer wrong, or right but slowly in a timed set, or by a gue
 
 ## Retries
 
-A Question you missed comes back on a Retry Ladder: 2 Study Days later the Question itself, 7 days later a Question like it you have not seen (a Sibling, of the same type and Skill and close in Difficulty), and 21 days later another. The Practice page lists what is due today, with one button for the untimed retries and one for the timed ones, 20 at a time, the longest waiting first; a Question you were slow on, and every Sibling, comes timed, and a slow one gets 1.5 times its Target Time. A miss puts the step back by 2 days. Get all three right and the entry is resolved, and stays in your Error Log as Resolved; a Sibling step with no Sibling left is skipped, and the entry says so. The Curator's Siblings page shows the Skills, by Question Type, running out of Siblings.
+A Question you missed comes back on a Retry Ladder: 2 Study Days later the Question itself, 7 days later a Question like it you have not seen (a Sibling, of the same type and Skill and close in Difficulty), and 21 days later another. The Practice page lists what is due today, with one button for the untimed retries and one for the timed ones, 20 at a time, those for your weakest Skills first and then the longest waiting; a Question you were slow on, and every Sibling, comes timed, and a slow one gets 1.5 times its Target Time. A miss puts the step back by 2 days. Get all three right and the entry is resolved, and stays in your Error Log as Resolved; a Sibling step with no Sibling left is skipped, and the entry says so. The Curator's Siblings page shows the Skills, by Question Type, running out of Siblings.
 
 ## Progress
 
@@ -111,9 +111,15 @@ Progress shows how your practice is going, in five views:
 
 Every chart has its numbers in a table below it.
 
+## Study Plan
+
+The Study Plan sets out each Study Day from your test date, target Total, hours a week and days off, which you set on its Settings page along with your time zone and when a Study Day starts. It begins with a Diagnostic, a Mock or, with under 2 hours 25 minutes a week, the three Sectionals; you can skip it, and each Section is then practised at Medium until it has 20 timed answers. Then come sets on your Weak Areas, mixed practice, and due Retries, which take at most a fifth of a day. A set follows what most often goes wrong in its Weak Area, such as Questions with the same Trap Pattern for traps, and is pitched where you get about two in three right. Over the last 4 weeks there is a Mock a week, the last at least 3 days before the test, as many as the Mock Reserve can serve. Without a test date the plan covers 2 weeks at a time.
+
+Today lists the day's items, each with a Start button; an item is done once the set, Sectional or Mock started from it ends. The days ahead show the rest, with what did not fit and why: work you miss is never piled onto later days. The plan is made again each Study Day, when you change the settings, after a Mock, and once a Section reaches 20 timed answers. The Daily Log keeps each day's time, Questions, accuracy, Mocks, planned items and which were done, with a note of your own. A time zone change waits for the next rollover, so no Study Day is cut in two.
+
 ## Scores
 
-Scores shows each Section's Score Estimate, and the Total once all three have one, with the trend of each Study Day's estimates and your Official Scores marked on it. Enter an Official Score from an official practice exam or the GMAT itself to calibrate them: each one is matched with your estimates as they stood that day, so it calibrates only the Sections you had an estimate for by then. One shifts each Section's scale to match it, and two or more fit it, as long as your estimates on those days were far enough apart to say how the scale runs.
+Scores shows each Section's Score Estimate, and the Total once all three have one, against the targets your Study Plan sets, with the trend of each Study Day's estimates, the targets and your Official Scores marked on it. Enter an Official Score from an official practice exam or the GMAT itself to calibrate them: each one is matched with your estimates as they stood that day, so it calibrates only the Sections you had an estimate for by then. One shifts each Section's scale to match it, and two or more fit it, as long as your estimates on those days were far enough apart to say how the scale runs.
 
 ## Check it
 
