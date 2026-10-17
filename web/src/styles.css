@@ -1896,20 +1896,51 @@ input.number-input {
 }
 
 /* On a narrow screen the pane folds, under a title that opens it. */
-.stimulus > details > summary {
+.stimulus-toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
   cursor: pointer;
 }
 
-.stimulus > details > summary .stimulus-title {
-  display: inline;
+.stimulus-toggle::before {
+  content: "";
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-block: 0.35em solid transparent;
+  border-inline-start: 0.5em solid currentColor;
+  transition: transform 120ms ease;
 }
 
-.stimulus > details[open] > summary {
-  margin-bottom: 0.75rem;
+.stimulus-toggle[aria-expanded="true"]::before {
+  transform: rotate(90deg);
 }
 
-.stimulus > details > :not(summary) + :not(summary) {
-  margin-top: 0.75rem;
+@media (prefers-reduced-motion: reduce) {
+  .stimulus-toggle::before {
+    transition: none;
+  }
+}
+
+.stimulus-body {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.stimulus-body[hidden] {
+  display: none;
+}
+
+.stimulus-body > * {
+  min-width: 0;
 }
 
 @media (min-width: 64rem) {

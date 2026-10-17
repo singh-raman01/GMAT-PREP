@@ -116,12 +116,14 @@ const useWide = () => {
 // The pane beside a Question. On a wide screen it scrolls on its own, so it
 // takes focus for the keyboard to scroll it. On a narrow screen it stands
 // above the Question, and folds away for the next Questions about the same
-// Stimulus, so their choices are not far below. position is the Question's
-// place in its set.
+// Stimulus, so their choices are not far below. Both layouts share one tree,
+// so turning a tablet keeps the tab and the table's sort the Learner chose.
+// position is the Question's place in its set.
 export const StimulusPane = (
   { stimulus, position }: { readonly stimulus: StimulusView; readonly position: number }
 ) => {
   const title = useId()
+  const body = useId()
   const wide = useWide()
   const same = JSON.stringify(stimulus)
   // Open for the first Question about it; folded for the next ones. The fold
@@ -133,24 +135,29 @@ export const StimulusPane = (
     setShown({ same, position })
     setOpen(shown.same !== same)
   }
-  const heading = <h2 id={title} className="stimulus-title">{titles[stimulus.kind]}</h2>
-  const content = stimulus.kind === "tabs"
-    ? <Tabs tabs={stimulus.tabs} />
-    : <ContentOf content={stimulus} label={titles[stimulus.kind]} />
-  if (wide) {
-    return (
-      <section className="stimulus" aria-labelledby={title} tabIndex={0}>
-        {heading}
-        {content}
-      </section>
-    )
-  }
+  const shownNow = wide || open
   return (
-    <section className="stimulus" aria-labelledby={title}>
-      <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-        <summary>{heading}</summary>
-        {content}
-      </details>
+    <section className="stimulus" aria-labelledby={title} tabIndex={wide ? 0 : undefined}>
+      <h2 id={title} className="stimulus-title">
+        {wide
+          ? titles[stimulus.kind]
+          : (
+            <button
+              type="button"
+              className="stimulus-toggle"
+              aria-expanded={open}
+              aria-controls={body}
+              onClick={() => setOpen(!open)}
+            >
+              {titles[stimulus.kind]}
+            </button>
+          )}
+      </h2>
+      <div id={body} className="stimulus-body" hidden={!shownNow}>
+        {stimulus.kind === "tabs"
+          ? <Tabs tabs={stimulus.tabs} />
+          : <ContentOf content={stimulus} label={titles[stimulus.kind]} />}
+      </div>
     </section>
   )
 }
