@@ -467,6 +467,7 @@ const QuestionScreen = (
             parts={parts}
             mistakes={current.mistakes}
             onFailure={onFailure}
+            questionId={current.question.id}
           />
           {!locked && (
             <div className="actions debrief-actions">
@@ -702,6 +703,7 @@ const ResultRow = (
                 parts={review.served.question.parts}
                 mistakes={review.served.mistakes}
                 onFailure={onFailure}
+                questionId={review.served.question.id}
               />
             )}
           </>

@@ -21,6 +21,7 @@ import {
   type TargetTimeView
 } from "../../../src/api/Settings.ts"
 import { TargetSecondsRange } from "../../../src/api/targetTimes.ts"
+import type { TutorSpendView } from "../../../src/api/Tutor.ts"
 import { call } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
 
@@ -272,6 +273,7 @@ export const CuratorSettings = ({ onLocked, onStopped, onTestStarted }: Props) =
         onFailure={handle}
       />
 
+      <TutorCap onFailure={handle} />
       <TargetTimes onFailure={handle} />
 
       <SectionBlueprint onFailure={handle} />
@@ -778,6 +780,81 @@ const SectionBlueprint = ({ onFailure }: { readonly onFailure: (failure: { reado
             {problems.map((problem) => <p key={problem}>{problem}</p>)}
           </div>
         )}
+      </form>
+    </section>
+  )
+}
+
+// Tutor Chat's monthly cap (decision 106): what it spent this month, in
+// the app's time zone, and the cap to stop at.
+const TutorCap = ({ onFailure }: { readonly onFailure: (failure: { readonly _tag: string }) => void }) => {
+  const id = useId()
+  const [spend, setSpend] = useState<TutorSpendView>()
+  const [typed, setTyped] = useState("")
+  const [problem, setProblem] = useState<string>()
+  const [saved, setSaved] = useState<string>()
+  const busy = useRef(false)
+
+  useEffect(() => {
+    let live = true
+    void call((client) => client.curatorTutor.spend()).then((result) => {
+      if (!live) return
+      if (result._tag === "Failure") return onFailure(result.failure)
+      setSpend(result.success)
+      setTyped(String(result.success.cap))
+    })
+    return () => {
+      live = false
+    }
+    // Loads once, when the screen opens.
+  }, [])
+
+  if (spend === undefined) return null
+  const save = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setSaved(undefined)
+    const cap = Number(typed.trim())
+    if (typed.trim() === "" || !Number.isFinite(cap) || cap < 0 || cap > 10_000) {
+      return setProblem("Give the cap in dollars, from 0 to 10,000.")
+    }
+    setProblem(undefined)
+    if (busy.current) return
+    busy.current = true
+    const result = await call((client) => client.curatorTutor.saveCap({ payload: { cap } }))
+    busy.current = false
+    if (result._tag === "Failure") return onFailure(result.failure)
+    setSpend(result.success)
+    setSaved("Cap saved.")
+  }
+  return (
+    <section className="group" aria-labelledby={`${id}-title`}>
+      <h2 id={`${id}-title`}>Tutor Chat</h2>
+      <p className="group-about">
+        Tutor Chat calls the model as Learners ask, so its spend is capped each month. It has spent{" "}
+        {formatDollars(spend.spent)} this month; once it reaches the
+        cap, the chat says so until the month ends or you raise it.
+      </p>
+      <form className="tutor-cap" noValidate onSubmit={(event) => void save(event)}>
+        <div className="field">
+          <label htmlFor={`${id}-cap`}>Monthly cap, dollars</label>
+          <input
+            id={`${id}-cap`}
+            className="number-input"
+            type="text"
+            inputMode="decimal"
+            autoComplete="off"
+            value={typed}
+            onChange={(event) => {
+              setSaved(undefined)
+              setTyped(event.target.value)
+            }}
+          />
+        </div>
+        <div className="actions">
+          <button type="submit" className="button">Save the cap</button>
+          <p className="saved" role="status">{saved ?? ""}</p>
+        </div>
+        {problem !== undefined && <p className="problem" role="alert">{problem}</p>}
       </form>
     </section>
   )

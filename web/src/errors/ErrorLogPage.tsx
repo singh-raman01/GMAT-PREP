@@ -16,6 +16,7 @@ import { DebriefPanel } from "../practice/DebriefPanel.tsx"
 import { AnsweredOptions } from "../practice/PracticeSet.tsx"
 import { RichText } from "../RichText.tsx"
 import { StimulusDetails } from "../stimulus/StimulusPane.tsx"
+import { MyReports } from "../tutor/MyReports.tsx"
 
 // The Error Log: every Question answered wrong, slowly or by a guess, one
 // entry each, the latest first, a page at a time, with filters for every way
@@ -289,6 +290,7 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
             )}
           </>
         )}
+      <MyReports onFailure={handle} />
     </>
   )
 }
@@ -370,6 +372,7 @@ const EntryRow = (
                   mistakes={opened.detail.served.mistakes}
                   onMistakeChanged={onChanged}
                   onFailure={onFailure}
+                  questionId={opened.detail.served.question.id}
                 />
               )}
               {opened.detail.entry.ladder !== null && opened.detail.entry.ladder.steps.length > 0 && (

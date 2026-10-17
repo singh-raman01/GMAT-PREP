@@ -117,6 +117,10 @@ Every Skill and Question Type gets a Lesson: its rules, the ways to solve its qu
 
 Learners find the approved Lessons under Lessons, and a Debrief links to the Lesson on its question's main Skill. Opening a Lesson counts its worked examples as seen, so they never change your scores later. Its check is an untimed set of five questions on the subject. The Study Plan sets a Lesson before practice when a Weak Area's misses are mostly a concept gap, and the Lesson's ways to solve it when they are mostly a wrong approach.
 
+## Tutor Chat and reports
+
+Under any Debrief, Ask the tutor opens a chat about that question: ask why your answer went wrong or how to see it faster. The tutor sees the question, its key, the ways to solve it and your own answers and misses on its Skill, and takes the key as correct. Asking the same thing again shows the earlier reply at no cost. If you believe a question is wrong, Report a problem sends your words to the Curator's Review Queue; the question stays as it is until the Curator keeps it, changes its key or withdraws it, and your reports are listed at the bottom of the Error Log with the decision. Tutor Chat calls the model as you ask, so the Curator sets a monthly cap under Settings, 5 dollars until changed.
+
 ## Study Plan
 
 The Study Plan sets out each Study Day from your test date, target Total, hours a week and days off, which you set on its Settings page along with your time zone and when a Study Day starts. It begins with a Diagnostic, a Mock or, with under 2 hours 25 minutes a week, the three Sectionals; you can skip it, and each Section is then practised at Medium until it has 20 timed answers. Then come sets on your Weak Areas, mixed practice, and due Retries, which take at most a fifth of a day. A set follows what most often goes wrong in its Weak Area, such as Questions with the same Trap Pattern for traps, and is pitched where you get about two in three right. Over the last 4 weeks there is a Mock a week, the last at least 3 days before the test, as many as the Mock Reserve can serve. Without a test date the plan covers 2 weeks at a time.

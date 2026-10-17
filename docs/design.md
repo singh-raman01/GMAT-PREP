@@ -183,7 +183,6 @@ Question Bank, written by the worker and by Curator decisions:
 | sources | Question, with a Book, question set, page and number, the Book's key, explanation and label, and whether it joined a Question already in the Bank; or a generation batch |
 | key overrides | Part, previous key, new key, reason, time |
 | review items | Question, or a Book page extraction could not read; reasons, the related Question, status, decision, time |
-| problem reports | Question, Profile, text, status |
 | lessons | subject (Skill or Question Type), version, status (draft, approved or rejected), basis, content, words, worked-example and check Questions, model, prompt version, job, written and decided times, note (decision 93) |
 | generation batches | spec, status, counts |
 
@@ -202,7 +201,8 @@ Profiles and activity, written by the server:
 | mistake labels | Profile, Response, Part, Mistake Type the Learner set, time (the app's own are worked out, not stored) |
 | retry skips | Profile, entry, Retry Ladder step, time, note: a Sibling step with no Sibling left |
 | official scores | Profile, date, kind, Total and Section scores |
-| tutor messages | Profile, Question, message, reply, model, prompt version, tokens, time |
+| tutor messages | Profile, Question, message and the key it is compared by, reply, the message it reused, model, prompt version, tokens, cost, time (decision 104) |
+| problem reports | Profile, Question, the Learner's words, the Review Queue item it joined, time (decision 107) |
 | plan completions | Plan Item, the Session or Lesson that completed it, time |
 | daily notes | Profile, Study Day, note |
 
@@ -698,6 +698,12 @@ These came up while building a ticket. Like the starting values above, they can 
 100. The check is an untimed Practice Set of the Lesson's 5 check Questions, started from the Lesson's page or its plan item. One no longer published with the subject outside the Reserve is replaced by another of the subject's Questions, never a worked example, and those a running Sectional or Mock holds are left out, so the check can be shorter when the subject runs short.
 101. The Study Plan adds Lessons as remedies: for a Weak Area whose misses are most often a Concept gap, its subject's whole Lesson (its words at 200 a minute plus the check's Target Times and 20%) before its untimed set; for a Wrong approach, the Lesson's methods part (its words) before its timed set. A Lesson comes once in a plan, only while approved and not yet done since that version was approved: the whole Lesson by finishing its check, the methods by marking any part read. A Lesson item opens the Lesson's page; it is started once its page opens from the item, and done as the Lesson is. One no study day has room for is dropped with the reason. Approving or finishing a Weak Area's Lesson builds the plan again.
 102. The Debrief has a button to the Lesson on the Question's primary Skill, once approved. Lesson pages write the subject's id with slashes, as a path ending in a dotted name is taken for a file.
+103. Tutor Chat (ticket 18) runs in the server, not the worker: one call a message, task "tutor-chat", through the same adapter, so its tokens and spend are recorded the same way. The server gains the adapter over the HTTP transport. A Learner waits on the reply, so a call the API refuses for being down or rate limited is sent twice at most, and one that asks to wait over a minute is not waited for.
+104. tutor messages hold the Profile, the Question (as the one it counts as after a merge), the message, the reply, the model, prompt version, tokens, cost and time. A message the same as an earlier one from the same Profile about the same Question, compared after trimming, folding spaces and ignoring case, gets the stored reply with no call, marked as reused. No Profile's messages or replies are ever read for another.
+105. The model is given the Question with its Stimulus, its key and the Book's explanation, the Approaches that reach the current key, the Learner's final answer in each Session that shows how it went with its Mistake Types, the Learner's misses on the Question's primary Skill counted by Mistake Type, and the last 6 exchanges about the Question, all quoted as data. The system prompt says the key is correct, never to argue it, and that a Learner who believes it is wrong can use Report a problem. A Learner can chat about a Question once a Session that shows how it went holds an answer to it, and not while a running Sectional or Mock holds it.
+106. The monthly cap is a Curator setting in dollars, 5 until changed. Spend counts every Tutor Chat call this calendar month in the app's time zone, from the recorded calls. A call starts only while the month's spend is under the cap; one that crosses it is kept. The chat says when the cap is reached, Tutor Chat is not set up, the API cannot be reached, or a reply failed its check twice, and nothing else is affected.
+107. problem reports hold the Profile, the Question, the Learner's words and time, and the Review Queue item they joined: each report adds its words as a "problem-report" reason to the Question's open item for reports, or opens one. The Question stays published. The Curator decides as for any item: keep it as it is (dismissed), change the key, which sends it through enrichment and the Publish Gate again, or withdraw it. The Learner's reports are listed on the Error Log page with the decision.
+108. Every Debrief shown with its Question, in Practice Sets, Sectional and Mock reports and the Error Log, has Ask the tutor and Report a problem.
 
 ### Taxonomy review notes
 

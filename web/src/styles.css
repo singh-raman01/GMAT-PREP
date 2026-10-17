@@ -3538,3 +3538,76 @@ input[type="date"] {
 .lesson-decision .actions {
   margin-top: 1rem;
 }
+
+/* Tutor Chat and Report a problem, under a Debrief. */
+
+.tutor {
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--rule);
+}
+
+.tutor-chat,
+.tutor-form {
+  display: grid;
+  gap: 0.75rem;
+  max-width: 44rem;
+  margin-top: 1rem;
+}
+
+.tutor-exchanges {
+  display: grid;
+  gap: 1.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tutor-message {
+  justify-self: end;
+  max-width: 85%;
+  margin: 0 0 0.5rem auto;
+  padding: 0.6rem 0.9rem;
+  border-radius: var(--radius);
+  background: var(--hover);
+  font-weight: 700;
+  width: fit-content;
+}
+
+.tutor-reply {
+  padding-left: 1rem;
+  border-left: 4px solid var(--rule);
+}
+
+.tutor-form label {
+  font-size: var(--step-0);
+  font-weight: 700;
+}
+
+.tutor-form textarea {
+  width: 100%;
+  padding: 0.45rem 0.75rem;
+  border: 2px solid var(--field);
+  border-radius: var(--radius);
+  background: var(--paper);
+  color: var(--graphite);
+  font: inherit;
+}
+
+.tutor-form textarea:focus-visible {
+  border-color: var(--graphite);
+}
+
+.tutor-form .hint {
+  margin: 0;
+}
+
+.tutor-cap {
+  display: grid;
+  gap: 1rem;
+  max-width: 30rem;
+}
+
+.my-reports {
+  margin-top: 3.5rem;
+}
