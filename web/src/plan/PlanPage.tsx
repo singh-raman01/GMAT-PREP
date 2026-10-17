@@ -39,10 +39,15 @@ const RereadMs = 5 * 60_000
 const MockMinutes = 145
 
 // A Weak Area day with no Weak Area to work on yet is mixed practice; a day
-// whose sets are not planned yet says so.
+// whose sets are not planned yet says so, unless its Mock or Sectional takes
+// all of it.
 const dayAbout = (day: PlanDayView) => {
   if (day.off) return "A day off."
-  if (!day.setsPlanned) return `${hoursAndMinutes(day.minutes)} planned, for ${phaseNames[day.phase]}. Its sets are planned nearer the day.`
+  const whole = day.items.some((item) => (item.kind === "mock" || item.kind === "sectional") && item.minutes >= day.minutes)
+  if (!day.setsPlanned && !whole) {
+    return `${hoursAndMinutes(day.minutes)} planned, for ${phaseNames[day.phase]}. Its sets are planned nearer the day.`
+  }
+  if (!day.setsPlanned) return `${hoursAndMinutes(day.minutes)} planned, for ${phaseNames[day.phase]}.`
   const phase = day.phase === "weak-areas" && !day.items.some((item) => item.weakArea !== null) ? "mixed" : day.phase
   return `${hoursAndMinutes(day.minutes)} planned, for ${phaseNames[phase]}.`
 }
@@ -57,8 +62,8 @@ export const PlanPage = ({ path, onSessionLost, onStopped }: Props) => {
     (failure: { readonly _tag: string }) => (failure._tag === "NotUnlocked" ? onSessionLost() : onStopped(failure)),
     [onSessionLost, onStopped]
   )
-  const load = useCallback(async () => {
-    const result = await call((client) => client.plan.view())
+  const load = useCallback(async (background = false) => {
+    const result = await call((client) => client.plan.view(), { background })
     if (result._tag === "Failure") return handle(result.failure)
     setPlan(result.success)
   }, [handle])
@@ -69,8 +74,13 @@ export const PlanPage = ({ path, onSessionLost, onStopped }: Props) => {
     const reread = () => {
       if (document.visibilityState === "visible") void load()
     }
+    // The timed re-read is the page's own, so it leaves the unlock to end
+    // after its 12 hours without use.
+    const timed = () => {
+      if (document.visibilityState === "visible") void load(true)
+    }
     document.addEventListener("visibilitychange", reread)
-    const timer = window.setInterval(reread, RereadMs)
+    const timer = window.setInterval(timed, RereadMs)
     return () => {
       document.removeEventListener("visibilitychange", reread)
       window.clearInterval(timer)
@@ -100,7 +110,21 @@ export const PlanPage = ({ path, onSessionLost, onStopped }: Props) => {
             {view.id === "log"
               ? <DailyLog onFailure={handle} />
               : view.id === "settings"
-              ? <PlanSettingsForm plan={plan} onSaved={setPlan} onFailure={handle} />
+              ? (
+                <PlanSettingsForm
+                  plan={plan}
+                  onSaved={(saved) => {
+                    // The first plan is shown at once, on Today.
+                    const first = plan.settings === null
+                    setPlan(saved)
+                    if (first) {
+                      navigate("/plan")
+                      setMade(true)
+                    }
+                  }}
+                  onFailure={handle}
+                />
+              )
               : plan.settings === null
               ? (
                 <>
@@ -120,7 +144,7 @@ export const PlanPage = ({ path, onSessionLost, onStopped }: Props) => {
                 </>
               )
               : view.id === "today"
-              ? <Today plan={plan} heading={todayHeading} onPlan={setPlan} onReload={load} onFailure={handle} />
+              ? <Today plan={plan} heading={todayHeading} onPlan={setPlan} onReload={() => load()} onFailure={handle} />
               : <DaysAhead plan={plan} />}
           </>
         )}
@@ -242,7 +266,9 @@ const ItemRow = (
 // Where the Diagnostic stands in the plan: today, a later day, or dropped
 // with the reason.
 const diagnosticWhere = (plan: PlanView) => {
-  const next = plan.plan.flatMap((day) => day.items).find((item) => item.diagnostic && item.status === "planned")
+  const items = plan.plan.flatMap((day) => day.items)
+  if (items.some((item) => item.diagnostic && item.status === "started")) return "Part of it is under way; go back to it from today's list."
+  const next = items.find((item) => item.diagnostic && item.status === "planned")
   if (next !== undefined) return next.day === plan.today ? "It is on today's plan." : `It is planned for ${longDay(next.day)}.`
   const dropped = plan.dropped.find((item) => item.diagnostic)
   return dropped === undefined ? "" : `It could not be planned: ${dropped.reason}`
@@ -279,6 +305,7 @@ const DiagnosticPanel = (
     window.requestAnimationFrame(() => skipButton.current?.focus())
   }
   const left = plan.diagnostic.sectionsLeft.map((section) => section.name).join(", ")
+  const stillToTake = left === "" ? "" : `: ${left} still to take`
   const where = diagnosticWhere(plan)
   return (
     <section className="group plan-diagnostic" aria-labelledby="diagnostic-title">
@@ -287,8 +314,8 @@ const DiagnosticPanel = (
         {plan.diagnostic.form === "mock"
           ? "A full Mock shows where each Section starts, so your practice is pitched where about two in three come out right."
           : (plan.settings?.weeklyMinutes ?? 0) < MockMinutes
-          ? `Your weekly time is under a Mock, so the Diagnostic is the three Sectionals, one a day: ${left} still to take.`
-          : `You began the Diagnostic as Sectionals, so it goes on one a day: ${left} still to take.`}
+          ? `Your weekly time is under a Mock, so the Diagnostic is the three Sectionals, one a day${stillToTake}.`
+          : `You began the Diagnostic as Sectionals, so it goes on one a day${stillToTake}.`}
         {where === "" ? "" : ` ${where}`} Skip it and each Section starts at Medium until it has 20 Rated Responses.
       </p>
       {asking
