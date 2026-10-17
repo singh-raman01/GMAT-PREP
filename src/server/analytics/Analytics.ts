@@ -32,7 +32,7 @@ import { type RatedFact, type ScopeAbility, scopeAbilities, scopeKey } from "./a
 import { type Answered, answeredOf } from "./answers.ts"
 import { frequenciesOf } from "./frequency.ts"
 import { endingOf, mistakeWeeksOf, pacesOf, pacingOf, StudyWeek, studyDaysOf, type TimedAnswer } from "./views.ts"
-import { mixesOf, trapsOf, weakAreasOf } from "./weakAreas.ts"
+import { lessonPartFor, mixesOf, trapsOf, weakAreasOf } from "./weakAreas.ts"
 
 // The Learner's analytics (docs/design.md, "Analytics"), worked out on read
 // from the Profile's own facts.
@@ -276,7 +276,8 @@ export class Analytics extends Context.Service<Analytics, {
                     ...(area.remedy.timed ? { timed: true } : {}),
                     ...(area.kind === "skill" ? { skill: area.id } : { questionType: area.id })
                   }
-                }
+                },
+                lesson: lessonPartFor(area.topMistake)
               })
             ),
             frequencyBasis: frequencies.basis,

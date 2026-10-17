@@ -911,7 +911,7 @@ export const lessons = sqliteTable(
 )
 
 // A Profile opening a Lesson, or marking a part of it read (decisions 99 and
-// 101). The worked examples count as Seen from the first time it opens.
+// 101). The worked examples it showed count as Seen from then.
 export const lessonViews = sqliteTable(
   "lesson_views",
   {
@@ -924,7 +924,11 @@ export const lessonViews = sqliteTable(
     part: text("part").notNull(),
     // The Study Plan item it was opened from, if any.
     planItemId: text("plan_item_id"),
-    viewedAt: integer("viewed_at").notNull()
+    viewedAt: integer("viewed_at").notNull(),
+    // JSON array of the worked examples' Question ids the page was sent.
+    // Null on views recorded before these were kept; of those, an opened
+    // whole Lesson counts as having shown every worked example.
+    shownExamples: text("shown_examples")
   },
   (t) => [index("lesson_views_profile").on(t.profileId, t.viewedAt)]
 )

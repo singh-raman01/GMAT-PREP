@@ -65,7 +65,7 @@ export const writeLesson = (jobId: string, taxonomy: TaxonomyView, subject: Less
     const [already] = yield* db.select({ id: lessons.id }).from(lessons).where(and(ofSubject, eq(lessons.jobId, jobId)))
       .pipe(Effect.orDie)
     if (already !== undefined) return { _tag: "Written", lessonId: already.id } as WriteOutcome
-    const candidates = (yield* lessonCandidates).get(subject.id) ?? []
+    const candidates = (yield* lessonCandidates(taxonomy)).get(subject.id) ?? []
     const pick = pickLessonQuestions(candidates)
     if (pick === undefined) return { _tag: "TooFew", count: candidates.length } as WriteOutcome
     const quoted: Array<string> = []

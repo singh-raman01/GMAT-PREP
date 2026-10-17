@@ -75,7 +75,14 @@ export const PlanSettingsForm = ({ plan, onSaved, onFailure }: Props) => {
   }
   const busy = useRef(false)
   const latest = nextDayLimit(plan.today)
-  const zoneChoices = useMemo(() => (zones.includes(form.timeZone) ? zones : [form.timeZone, ...zones]), [form.timeZone])
+  // The zone in effect and any waiting one are always choices, though the
+  // browser's list may lack them, as Chromium's lacks UTC.
+  const inEffect = plan.days.timeZone
+  const waiting = plan.days.pending?.timeZone
+  const zoneChoices = useMemo(
+    () => [...new Set([inEffect, waiting, form.timeZone].filter((zone): zone is string => zone !== undefined && !zones.includes(zone))), ...zones],
+    [inEffect, waiting, form.timeZone]
+  )
   const change = (next: Partial<Form>) => {
     setForm((current) => ({ ...current, ...next }))
     setSaved(undefined)
@@ -119,6 +126,8 @@ export const PlanSettingsForm = ({ plan, onSaved, onFailure }: Props) => {
           ? "Saved. The plan is made again from today."
           : after.days.pending !== null && JSON.stringify(after.days.pending) !== JSON.stringify(plan.days.pending)
           ? "Saved. The change takes effect at your next rollover."
+          : after.days.pending === null && plan.days.pending !== null
+          ? "Saved. The change that was waiting for your next rollover is cancelled."
           : "Saved. Nothing had changed, so the plan stays as it is."
       )
       return onSaved(after)

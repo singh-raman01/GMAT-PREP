@@ -2,7 +2,7 @@ import { Effect, Layer, Redacted } from "effect"
 import { HttpServerRequest } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"
 import { Api, Health } from "../../api/Api.ts"
-import { CurrentProfile, NotUnlocked, ProfileCookie, ProfileSession } from "../../api/Profiles.ts"
+import { BackgroundHeader, CurrentProfile, NotUnlocked, ProfileCookie, ProfileSession } from "../../api/Profiles.ts"
 import { Profiles } from "../profiles/Profiles.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { WorkerSupervisor } from "../worker/WorkerSupervisor.ts"
@@ -46,8 +46,8 @@ export const ProfileSessionLive = Layer.effect(
     const profiles = yield* Profiles
     return ProfileSession.of({
       cookie: Effect.fn(function*(httpEffect, { credential }) {
-        const profile = yield* profiles.fromToken(Redacted.value(credential))
         const request = yield* HttpServerRequest.HttpServerRequest
+        const profile = yield* profiles.fromToken(Redacted.value(credential), request.headers[BackgroundHeader] !== "1")
         const expected = request.headers[ExpectedProfileHeader]
         if (expected !== undefined && expected !== profile.id) {
           return yield* new NotUnlocked()
