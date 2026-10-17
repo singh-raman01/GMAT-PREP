@@ -1,11 +1,11 @@
-import { eq, gte, sql } from "drizzle-orm"
+import { and, eq, gte, sql } from "drizzle-orm"
 import { Clock, Context, Effect, Layer } from "effect"
 import { BlueprintGroups, groupCount, groupOf } from "../../api/blueprint.ts"
 import { bandOf } from "../../api/difficulty.ts"
 import { CoverageView, CuratorOverview, ReserveGroupView } from "../../api/Overview.ts"
 import { Named } from "../../api/Practice.ts"
 import { Db } from "../db/Database.ts"
-import { difficulty, llmCalls, questions, reviewItems } from "../db/schema.ts"
+import { difficulty, llmCalls, problemReports, questions, reviewItems } from "../db/schema.ts"
 import { JobStore } from "../jobs/JobStore.ts"
 import { SiblingsReport } from "../learning/SiblingsReport.ts"
 import { currentDifficulty } from "../practice/history.ts"
@@ -92,6 +92,12 @@ export class Overview extends Context.Service<Overview, {
 
         const [open] = yield* db.select({ count: sql<number>`count(*)` }).from(reviewItems)
           .where(eq(reviewItems.status, "open")).pipe(Effect.orDie)
+        // Learners' reports waiting for a decision, and the Questions they are on.
+        const [reported] = yield* db.select({
+          reports: sql<number>`count(*)`,
+          questions: sql<number>`count(distinct ${reviewItems.questionId})`
+        }).from(problemReports).innerJoin(reviewItems, eq(reviewItems.id, problemReports.reviewItemId))
+          .where(and(eq(reviewItems.status, "open"), eq(reviewItems.kind, "report"))).pipe(Effect.orDie)
         const from = monthStart(yield* Clock.currentTimeMillis)
         const [spent] = yield* db.select({ total: sql<number | null>`sum(${llmCalls.cost})` }).from(llmCalls)
           .where(gte(llmCalls.createdAt, from)).pipe(Effect.orDie)
@@ -102,6 +108,8 @@ export class Overview extends Context.Service<Overview, {
           siblings: (yield* siblings.report).length,
           thinSkills: (yield* bank.thinSkills).length,
           reviewQueue: Number(open?.count ?? 0),
+          problemReports: Number(reported?.reports ?? 0),
+          reportedQuestions: Number(reported?.questions ?? 0),
           monthFrom: from,
           spend: Number(spent?.total ?? 0),
           jobs: yield* jobs.changedSince(from)

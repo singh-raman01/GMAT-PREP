@@ -253,7 +253,9 @@ const Running = (
         />
       )}
       {view.clock.interrupted && (
-        <p className="clock-note">The clock did not count time while the app was stopped or the computer slept.</p>
+        <p className="clock-note">
+          The clock did not count time while the app was stopped, the computer slept or the data was restored.
+        </p>
       )}
       {!view.heldHere && (
         <div className="held-elsewhere" role="status">

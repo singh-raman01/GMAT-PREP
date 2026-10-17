@@ -55,7 +55,7 @@ export class Profiles extends Context.Service<Profiles, {
   readonly list: Effect.Effect<ReadonlyArray<ProfileSummary>>
   create(input: CreateProfile): Effect.Effect<Unlocked, ProfileNameTaken | InvalidTimeZone>
   unlock(id: ProfileId, pin: string | undefined): Effect.Effect<Unlocked, ProfileNotFound | PinRequired | WrongPin | ProfileLocked>
-  fromToken(token: string): Effect.Effect<ProfileSummary, NotUnlocked>
+  fromToken(token: string, use?: boolean): Effect.Effect<ProfileSummary, NotUnlocked>
   lock(token: string): Effect.Effect<void>
   // Deletes a Profile and all it holds, after a snapshot (decision 115):
   // the Learner's own with its PIN, if it has one; any by the Curator, who
@@ -197,8 +197,9 @@ export class Profiles extends Context.Service<Profiles, {
         }).pipe(onePinCheckAtATime(id))
 
       // An unlock that has gone unused for UnlockIdleMs ends. Use moves its
-      // last-used time on, written at most every few minutes.
-      const fromToken = Effect.fn("Profiles.fromToken")(function*(token: string) {
+      // last-used time on, written at most every few minutes; a request the
+      // page made on its own is not use.
+      const fromToken = Effect.fn("Profiles.fromToken")(function*(token: string, use: boolean = true) {
         const tokenHash = sha256(token)
         const rows = yield* db.select({ profile: profiles, lastUsedAt: profileUnlocks.lastUsedAt })
           .from(profileUnlocks)
@@ -214,7 +215,7 @@ export class Profiles extends Context.Service<Profiles, {
           yield* db.delete(profileUnlocks).where(eq(profileUnlocks.tokenHash, tokenHash)).pipe(Effect.orDie)
           return yield* new NotUnlocked()
         }
-        if (now - match.lastUsedAt > LastUsedResolutionMs) {
+        if (use && now - match.lastUsedAt > LastUsedResolutionMs) {
           yield* db.update(profileUnlocks)
             .set({ lastUsedAt: now })
             .where(and(eq(profileUnlocks.tokenHash, tokenHash), lt(profileUnlocks.lastUsedAt, now)))

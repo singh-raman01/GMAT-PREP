@@ -1,4 +1,4 @@
-import { Effect } from "effect"
+import { Duration, Effect } from "effect"
 import { HttpServerRequest } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"
 import { Api } from "../../api/Api.ts"
@@ -9,7 +9,7 @@ import { LanAccess } from "../access/LanAccess.ts"
 
 // Plain HTTP on a trusted network, so the cookie is not marked Secure. A
 // paired device keeps it as long as browsers allow, 400 days.
-const DeviceCookieMaxAge = 400 * 24 * 60 * 60
+const DeviceCookieMaxAge = Duration.days(400)
 const setDeviceCookie = (token: string) =>
   HttpApiBuilder.securitySetCookie(DeviceCookie, token, {
     httpOnly: true,

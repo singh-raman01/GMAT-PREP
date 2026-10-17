@@ -3,6 +3,7 @@ import { FetchHttpClient, HttpClient, type HttpClientError, HttpClientRequest } 
 import { HttpApiClient } from "effect/http-api"
 import { Api } from "../../src/api/Api.ts"
 import { RefusedHeader } from "../../src/api/Lan.ts"
+import { BackgroundHeader } from "../../src/api/Profiles.ts"
 
 // The typed client derived from the same API definition the server uses. The
 // unlock cookie is HttpOnly, so this page never sees it; the browser sends it
@@ -65,17 +66,21 @@ const deviceChecked = new Promise<void>((resolve) => {
   devices.postMessage({ type: "asking", id: deviceId })
 })
 
-const makeClient = HttpApiClient.make(Api, {
-  baseUrl: window.location.origin,
-  transformClient: HttpClient.mapRequest((request) => {
-    const fromDevice = HttpClientRequest.setHeader(request, "x-gp-device", deviceId)
-    return shownProfile === undefined ? fromDevice : HttpClientRequest.setHeader(fromDevice, "x-gp-profile", shownProfile)
-  })
-}).pipe(Effect.provide(FetchHttpClient.layer))
+// A background client marks its requests as made by the page on its own,
+// which the server does not count as use of the unlock.
+const makeClient = (background: boolean) =>
+  HttpApiClient.make(Api, {
+    baseUrl: window.location.origin,
+    transformClient: HttpClient.mapRequest((request) => {
+      const fromDevice = HttpClientRequest.setHeader(request, "x-gp-device", deviceId)
+      const shown = shownProfile === undefined ? fromDevice : HttpClientRequest.setHeader(fromDevice, "x-gp-profile", shownProfile)
+      return background ? HttpClientRequest.setHeader(shown, BackgroundHeader, "1") : shown
+    })
+  }).pipe(Effect.provide(FetchHttpClient.layer))
 
-export type Client = Effect.Success<typeof makeClient>
+export type Client = Effect.Success<ReturnType<typeof makeClient>>
 
-let client: Promise<Client> | undefined
+const clients = new Map<boolean, Promise<Client>>()
 
 // Why the server refused this device, from another device on the network:
 // not paired yet, or LAN mode is off. The app then asks for pairing.
@@ -97,10 +102,19 @@ export const onRefused = (listener: (refusal: Refusal) => void): (() => void) =>
 }
 
 // Runs one API call. Failures the API declares come back as values, so each
-// screen can say what happened. A refusal of this device is told to the
-// app as well, wherever it happens.
-export const call = async <A, E>(request: (client: Client) => Effect.Effect<A, E>): Promise<Result.Result<A, E>> => {
-  client ??= deviceChecked.then(() => Effect.runPromise(makeClient))
+// screen can say what happened. A call the page makes on its own, with no
+// one asking, is made in the background. A refusal of this device is told to
+// the app as well, wherever it happens.
+export const call = async <A, E>(
+  request: (client: Client) => Effect.Effect<A, E>,
+  options: { readonly background?: boolean } = {}
+): Promise<Result.Result<A, E>> => {
+  const background = options.background === true
+  let client = clients.get(background)
+  if (client === undefined) {
+    client = deviceChecked.then(() => Effect.runPromise(makeClient(background)))
+    clients.set(background, client)
+  }
   const result = await Effect.runPromise(Effect.result(request(await client)))
   if (result._tag === "Failure") {
     const refusal = refusalOf(result.failure as { readonly _tag: string })

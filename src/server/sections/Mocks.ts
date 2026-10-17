@@ -26,6 +26,7 @@ import { keysOf } from "../practice/history.ts"
 import { rateSession } from "../ratings/rateSession.ts"
 import { totalEstimate } from "../ratings/scale.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
+import { Snapshots } from "../snapshots/Snapshots.ts"
 import { decodeConfig, lineOf } from "./config.ts"
 import { afterSection, BreakMs, breakLeftMs, keepsBreak, NewMock, nextSection } from "./mockFlow.ts"
 import { rescore } from "./report.ts"
@@ -89,8 +90,10 @@ export class Mocks extends Context.Service<Mocks, {
           Effect.flatMap((result) => (result._tag === "Success" ? Effect.succeed(result.success) : Effect.fail(result.failure)))
         )
       // Open while a Mock may be running; it starts open, so the first tick
-      // picks up Mocks left running when the app last stopped.
+      // picks up Mocks left running when the app last stopped, and opens
+      // after a restore, which may bring running ones back.
       const wake = yield* Latch.make(true)
+      yield* (yield* Snapshots).afterRestore(wake.open)
 
       const sectionName = (id: string) => new Named({ id, name: taxonomy.sections.find((each) => each.id === id)?.name ?? id })
 

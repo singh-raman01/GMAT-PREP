@@ -1,6 +1,7 @@
 import { BunHttpServer } from "@effect/platform-bun"
 import { Context, type Duration, Effect, type Fiber, Layer, Option, Ref } from "effect"
-import { Cookies, HttpClient, HttpClientRequest, HttpRouter, type HttpServer } from "effect/http"
+import { Cookies, HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/http"
+import type { SqlClient } from "effect/sql"
 import { HttpApiClient } from "effect/http-api"
 import { TestClock } from "effect/testing"
 import { mkdtempSync } from "node:fs"
@@ -24,6 +25,7 @@ import type { Settings } from "../src/server/settings/Settings.ts"
 import { workerServices } from "../src/server/worker/services.ts"
 import { WorkerSupervisor } from "../src/server/worker/WorkerSupervisor.ts"
 import { FigureFiles } from "../src/server/books/FigureFiles.ts"
+import { lanListeners } from "../src/server/http/listeners.ts"
 import { ErrorLog } from "../src/server/learning/ErrorLog.ts"
 
 export const tempDataDir = () => mkdtempSync(join(tmpdir(), "gmat-prep-test-"))
@@ -59,7 +61,7 @@ export class TestNetwork extends Context.Service<TestNetwork, {
   setAddresses(addresses: ReadonlyArray<NetworkAddress>): Effect.Effect<void>
 }>()("gmat-prep/test/TestNetwork") {}
 
-const NetworkTest = Layer.unwrap(
+export const NetworkTest = Layer.unwrap(
   Effect.sync(() => {
     let addresses: ReadonlyArray<NetworkAddress> = [{ address: "127.0.0.1", family: "IPv4", internal: true }]
     return Layer.mergeAll(
@@ -96,26 +98,54 @@ export const runWithApp = <A, E>(
 ): Promise<A> => Effect.runPromise(effect.pipe(Effect.provide(appLayer(dataDir))))
 
 // Snapshot copies in this process, the next ones failing with the details a
-// test queues, as a full disk would make them.
+// test queues, as a full disk would make them. A test can also fail the next
+// checks, as a check that cannot start would, and run an effect at the
+// moment a copy to a given file starts, as a request arriving while a real
+// copy process works would.
 export class CopierFaults extends Context.Service<CopierFaults, {
   failNext(...details: ReadonlyArray<string>): Effect.Effect<void>
+  failNextCheck(...details: ReadonlyArray<string>): Effect.Effect<void>
+  // Once, before the copy to the first file whose path matches.
+  onCopy(to: RegExp, effect: Effect.Effect<void>): Effect.Effect<void>
 }>()("gmat-prep/test/CopierFaults") {}
 
-const SnapshotCopierTest = Layer.unwrap(
+export const SnapshotCopierTest = Layer.unwrap(
   Effect.gen(function*() {
     const faults = yield* Ref.make<ReadonlyArray<string>>([])
+    const checkFaults = yield* Ref.make<ReadonlyArray<string>>([])
+    const hooks = yield* Ref.make<ReadonlyArray<{ readonly to: RegExp; readonly effect: Effect.Effect<void> }>>([])
     const real = yield* SnapshotCopier.pipe(Effect.provide(SnapshotCopierInProcess))
-    const nextFault = Ref.modify(faults, (queued) => [queued[0], queued.slice(1)] as const)
+    const next = (queue: Ref.Ref<ReadonlyArray<string>>) => Ref.modify(queue, (queued) => [queued[0], queued.slice(1)] as const)
+    const hookFor = (to: string) =>
+      Ref.modify(hooks, (queued) => {
+        const index = queued.findIndex((hook) => hook.to.test(to))
+        return index === -1 ? [Effect.void, queued] as const : [queued[index]!.effect, queued.toSpliced(index, 1)] as const
+      })
     return Layer.mergeAll(
       Layer.succeed(
         SnapshotCopier,
         SnapshotCopier.of({
           ...real,
           copy: (from, to) =>
-            nextFault.pipe(Effect.flatMap((detail) => detail === undefined ? real.copy(from, to) : Effect.fail(new SnapshotWorkFailed({ detail }))))
+            Effect.gen(function*() {
+              yield* Effect.flatten(hookFor(to))
+              const detail = yield* next(faults)
+              return detail === undefined ? yield* real.copy(from, to) : yield* new SnapshotWorkFailed({ detail })
+            }),
+          check: (file, quick) =>
+            next(checkFaults).pipe(
+              Effect.flatMap((detail) => detail === undefined ? real.check(file, quick) : Effect.fail(new SnapshotWorkFailed({ detail })))
+            )
         })
       ),
-      Layer.succeed(CopierFaults, CopierFaults.of({ failNext: (...details) => Ref.update(faults, (queued) => [...queued, ...details]) }))
+      Layer.succeed(
+        CopierFaults,
+        CopierFaults.of({
+          failNext: (...details) => Ref.update(faults, (queued) => [...queued, ...details]),
+          failNextCheck: (...details) => Ref.update(checkFaults, (queued) => [...queued, ...details]),
+          onCopy: (to, effect) => Ref.update(hooks, (queued) => [...queued, { to, effect }])
+        })
+      )
     )
   })
 )
@@ -158,13 +188,33 @@ export type WorkerTestServices =
   | FigureFiles
   | ErrorLog
   | TestNetwork
+  | SqlClient.SqlClient
 
 // Sets the fake clock before the app starts, as a start later in the day.
 const clockStartsAt = (millis: number | undefined) =>
   millis === undefined ? Layer.empty : Layer.effectDiscard(TestClock.setTime(millis))
 
-export const appWithWorkersLayer = (dataDir: string, kinds: ReadonlyArray<AnyJobKind>, startAt?: number) => {
-  const server = HttpRouter.serve(AppRoutes, { disableListenLog: true, disableLogger: true }).pipe(
+// The app on 127.0.0.1 only, as tests mostly need it.
+const ServedOnLoopback = HttpRouter.serve(AppRoutes, { disableListenLog: true, disableLogger: true })
+
+// The app as main.ts serves it: also, in LAN mode, on each network address
+// the test gives, at the same port.
+const ServedWithLanListeners = Layer.effectDiscard(
+  Effect.gen(function*() {
+    const app = yield* HttpRouter.toHttpEffect(AppRoutes)
+    const server = yield* HttpServer.HttpServer
+    yield* server.serve(app)
+    const port = server.address._tag === "UnixPathAddress" ? 0 : server.address.port
+    yield* lanListeners(app, { port, maxRequestBodySize: 64 * 1024 * 1024 })
+  })
+)
+
+const appLayerServed = (served: typeof ServedOnLoopback | typeof ServedWithLanListeners) => (
+  dataDir: string,
+  kinds: ReadonlyArray<AnyJobKind>,
+  startAt?: number
+) => {
+  const server = served.pipe(
     Layer.provideMerge(makeAppServices(JobKinds.layer(kinds))),
     Layer.provide(WorkerSupervisor.layerIdle),
     Layer.provideMerge(SnapshotCopierTest),
@@ -177,6 +227,8 @@ export const appWithWorkersLayer = (dataDir: string, kinds: ReadonlyArray<AnyJob
   return testWorkersLayer(kinds).pipe(Layer.provideMerge(server), Layer.provideMerge(LlmTransportFake))
 }
 
+export const appWithWorkersLayer = appLayerServed(ServedOnLoopback)
+
 // The app with no worker running; the test starts workers when it wants them.
 // startAt sets the fake clock before the app starts.
 export const runWithWorkers = <A, E>(
@@ -185,6 +237,11 @@ export const runWithWorkers = <A, E>(
   dataDir: string = tempDataDir(),
   startAt?: number
 ): Promise<A> => Effect.runPromise(effect.pipe(Effect.provide(appWithWorkersLayer(dataDir, kinds, startAt))))
+
+// The app with LAN mode's listeners, which another device reaches at the
+// network addresses the test gives, with no worker running.
+export const runWithLanListeners = <A, E>(effect: Effect.Effect<A, E, WorkerTestServices>, dataDir: string = tempDataDir()): Promise<A> =>
+  Effect.runPromise(effect.pipe(Effect.provide(appLayerServed(ServedWithLanListeners)(dataDir, [ConnectionTest]))))
 
 // The app with one worker already running.
 export const runWithWorker = <A, E>(

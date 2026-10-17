@@ -35,7 +35,9 @@ export const DevicesPage = ({ onLocked, onStopped }: Props) => {
   const [now, setNow] = useState(() => Date.now())
   const [status, setStatus] = useState<string>()
   const [revoking, setRevoking] = useState<DeviceView>()
+  // One change at a time; the buttons say so while one is under way.
   const busy = useRef(false)
+  const [working, setWorking] = useState(false)
   const codeHeading = useRef<HTMLParagraphElement>(null)
   const keepButton = useRef<HTMLButtonElement>(null)
 
@@ -55,8 +57,7 @@ export const DevicesPage = ({ onLocked, onStopped }: Props) => {
     return () => {
       live = false
     }
-    // Loads once, when the screen opens.
-  }, [])
+  }, [onFailure])
 
   // Turned on, the listeners take a moment; read the addresses again.
   useEffect(() => {
@@ -85,8 +86,10 @@ export const DevicesPage = ({ onLocked, onStopped }: Props) => {
   const run = async <A,>(action: () => Promise<{ readonly _tag: "Success"; readonly success: A } | { readonly _tag: "Failure"; readonly failure: { readonly _tag: string } }>) => {
     if (busy.current) return undefined
     busy.current = true
+    setWorking(true)
     const result = await action()
     busy.current = false
+    setWorking(false)
     if (result._tag === "Failure") {
       onFailure(result.failure)
       return undefined
@@ -140,7 +143,7 @@ export const DevicesPage = ({ onLocked, onStopped }: Props) => {
             <h2 id={`${id}-title`}>LAN mode</h2>
             <div className="actions">
               <p>{view.on ? "LAN mode is on." : "LAN mode is off: only this computer can use GMAT prep."}</p>
-              <button type="button" className="button button-quiet" onClick={() => void setMode(!view.on)}>
+              <button type="button" className="button button-quiet" aria-disabled={working} onClick={() => void setMode(!view.on)}>
                 {view.on ? "Turn off LAN mode" : "Turn on LAN mode"}
               </button>
             </div>
@@ -173,13 +176,17 @@ export const DevicesPage = ({ onLocked, onStopped }: Props) => {
                           Enter it on the other device. It works once, until {clockTime(code.expiresAt)} (
                           <span aria-hidden="true">{remainingText(code.expiresAt - now)}</span> left).
                         </p>
-                        <button type="button" className="button button-quiet" onClick={() => void showCode()}>Show a new code</button>
+                        <button type="button" className="button button-quiet" aria-disabled={working} onClick={() => void showCode()}>
+                          Show a new code
+                        </button>
                       </>
                     )
                     : (
                       <>
                         {code !== undefined && <p className="hint">That code has expired.</p>}
-                        <button type="button" className="button" onClick={() => void showCode()}>Show a pairing code</button>
+                        <button type="button" className="button" aria-disabled={working} onClick={() => void showCode()}>
+                          Show a pairing code
+                        </button>
                       </>
                     )}
                 </div>
@@ -203,7 +210,9 @@ export const DevicesPage = ({ onLocked, onStopped }: Props) => {
                           <div className="plan-confirm" role="group" aria-labelledby={`${id}-${device.id}-ask`}>
                             <p id={`${id}-${device.id}-ask`}>Revoke {device.name}? It can no longer reach GMAT prep until it pairs again.</p>
                             <div className="actions">
-                              <button type="button" className="button" onClick={() => void revoke(device)}>Revoke it</button>
+                              <button type="button" className="button" aria-disabled={working} onClick={() => void revoke(device)}>
+                                Revoke it
+                              </button>
                               <button
                                 ref={keepButton}
                                 type="button"

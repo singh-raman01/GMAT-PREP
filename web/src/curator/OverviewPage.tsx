@@ -48,14 +48,20 @@ export const OverviewPage = ({ onLocked, onStopped }: Props) => {
     }
   }, [handle])
 
-  // A snapshot that failed, or damage the weekly check found, comes first.
+  // A snapshot that failed, damage the full check found, or a check that
+  // could not run, comes first.
+  const integrity = snapshots?.integrity ?? null
   const troubles = snapshots === undefined
     ? []
     : [
       ...snapshots.failures.map((failure) => `A snapshot failed on ${dayAndTime(failure.at)}: ${failure.error}`),
-      ...(snapshots.integrity !== null && !snapshots.integrity.ok
-        ? [`The weekly check on ${dayAndTime(snapshots.integrity.at)} found damage in the database.`]
-        : [])
+      ...(integrity === null || integrity.outcome === "ok"
+        ? []
+        : integrity.outcome === "not-run"
+        ? [`The full check of the database could not run on ${dayAndTime(integrity.at)}; it is tried again within the hour.`]
+        : integrity.afterRestore
+        ? [`The check after the restore on ${dayAndTime(integrity.at)} found damage that a restore cannot repair.`]
+        : [`The weekly check on ${dayAndTime(integrity.at)} found damage in the database.`])
     ]
 
   return (
@@ -80,6 +86,16 @@ const Overview = ({ overview }: { readonly overview: CuratorOverview }) => {
       <ul className="overview-facts">
         <li>
           <a {...linkProps("/curator/review")}>{plural(overview.reviewQueue, "item waits", "items wait")} in the Review Queue</a>
+        </li>
+        <li>
+          {overview.problemReports === 0 ? "No Problem Report from a Learner waits for a decision" : (
+            <>
+              <a {...linkProps("/curator/review")}>
+                {plural(overview.problemReports, "Problem Report from a Learner", "Problem Reports from Learners")}
+              </a>, on {plural(overview.reportedQuestions, "Question", "Questions")},{" "}
+              {overview.problemReports === 1 ? "waits" : "wait"} for a decision
+            </>
+          )}
         </li>
         <li>
           <a {...linkProps("/curator/siblings")}>{plural(overview.siblings, "Skill is", "Skills are")} running out of Siblings</a>,

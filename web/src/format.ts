@@ -13,6 +13,11 @@ export const dayAndTime = (millis: number, timeZone?: string) =>
     ...(timeZone === undefined ? {} : { timeZone })
   }).format(millis)
 
+// The same, to the second, to tell apart moments in one minute.
+export const dayAndSecond = (millis: number) =>
+  new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" })
+    .format(millis)
+
 export const minutesAndSeconds = (millis: number) => {
   const seconds = Math.max(0, Math.ceil(millis / 1000))
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`
