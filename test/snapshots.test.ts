@@ -91,7 +91,7 @@ describe("Taking snapshots", () => {
       const kept = rows.filter((row) => row.status === "ok")
       expect(kept.length).toBe(11)
       expect(rows.filter((row) => row.status === "removed").length).toBe(29)
-      const files = readdirSync(yield* folderOf)
+      const files = readdirSync(yield* folderOf).filter((name) => name.endsWith(".sqlite"))
       expect(files.toSorted()).toEqual(kept.map((row) => row.file!).toSorted())
     })), 60_000)
 
@@ -122,7 +122,7 @@ describe("Taking snapshots", () => {
       expect(listed.failures.map((each) => [each.kind, each.error])).toEqual([
         ["manual", "The disk is full. Free some space, and the next snapshot will be taken."]
       ])
-      expect(readdirSync(yield* folderOf)).toEqual([])
+      expect(readdirSync(yield* folderOf).filter((name) => name.endsWith(".sqlite"))).toEqual([])
       yield* TestClock.adjust("1 minute")
       yield* curator.api.snapshots.take()
       expect((yield* curator.api.snapshots.list()).failures).toEqual([])

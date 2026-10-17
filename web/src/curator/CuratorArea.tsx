@@ -9,6 +9,7 @@ import { BookPage } from "./BookPage.tsx"
 import { CuratorBooks } from "./CuratorBooks.tsx"
 import { CuratorJobs } from "./CuratorJobs.tsx"
 import { CuratorSettings } from "./CuratorSettings.tsx"
+import { DataPage } from "./DataPage.tsx"
 import { Generation } from "./Generation.tsx"
 import { GoldenSet } from "./GoldenSet.tsx"
 import { OverviewPage } from "./OverviewPage.tsx"
@@ -87,6 +88,8 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
         ? "lessons"
         : path.startsWith("/curator/books")
         ? "books"
+        : path.startsWith("/curator/data")
+        ? "data"
         : "overview"
       const bookId = /^\/curator\/books\/([^/]+)/.exec(path)?.[1]
       const lessonId = /^\/curator\/lessons\/([^/]+)/.exec(path)?.[1]
@@ -128,6 +131,9 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
               <a {...linkProps("/curator/jobs")} aria-current={section === "jobs" ? "page" : undefined}>
                 <span className={section === "jobs" ? "mark" : undefined}>Jobs</span>
               </a>
+              <a {...linkProps("/curator/data")} aria-current={section === "data" ? "page" : undefined}>
+                <span className={section === "data" ? "mark" : undefined}>Data</span>
+              </a>
               <a {...linkProps("/curator/settings")} aria-current={section === "settings" ? "page" : undefined}>
                 <span className={section === "settings" ? "mark" : undefined}>Settings</span>
               </a>
@@ -157,6 +163,8 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
                 : <CuratorLesson key={lessonId} id={lessonId} onLocked={locked} onStopped={onStopped} />
               : section === "overview"
               ? <OverviewPage key="overview" onLocked={locked} onStopped={onStopped} />
+              : section === "data"
+              ? <DataPage key="data" onLocked={locked} onStopped={onStopped} />
               : bookId !== undefined
               ? (
                 <BookPage

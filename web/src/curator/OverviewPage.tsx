@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react"
 import type { CuratorOverview } from "../../../src/api/Overview.ts"
+import type { SnapshotsView } from "../../../src/api/Snapshots.ts"
 import { call } from "../api.ts"
 import { Bar } from "../charts/charts.tsx"
 import { useFocusOnMount } from "../focus.ts"
+import { dayAndTime } from "../format.ts"
 import { linkProps } from "../router.ts"
 
 // The Curator's Overview (docs/design.md, "Analytics"): what the Question
@@ -24,6 +26,7 @@ const month = (millis: number) => new Intl.DateTimeFormat(undefined, { month: "l
 export const OverviewPage = ({ onLocked, onStopped }: Props) => {
   const heading = useFocusOnMount<HTMLHeadingElement>()
   const [overview, setOverview] = useState<CuratorOverview>()
+  const [snapshots, setSnapshots] = useState<SnapshotsView>()
 
   const handle = useCallback(
     (failure: { readonly _tag: string }) => (failure._tag === "CuratorNotUnlocked" ? onLocked() : onStopped(failure)),
@@ -37,14 +40,33 @@ export const OverviewPage = ({ onLocked, onStopped }: Props) => {
       if (result._tag === "Failure") return handle(result.failure)
       setOverview(result.success)
     })
+    void call((client) => client.snapshots.list()).then((result) => {
+      if (live && result._tag === "Success") setSnapshots(result.success)
+    })
     return () => {
       live = false
     }
   }, [handle])
 
+  // A snapshot that failed, or damage the weekly check found, comes first.
+  const troubles = snapshots === undefined
+    ? []
+    : [
+      ...snapshots.failures.map((failure) => `A snapshot failed on ${dayAndTime(failure.at)}: ${failure.error}`),
+      ...(snapshots.integrity !== null && !snapshots.integrity.ok
+        ? [`The weekly check on ${dayAndTime(snapshots.integrity.at)} found damage in the database.`]
+        : [])
+    ]
+
   return (
     <>
       <h1 ref={heading} tabIndex={-1}>Overview</h1>
+      {troubles.length > 0 && (
+        <div className="notice" role="alert">
+          {troubles.map((trouble) => <p key={trouble}>{trouble}</p>)}
+          <p><a {...linkProps("/curator/data")}>See the snapshots</a></p>
+        </div>
+      )}
       {overview === undefined ? <p className="quiet" aria-busy="true">Reading the Question Bank</p> : <Overview overview={overview} />}
     </>
   )

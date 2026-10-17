@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, sql as raw } from "drizzle-orm"
 import { Clock, Context, Effect, Layer, Schedule, Semaphore } from "effect"
 import { SqlClient } from "effect/sql"
-import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs"
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import {
   IntegrityView,
@@ -19,7 +19,7 @@ import {
 import { studyDayOf } from "../../api/studyDay.ts"
 import { AppConfig } from "../AppConfig.ts"
 import { databaseFile, Db } from "../db/Database.ts"
-import { jobs, sessions, settings, snapshots } from "../db/schema.ts"
+import { jobs, sessions, snapshots } from "../db/schema.ts"
 import { SnapshotCopier } from "./copier.ts"
 import { parseSnapshotName, SnapshotFolder, snapshotFileName } from "./names.ts"
 import { keptSnapshots } from "./retention.ts"
@@ -29,9 +29,11 @@ import { keptSnapshots } from "./retention.ts"
 // retention rule, and restored from the Curator's screen.
 
 const DayMs = 86_400_000
-// The full integrity check runs once a week.
+// The full integrity check runs once a week. Its outcome is a file in the
+// snapshots folder, as it is about the database file itself, so a restore
+// does not take it back.
 const IntegrityEveryMs = 7 * DayMs
-const IntegrityKey = "integrity-check"
+const IntegrityFile = "integrity-check.json"
 
 // Tables a restore leaves as they are: the migration log and the snapshots,
 // which describe this database and its folder, and who is signed in now and
@@ -137,11 +139,17 @@ export class Snapshots extends Context.Service<Snapshots, {
           oneAtATime
         )
 
-      const integrityOf = Effect.gen(function*() {
-        const [row] = yield* db.select().from(settings).where(eq(settings.key, IntegrityKey)).pipe(Effect.orDie)
-        if (row === undefined) return null
-        const value = JSON.parse(row.value) as { readonly ok: boolean; readonly detail: string }
-        return new IntegrityView({ at: row.updatedAt, ok: value.ok, detail: value.detail })
+      const integrityOf = Effect.sync(() => {
+        try {
+          const value = JSON.parse(readFileSync(join(folder, IntegrityFile), "utf8")) as {
+            readonly at: number
+            readonly ok: boolean
+            readonly detail: string
+          }
+          return new IntegrityView(value)
+        } catch {
+          return null
+        }
       })
 
       const list = Effect.gen(function*() {
@@ -196,9 +204,10 @@ export class Snapshots extends Context.Service<Snapshots, {
         const detail = checked._tag === "Success" ? checked.success : `The check could not run: ${checked.failure.detail}`
         const ok = checked._tag === "Success" && checked.success === "ok"
         if (!ok) yield* Effect.logError(`The weekly integrity check found: ${detail}`)
-        yield* db.insert(settings).values({ key: IntegrityKey, value: JSON.stringify({ ok, detail }), updatedAt: now })
-          .onConflictDoUpdate({ target: settings.key, set: { value: JSON.stringify({ ok, detail }), updatedAt: now } })
-          .pipe(Effect.orDie)
+        yield* Effect.sync(() => {
+          mkdirSync(folder, { recursive: true })
+          writeFileSync(join(folder, IntegrityFile), JSON.stringify({ at: now, ok, detail }), { mode: 0o600 })
+        })
       })
 
       const tend = Effect.gen(function*() {

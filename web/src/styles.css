@@ -217,6 +217,13 @@ mark {
   overflow-wrap: anywhere;
 }
 
+/* The Learner's name opens their profile page. */
+a.who-name {
+  color: inherit;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+}
+
 /* Controls */
 
 .button {
@@ -3621,4 +3628,36 @@ input[type="date"] {
 .plan-confirm p {
   margin: 0;
   font-weight: 700;
+}
+
+/* The Curator's Data page and the Learner's profile page: questions asked in
+   place, before a change that only a restore undoes. */
+.data-form,
+.snapshot-confirm {
+  display: grid;
+  gap: 0.6rem;
+  justify-items: start;
+  max-width: 36rem;
+  flex: 1 1 100%;
+}
+
+.data-form p,
+.snapshot-confirm p {
+  margin: 0;
+  max-width: 60ch;
+}
+
+.data-form input[type="password"]:not(.number-input) {
+  width: 100%;
+  max-width: 22rem;
+}
+
+.snapshot-list li,
+.data-profile {
+  align-items: center;
+}
+
+.problem-list {
+  margin: 0 0 1rem;
+  padding-left: 1.25rem;
 }
