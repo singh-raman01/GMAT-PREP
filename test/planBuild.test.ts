@@ -70,6 +70,7 @@ const takenOn = (day: string, kind: TakenEvent["kind"], fields: Partial<TakenEve
   kind,
   section: null,
   diagnostic: false,
+  fromPlan: false,
   ...fields
 })
 
@@ -374,6 +375,71 @@ describe("Making the plan again during a day", () => {
   })
 })
 
+describe("Making the plan again after the second review", () => {
+  test("a Sectional taken today from its own page takes its 45 minutes from today", () => {
+    for (const weeklyMinutes of [120, 600]) {
+      const settings = { weeklyMinutes, daysOff: [] }
+      const offPlan = buildPlan(inputs(settings, { weakAreas: [], taken: [takenOn(Monday, "sectional", { section: "quant" })] }))
+      const day = offPlan.days[0]!
+      expect(minutesOf(day.items) + SectionalMinutes).toBeLessThanOrEqual(day.minutes)
+      // Started from the plan, its minutes are in today's work, counted once.
+      const fromPlan = buildPlan(inputs(settings, {
+        weakAreas: [],
+        taken: [takenOn(Monday, "sectional", { section: "quant", fromPlan: true })],
+        todayWork: [doneItem(Monday, { kind: "sectional", section: "quant", practice: null, minutes: SectionalMinutes })]
+      }))
+      expect(minutesOf(fromPlan.days[0]!.items)).toBe(minutesOf(day.items))
+    }
+  })
+
+  test("a Mock week's Sectional missed drops its own Section and moves no other", () => {
+    // 120 minutes a week, every day a study day: the last week plans Quant,
+    // Verbal and Data Insights on its last three days before the test.
+    const testDate = plus(Monday, 20)
+    const settings = { testDate, weeklyMinutes: 120, daysOff: [] }
+    const first = buildPlan(inputs(settings, { weakAreas: [] }))
+    const sectionalsOf = (plan: ReturnType<typeof buildPlan>) =>
+      plan.days.flatMap((day) => day.items.filter((item) => item.kind === "sectional").map((item) => `${day.day} ${item.section}`))
+    expect(sectionalsOf(first).slice(-3)).toEqual([`${plus(testDate, -5)} quant`, `${plus(testDate, -4)} verbal`, `${plus(testDate, -3)} di`])
+    // Quant's day is missed: the next day keeps Verbal, and Quant is dropped.
+    const next = buildPlan(inputs(settings, { today: plus(testDate, -4), start: Monday, weakAreas: [] }))
+    expect(sectionalsOf(next)).toEqual([`${plus(testDate, -4)} verbal`, `${plus(testDate, -3)} di`])
+    expect(next.dropped.filter((item) => item.kind === "sectional").map((item) => [item.section, item.reason])).toEqual([
+      ["quant", "The week has too few study days left before the test for all three Sectionals."]
+    ])
+  })
+
+  test("Mock weeks are placed from the test back, so studying on weekends gets all four Mocks", () => {
+    const weekends = { weeklyMinutes: 600, daysOff: [1, 2, 3, 4, 5] }
+    for (let offset = 36; offset < 42; offset += 1) {
+      const testDate = plus(Monday, offset)
+      const plan = buildPlan(inputs({ ...weekends, testDate }, { weakAreas: [] }))
+      const mocks = plan.days.filter((day) => day.items.some((item) => item.kind === "mock")).map((day) => dayNumber(day.day))
+      expect([testDate, mocks.length]).toEqual([testDate, 4])
+      for (let index = 1; index < mocks.length; index += 1) expect(mocks[index]! - mocks[index - 1]!).toBeGreaterThanOrEqual(3)
+    }
+    // A test on a Monday leaves its last week no study day 3 days before it:
+    // that week's Mock is listed as dropped, with the reason.
+    const monday = buildPlan(inputs({ ...weekends, testDate: plus(Monday, 35) }, { weakAreas: [] }))
+    expect(monday.days.filter((day) => day.items.some((item) => item.kind === "mock"))).toHaveLength(3)
+    expect(monday.dropped.filter((item) => item.kind === "mock").map((item) => item.reason)).toEqual([
+      "No study day in its week falls at least 3 days before the test."
+    ])
+  })
+
+  test("a mixed set done today takes its Section's next place in the turn", () => {
+    const state = { weakAreas: [], diagnostic: "done" as const }
+    const settings = { weeklyMinutes: 900, daysOff: [] }
+    const before = buildPlan(inputs(settings, state))
+    const planned = before.days[0]!.items.map((item) => item.practice?.section)
+    expect(planned).toEqual(["quant", "verbal", "di", "quant", "verbal"])
+    // The Verbal set is done first; the plan made again keeps the turn.
+    const verbal = before.days[0]!.items[1]!
+    const after = buildPlan(inputs(settings, { ...state, todayWork: [verbal] }))
+    expect(after.days[0]!.items.map((item) => item.practice?.section)).toEqual(["quant", "di", "quant", "verbal"])
+  })
+})
+
 describe("Plan size", () => {
   test("sets and Retries are planned 4 weeks ahead; later days keep their time and their Mocks", () => {
     const testDate = plus(Monday, 120)
@@ -484,7 +550,10 @@ describe("Study Plan properties", () => {
     retries: fc.array(fc.record({ offset: fc.integer({ min: 0, max: 13 }), minutes: fc.integer({ min: 1, max: 6 }), priority: fc.double({ min: 0, max: 1, noNaN: true }) }), { maxLength: 30 }),
     startBack: fc.integer({ min: 0, max: 60 }),
     work: fc.array(workArb, { maxLength: 4 }),
-    taken: fc.array(fc.record({ back: fc.integer({ min: 0, max: 6 }), mock: fc.boolean(), section: fc.constantFrom("quant", "verbal", "di") }), { maxLength: 3 }),
+    taken: fc.array(
+      fc.record({ back: fc.integer({ min: 0, max: 6 }), mock: fc.boolean(), section: fc.constantFrom("quant", "verbal", "di"), fromPlan: fc.boolean() }),
+      { maxLength: 3 }
+    ),
     // A Lesson on the Concept gap Weak Area, Percents, of any length.
     lessonMinutes: fc.option(fc.integer({ min: 1, max: 300 }), { nil: null })
   })
@@ -496,7 +565,7 @@ describe("Study Plan properties", () => {
     readonly retries: ReadonlyArray<{ readonly offset: number; readonly minutes: number; readonly priority: number }>
     readonly startBack: number
     readonly work: ReadonlyArray<{ readonly kind: "practice" | "retries" | "sectional"; readonly minutes: number; readonly area: string | null }>
-    readonly taken: ReadonlyArray<{ readonly back: number; readonly mock: boolean; readonly section: string }>
+    readonly taken: ReadonlyArray<{ readonly back: number; readonly mock: boolean; readonly section: string; readonly fromPlan: boolean }>
     readonly lessonMinutes: number | null
   }
   const toInputs = (settings: PlanInputs["settings"], state: StateSample) => {
@@ -510,8 +579,10 @@ describe("Study Plan properties", () => {
       })
     )
     const taken = [
-      ...state.taken.map((each) => takenOn(plus(Monday, -each.back), each.mock ? "mock" : "sectional", { section: each.mock ? null : each.section })),
-      ...work.filter((each) => each.kind === "sectional").map((each) => takenOn(Monday, "sectional", { section: each.section }))
+      ...state.taken.map((each) =>
+        takenOn(plus(Monday, -each.back), each.mock ? "mock" : "sectional", { section: each.mock ? null : each.section, fromPlan: each.fromPlan })
+      ),
+      ...work.filter((each) => each.kind === "sectional").map((each) => takenOn(Monday, "sectional", { section: each.section, fromPlan: true }))
     ]
     return inputs(settings, {
       start: plus(Monday, -state.startBack),
@@ -538,7 +609,9 @@ describe("Study Plan properties", () => {
     fc.assert(fc.property(settingsArb, stateArb, (settings, state) => {
       const built = toInputs(settings, state)
       const plan = buildPlan(built)
-      const done = minutesOf(built.state.todayWork)
+      // Today's plan items, and the Sectionals taken today from their own page.
+      const done = minutesOf(built.state.todayWork) +
+        built.state.taken.filter((event) => event.day === Monday && event.kind === "sectional" && !event.fromPlan).length * 45
       const retriesDone = minutesOf(built.state.todayWork.filter((item) => item.kind === "retries"))
       for (const day of plan.days) {
         if (day.off) expect(day.items).toEqual([])

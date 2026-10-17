@@ -71,6 +71,11 @@ export class NotUnlocked extends Schema.TaggedError<NotUnlocked>()(
 // without any client code.
 export const ProfileCookie = HttpApiSecurity.apiKey({ key: "gp_profile", in: "cookie" })
 
+// Marks a request a page makes on its own, such as the Plan page's timed
+// re-read: it does not count as use, so a page left open does not keep its
+// Profile unlocked.
+export const BackgroundHeader = "x-gp-background"
+
 export class CurrentProfile extends Context.Service<CurrentProfile, ProfileSummary>()(
   "gmat-prep/api/CurrentProfile"
 ) {}

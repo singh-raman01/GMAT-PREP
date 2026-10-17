@@ -1,0 +1,1 @@
+ALTER TABLE `snapshots` ADD `found` integer DEFAULT false NOT NULL;

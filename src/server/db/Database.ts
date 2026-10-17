@@ -1,10 +1,13 @@
 import { SqliteClient } from "@effect/sql-sqlite-bun"
+import { Database } from "bun:sqlite"
 import * as SQLiteBunDrizzle from "drizzle-orm/effect-sqlite-bun"
 import { Clock, Context, Effect, Layer, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/sql"
-import { mkdirSync } from "node:fs"
+import { existsSync, mkdirSync, renameSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { AppConfig } from "../AppConfig.ts"
+import { SnapshotFolder, snapshotFileName } from "../snapshots/names.ts"
+import { inRollbackMode, moveIntoPlace, PartSuffix, removeWorkFile, syncFile } from "../snapshots/workFiles.ts"
 import { bundledMigrations } from "./migrations/index.gen.ts"
 
 export class DatabaseCorrupt extends Schema.TaggedError<DatabaseCorrupt>()("DatabaseCorrupt", {
@@ -19,24 +22,90 @@ export class Db extends Context.Service<Db, SQLiteBunDrizzle.EffectSQLiteBunData
 
 export const databaseFile = (dataDir: string) => join(dataDir, "gmat-prep.sqlite")
 
+// A database file in rollback-journal mode, as one unpacked from an archive
+// or copied from a snapshot is, has no write-ahead log of its own. A log
+// beside it was left by the database that stood there before, and SQLite
+// would replay it onto this one, so it is set aside, with its index, under a
+// name that says when.
+const setAsideForeignLog = (file: string) =>
+  Effect.gen(function*() {
+    const log = `${file}-wal`
+    if (!existsSync(log) || statSync(log).size === 0 || !inRollbackMode(file)) return
+    const stamp = new Date(yield* Clock.currentTimeMillis).toISOString().replace(/[:.]/g, "-")
+    for (const suffix of ["-wal", "-shm"]) {
+      if (existsSync(`${file}${suffix}`)) renameSync(`${file}${suffix}`, `${file}${suffix}-set-aside-${stamp}`)
+    }
+    yield* Effect.logWarning(
+      `The write-ahead log beside the database belongs to another database, so it was set aside as ${log}-set-aside-${stamp}.`
+    )
+  })
+
 const SqliteLive = Layer.unwrap(
   Effect.gen(function*() {
     const { dataDir } = yield* AppConfig
     yield* Effect.sync(() => mkdirSync(dataDir, { recursive: true }))
+    yield* setAsideForeignLog(databaseFile(dataDir))
     return SqliteClient.layer({ filename: databaseFile(dataDir) })
   })
 )
 
-// Copies a consistent image of the live database into the snapshots folder.
+export class SnapshotBeforeUpdateFailed extends Schema.TaggedError<SnapshotBeforeUpdateFailed>()(
+  "SnapshotBeforeUpdateFailed",
+  { detail: Schema.String, diskFull: Schema.Boolean }
+) {}
+
+// The messages and codes along an error's causes, as SQLite's own text sits
+// below the SQL client's.
+export const causeText = (error: unknown) => {
+  const parts: Array<string> = []
+  let current: unknown = error
+  for (let depth = 0; depth < 6 && current !== undefined && current !== null; depth++) {
+    const { message, code } = current as { readonly message?: unknown; readonly code?: unknown }
+    if (typeof message === "string") parts.push(message)
+    if (typeof code === "string") parts.push(code)
+    current = (current as { readonly cause?: unknown }).cause
+  }
+  return parts.join(": ")
+}
+
+export const isDiskFull = (detail: string) => /database or disk is full|no space left on device|ENOSPC|SQLITE_FULL/i.test(detail)
+
+// Copies a consistent image of the live database into the snapshots folder:
+// under a temporary name until SQLite's check passes and it is on the disk,
+// then under its own. Nothing is left behind when it fails.
 export const takeSnapshot = Effect.fn("takeSnapshot")(function*(kind: string) {
   const { dataDir } = yield* AppConfig
   const sql = yield* SqlClient.SqlClient
   const now = yield* Clock.currentTimeMillis
-  const folder = join(dataDir, "snapshots")
-  yield* Effect.sync(() => mkdirSync(folder, { recursive: true }))
-  const file = join(folder, `${kind}-${new Date(now).toISOString().replace(/[:.]/g, "-")}.sqlite`)
-  yield* sql`VACUUM INTO ${file}`
-  return file
+  const folder = join(dataDir, SnapshotFolder)
+  const name = snapshotFileName(kind, now, crypto.randomUUID().slice(0, 8))
+  const part = join(folder, `${name}${PartSuffix}`)
+  return yield* Effect.gen(function*() {
+    yield* Effect.try({ try: () => mkdirSync(folder, { recursive: true }), catch: (cause) => cause })
+    yield* sql`VACUUM INTO ${part}`
+    yield* Effect.try({
+      try: () => {
+        const copy = new Database(part, { readonly: true })
+        let verdict: string
+        try {
+          verdict = (copy.query("PRAGMA quick_check").values() as Array<[string]>).map((row) => row[0]).join("; ")
+        } finally {
+          copy.close()
+        }
+        if (verdict !== "ok") throw new Error(`The copy failed SQLite's check: ${verdict}`)
+        syncFile(part)
+        moveIntoPlace(part, join(folder, name))
+      },
+      catch: (cause) => cause
+    })
+    return name
+  }).pipe(
+    Effect.onError(() => Effect.sync(() => removeWorkFile(part))),
+    Effect.mapError((cause) => {
+      const detail = causeText(cause)
+      return new SnapshotBeforeUpdateFailed({ detail, diskFull: isDiskFull(detail) })
+    })
+  )
 })
 
 const checkIntegrity = Effect.gen(function*() {
@@ -75,9 +144,9 @@ export const sha256 = (text: string) => new Bun.CryptoHasher("sha256").update(te
 // them on would cascade-delete every row that refers to it. Each migration
 // then checks every reference and rolls back if any is broken.
 //
-// An upgrade of an existing database is preceded by a snapshot, and a
-// database that holds migrations this build does not know was written by a
-// newer version, so it is left untouched.
+// An upgrade of an existing database is preceded by a snapshot, whose file
+// name it returns, and a database that holds migrations this build does not
+// know was written by a newer version, so it is left untouched.
 const applyMigrations = (bundled: ReadonlyArray<Migration>) => Effect.gen(function*() {
   const sql = yield* SqlClient.SqlClient
 
@@ -100,12 +169,10 @@ const applyMigrations = (bundled: ReadonlyArray<Migration>) => Effect.gen(functi
 
   const pending = bundled.filter((migration) => !applied.includes(migration.name))
   if (pending.length === 0) {
-    return
+    return null
   }
-  if (applied.length > 0) {
-    const file = yield* takeSnapshot("pre-migration")
-    yield* Effect.logInfo(`Snapshot taken before migrating: ${file}`)
-  }
+  const taken = applied.length > 0 ? yield* takeSnapshot("pre-migration") : null
+  if (taken !== null) yield* Effect.logInfo(`Snapshot taken before migrating: ${taken}`)
 
   yield* sql`PRAGMA foreign_keys = OFF`
   yield* Effect.forEach(pending, (migration) =>
@@ -125,18 +192,27 @@ const applyMigrations = (bundled: ReadonlyArray<Migration>) => Effect.gen(functi
     }).pipe(sql.withTransaction)
   ).pipe(Effect.ensuring(sql`PRAGMA foreign_keys = ON`.pipe(Effect.orDie)))
   yield* Effect.logInfo(`Applied ${pending.length} migration(s)`)
+  return taken
 })
 
 const DbLive = Layer.effect(Db, SQLiteBunDrizzle.makeWithDefaults())
 
+// The snapshot this start took before migrating, if it took one: its file
+// in the snapshots folder, which the app records as its own once its tables
+// are in place.
+export class StartupSnapshot extends Context.Service<StartupSnapshot, { readonly file: string | null }>()(
+  "gmat-prep/server/StartupSnapshot"
+) {}
+
 // Opens the database, checks it, and brings its schema up to date.
 export const makeDatabaseLive = (migrations: ReadonlyArray<Migration>) =>
-  Layer.effectDiscard(
+  Layer.effect(
+    StartupSnapshot,
     Effect.gen(function*() {
       const sql = yield* SqlClient.SqlClient
       yield* sql`PRAGMA foreign_keys = ON`
       yield* checkIntegrity
-      yield* applyMigrations(migrations)
+      return StartupSnapshot.of({ file: yield* applyMigrations(migrations) })
     })
   ).pipe(
     Layer.provideMerge(DbLive),

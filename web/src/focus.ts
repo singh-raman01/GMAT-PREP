@@ -10,3 +10,13 @@ export const useFocusOnMount = <E extends HTMLElement>() => {
   }, [])
   return ref
 }
+
+// The same for a heading that is drawn only once the screen's content has
+// arrived: focus moves when ready turns true.
+export const useFocusWhenReady = <E extends HTMLElement>(ready: boolean) => {
+  const ref = useRef<E>(null)
+  useEffect(() => {
+    if (ready) ref.current?.focus()
+  }, [ready])
+  return ref
+}

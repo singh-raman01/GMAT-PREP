@@ -15,7 +15,7 @@ import { dailyNotes, jobs, profiles, snapshots } from "../src/server/db/schema.t
 import { hashFile, migrateDatabase } from "../src/server/snapshots/files.ts"
 import { snapshotFileName } from "../src/server/snapshots/names.ts"
 import { Snapshots } from "../src/server/snapshots/Snapshots.ts"
-import { curatorBrowser } from "./bookFlow.ts"
+import { curatorBrowser, passphrase } from "./bookFlow.ts"
 import { CopierFaults, runWithWorkers, tempDataDir } from "./harness.ts"
 
 // Snapshots of the database and restoring one (decisions 109 to 112).
@@ -69,7 +69,7 @@ describe("Taking snapshots", () => {
       const db = yield* Db
       expect((yield* db.select().from(snapshots)).map((row) => [row.kind, row.day])).toEqual([["daily", "2026-11-02"]])
       const first = (yield* snapshotsService.list).integrity!
-      expect(first).toMatchObject({ ok: true, detail: "ok", at: Start })
+      expect(first).toMatchObject({ outcome: "ok", detail: "ok", at: Start, afterRestore: false })
       yield* TestClock.adjust("1 day")
       yield* snapshotsService.tend
       expect((yield* db.select().from(snapshots)).map((row) => row.day).toSorted()).toEqual(["2026-11-02", "2026-11-03"])
@@ -139,7 +139,7 @@ describe("Restoring a snapshot", () => {
       yield* TestClock.adjust("1 minute")
       yield* asha.plan.writeNote({ params: { day: "2026-11-02" }, payload: { note: "After." } })
       const ben = yield* learner("Ben")
-      const done = yield* curator.api.snapshots.restore({ params: { id: before.id } })
+      const done = yield* curator.api.snapshots.restore({ params: { id: before.id }, payload: { passphrase } })
       expect(done.restored.id).toBe(before.id)
       expect(done.replaced.kind).toBe("pre-restore")
       const db = yield* Db
@@ -159,16 +159,16 @@ describe("Restoring a snapshot", () => {
       expect(readdirSync(yield* folderOf).some((name) => name.startsWith("restore-"))).toBe(false)
     })))
 
-  test("leaves the weekly check's outcome as it was, as it is about the database file", () =>
+  test("runs the full check right after, as a restore cannot repair damage in the file itself", () =>
     run(Effect.gen(function*() {
       const curator = yield* curatorBrowser
       const first = (yield* curator.api.snapshots.take()).snapshots[0]!
       yield* TestClock.adjust("1 minute")
       yield* (yield* Snapshots).tend
-      const checked = (yield* curator.api.snapshots.list()).integrity
-      expect(checked).toMatchObject({ ok: true })
-      yield* curator.api.snapshots.restore({ params: { id: first.id } })
-      expect((yield* curator.api.snapshots.list()).integrity).toEqual(checked)
+      expect((yield* curator.api.snapshots.list()).integrity).toMatchObject({ outcome: "ok", afterRestore: false, at: Start + 60_000 })
+      yield* TestClock.adjust("1 minute")
+      yield* curator.api.snapshots.restore({ params: { id: first.id }, payload: { passphrase } })
+      expect((yield* curator.api.snapshots.list()).integrity).toMatchObject({ outcome: "ok", afterRestore: true, at: Start + 120_000 })
     })))
 
   test("brings an older snapshot to this version's tables first", () =>
@@ -187,7 +187,7 @@ describe("Restoring a snapshot", () => {
       })
       yield* (yield* Snapshots).tend
       const found = (yield* curator.api.snapshots.list()).snapshots.find((each) => each.kind === "pre-migration")!
-      yield* curator.api.snapshots.restore({ params: { id: found.id } })
+      yield* curator.api.snapshots.restore({ params: { id: found.id }, payload: { passphrase } })
       const db = yield* Db
       expect((yield* db.select({ name: profiles.name }).from(profiles)).map((row) => row.name)).toEqual(["Old"])
     })))
@@ -204,11 +204,11 @@ describe("Restoring a snapshot", () => {
         file.run("INSERT INTO __drizzle_migrations (hash, name) VALUES ('x', '29990101000000_from_the_future')")
         file.close()
       })
-      const changed = yield* curator.api.snapshots.restore({ params: { id: first.id } }).pipe(Effect.flip)
+      const changed = yield* curator.api.snapshots.restore({ params: { id: first.id }, payload: { passphrase } }).pipe(Effect.flip)
       expect(changed).toMatchObject({ _tag: "SnapshotUnusable", reason: "changed" })
-      // Recorded without a checksum, as one found in the folder is.
+      // Recorded without a checksum, as an earlier version recorded a file it found.
       yield* db.update(snapshots).set({ sha256: null }).where(eq(snapshots.id, first.id))
-      const newer = yield* curator.api.snapshots.restore({ params: { id: first.id } }).pipe(Effect.flip)
+      const newer = yield* curator.api.snapshots.restore({ params: { id: first.id }, payload: { passphrase } }).pipe(Effect.flip)
       expect(newer).toMatchObject({ _tag: "SnapshotUnusable", reason: "newer" })
     })))
 
@@ -227,10 +227,10 @@ describe("Restoring a snapshot", () => {
         createdAt: Start,
         updatedAt: Start
       })
-      const busy = yield* curator.api.snapshots.restore({ params: { id: first.id } }).pipe(Effect.flip)
+      const busy = yield* curator.api.snapshots.restore({ params: { id: first.id }, payload: { passphrase } }).pipe(Effect.flip)
       expect(busy).toMatchObject({ _tag: "RestoreBlocked", reason: "job-running" })
       yield* db.update(jobs).set({ status: "done" }).where(eq(jobs.id, "job-1"))
-      const restored = yield* curator.api.snapshots.restore({ params: { id: first.id } })
+      const restored = yield* curator.api.snapshots.restore({ params: { id: first.id }, payload: { passphrase } })
       expect(restored.restored.id).toBe(first.id)
       // The job the snapshot did not hold is gone with the rest.
       expect(yield* db.select().from(jobs)).toEqual([])

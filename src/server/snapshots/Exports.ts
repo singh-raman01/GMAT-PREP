@@ -6,22 +6,25 @@ import { join } from "node:path"
 import { ExportFailed, InstallExportView, ProfileExport } from "../../api/Exports.ts"
 import { ProfileId } from "../../api/Profiles.ts"
 import { AppConfig } from "../AppConfig.ts"
-import { databaseFile, Db } from "../db/Database.ts"
+import { causeText, databaseFile, Db, isDiskFull } from "../db/Database.ts"
 import { profiles } from "../db/schema.ts"
 import { SnapshotCopier } from "./copier.ts"
 import { type TarEntry, writeTar } from "./tar.ts"
+import { moveIntoPlace, PartSuffix, removeWorkFile } from "./workFiles.ts"
 
 // Exports (decisions 113 and 114): a Profile's rows as JSON for the
 // Learner, and the whole install as one archive for the Curator to move to
 // another computer, without who may reach this one (decision 119).
 
 const ExportFolder = "exports"
-const ArchivePattern = /^gmat-prep-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z\.tar$/
+// An archive's name says when it was made, with a tag of its own, so two
+// made in the same second never share one.
+const ArchivePattern = /^gmat-prep-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(?:-[0-9a-f]{8})?\.tar$/
+// The database copy an archive is made from.
+const CopyPattern = /^database-[0-9a-f-]{36}\.sqlite(?:-journal)?$/
 
 // Tables a Profile's export leaves out: who is signed in.
 const NotExported = new Set(["profile_unlocks"])
-
-const isDiskFull = (detail: string) => /no space left on device|ENOSPC|database or disk is full|SQLITE_FULL/i.test(detail)
 
 export class Exports extends Context.Service<Exports, {
   profile(profileId: string): Effect.Effect<ProfileExport>
@@ -40,6 +43,21 @@ export class Exports extends Context.Service<Exports, {
       const { dataDir } = yield* AppConfig
       const folder = join(dataDir, ExportFolder)
       const oneAtATime = (yield* Semaphore.make(1)).withPermits(1)
+
+      // Work a stop cut short: archives still under their temporary names,
+      // and the database copies they were made from. None is in progress yet.
+      yield* Effect.sync(() => {
+        let names: ReadonlyArray<string>
+        try {
+          names = readdirSync(folder)
+        } catch {
+          return
+        }
+        for (const name of names) {
+          const part = name.endsWith(PartSuffix) && ArchivePattern.test(name.slice(0, -PartSuffix.length))
+          if (part || CopyPattern.test(name)) rmSync(join(folder, name), { force: true })
+        }
+      })
 
       // Every table with a Profile's rows: those with a profile_id, and
       // those whose rows belong to one of them, such as a Session's served
@@ -95,9 +113,13 @@ export class Exports extends Context.Service<Exports, {
           })
         }).pipe(Effect.orDie)
 
+      // The archives in the folder, oldest first.
       const archives = Effect.sync(() => {
         try {
-          return readdirSync(folder).filter((name) => ArchivePattern.test(name)).toSorted()
+          return readdirSync(folder).filter((name) => ArchivePattern.test(name))
+            .map((name) => ({ name, at: statSync(join(folder, name)).mtimeMs }))
+            .toSorted((a, b) => a.at - b.at || (a.name < b.name ? -1 : 1))
+            .map((archive) => archive.name)
         } catch {
           return []
         }
@@ -126,11 +148,15 @@ export class Exports extends Context.Service<Exports, {
         }
       }
 
+      // The archive is written under a temporary name and takes its own only
+      // once it is whole, so the Data page never offers one being written or
+      // cut short. A failure removes only what this attempt made.
       const install = Effect.gen(function*() {
         const now = yield* Clock.currentTimeMillis
         const stamp = new Date(now).toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:/g, "-")
-        const name = `gmat-prep-${stamp}.tar`
+        const name = `gmat-prep-${stamp}-${crypto.randomUUID().slice(0, 8)}.tar`
         const target = join(folder, name)
+        const part = `${target}${PartSuffix}`
         const database = join(folder, `database-${crypto.randomUUID()}.sqlite`)
         const fail = (detail: string) =>
           new ExportFailed({
@@ -146,14 +172,24 @@ export class Exports extends Context.Service<Exports, {
             ...filesOf("books", /^[0-9a-f]{64}\.pdf$/),
             ...filesOf("figures", /^[0-9a-f]{64}\.png$/)
           ]
-          yield* Effect.tryPromise({ try: () => writeTar(target, entries), catch: (cause) => fail(cause instanceof Error ? cause.message : String(cause)) })
+          yield* Effect.tryPromise({ try: () => writeTar(part, entries), catch: (cause) => fail(causeText(cause)) })
+          yield* Effect.try({ try: () => moveIntoPlace(part, target), catch: (cause) => fail(causeText(cause)) })
           // Only the latest archive is kept.
-          for (const old of yield* archives) if (old !== name) yield* Effect.sync(() => rmSync(join(folder, old), { force: true }))
+          for (const old of yield* archives) {
+            if (old === name) continue
+            yield* Effect.sync(() => {
+              try {
+                rmSync(join(folder, old), { force: true })
+              } catch {
+                // Tried again after the next archive.
+              }
+            })
+          }
           return viewOf(name)
-        }).pipe(
-          Effect.tapError(() => Effect.sync(() => rmSync(target, { force: true }))),
-          Effect.ensuring(Effect.sync(() => rmSync(database, { force: true })))
-        )
+        }).pipe(Effect.ensuring(Effect.sync(() => {
+          removeWorkFile(part)
+          removeWorkFile(database)
+        })))
       }).pipe(oneAtATime)
 
       const installFile = Effect.gen(function*() {

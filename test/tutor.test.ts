@@ -70,7 +70,7 @@ describe("Tutor Chat", () => {
       const answeredIds = yield* answerUntimed(asha, 2)
       const id = answeredIds[0]!
       // Not set up yet: the chat says so.
-      expect((yield* asha.tutor.conversation({ params: { id } })).state).toBe("not-set-up")
+      expect((yield* asha.tutor.conversation({ params: { id }, query: {} })).state).toBe("not-set-up")
       const refused = yield* asha.tutor.ask({ params: { id }, payload: { message: "Why is B wrong?" } }).pipe(Effect.flip)
       expect(refused._tag).toBe("TutorNotSetUp")
       yield* configure
@@ -89,9 +89,10 @@ describe("Tutor Chat", () => {
       expect(user).toContain("Right answer: C")
       expect(user).toContain("- B: wrong")
       expect(user).toContain("Why is B wrong?")
-      // The same message, spaced and cased differently: the stored reply.
+      // The same message, spaced and cased differently: the stored reply,
+      // counted on the exchange it repeats.
       const again = yield* asha.tutor.ask({ params: { id }, payload: { message: "  why is b   WRONG? " } })
-      expect(again.exchanges.map((each) => each.reused)).toEqual([false, true])
+      expect(again.exchanges.map((each) => [each.message, each.reused])).toEqual([["Why is B wrong?", true]])
       expect((yield* fake.requests).length).toBe(1)
       // Another Profile asking the same gets its own reply.
       const ben = yield* learner("Ben")
@@ -104,7 +105,7 @@ describe("Tutor Chat", () => {
       const db = yield* Db
       const unanswered = (yield* db.select({ id: questions.id }).from(questions).pipe(Effect.orDie))
         .map((row) => row.id as QuestionId).find((each) => !answeredIds.includes(each))!
-      const closed = yield* asha.tutor.conversation({ params: { id: unanswered } }).pipe(Effect.flip)
+      const closed = yield* asha.tutor.conversation({ params: { id: unanswered }, query: {} }).pipe(Effect.flip)
       expect(closed._tag).toBe("TutorQuestionClosed")
     })))
 
@@ -132,7 +133,7 @@ describe("Tutor Chat", () => {
         "TutorCapReached"
       )
       expect((yield* fake.requests).length).toBe(calls)
-      expect((yield* asha.tutor.conversation({ params: { id: id! } })).state).toBe("cap-reached")
+      expect((yield* asha.tutor.conversation({ params: { id: id! }, query: {} })).state).toBe("cap-reached")
       // Practice still works.
       const next = yield* asha.practice.start({ payload: { choice: { kind: "filters", status: "unseen", size: 1 } } })
       expect(next.total).toBe(1)

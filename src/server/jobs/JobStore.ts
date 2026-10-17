@@ -289,7 +289,8 @@ export class JobStore extends Context.Service<JobStore, {
         )
 
       // Takes the oldest job that is waiting, due to resume, or left by a
-      // worker that stopped. One statement, so two workers never share a job.
+      // worker that stopped. The claim is one statement, so two workers never
+      // share a job.
       const claim = (workerId: string) =>
         Effect.gen(function*() {
           const now = yield* Clock.currentTimeMillis
@@ -302,6 +303,10 @@ export class JobStore extends Context.Service<JobStore, {
             order by ${jobs.createdAt}
             limit 1
           )`
+          // A read first, so a worker with nothing to do never waits for the
+          // write lock, which a restore holds for seconds.
+          const [waiting] = yield* db.select({ id: jobs.id }).from(jobs).where(eq(jobs.id, claimable)).pipe(Effect.orDie)
+          if (waiting === undefined) return Option.none()
           const [claimed] = yield* db.update(jobs)
             .set({
               status: "running",

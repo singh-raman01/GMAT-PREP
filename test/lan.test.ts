@@ -240,7 +240,7 @@ describe("LAN mode", () => {
       yield* phone.api.pairing.pair({ payload: { code: (yield* host.curatorLan.makeCode()).code, name: "Phone" } })
       const listed = (yield* host.curatorLan.view()).devices
       yield* host.curatorLan.revoke({ params: { id: listed.find((each) => each.name === "Phone")!.id } })
-      yield* host.snapshots.restore({ params: { id: taken.id } })
+      yield* host.snapshots.restore({ params: { id: taken.id }, payload: { passphrase: "correct horse battery" } })
       const view = yield* host.curatorLan.view()
       expect(view.on).toBe(true)
       expect(view.devices.map((each) => [each.name, each.revokedAt === null])).toEqual([["Tablet", true], ["Phone", false]])

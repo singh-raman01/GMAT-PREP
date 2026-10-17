@@ -2,7 +2,7 @@
 // tag in the text that the prompts use is broken, whatever its case or
 // spacing, so the text can neither close its quote early nor open another.
 
-const PromptTags = ["page", "next-page", "question", "chapter-before"]
+const PromptTags = ["page", "next-page", "question", "chapter-before", "learner", "tutor", "message"]
 
 const TagStart = new RegExp(`<(?=\\s*/?\\s*(?:${PromptTags.join("|")})\\b)`, "gi")
 

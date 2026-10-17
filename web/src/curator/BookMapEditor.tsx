@@ -250,6 +250,10 @@ export const BookMapEditor = (
         return showProblems(["The book changed in the meantime; reload the page."])
       case "RunCapNeeded":
         return showProblems(["Enter a spend cap for extraction."])
+      case "SnapshotFailed":
+        return showProblems([
+          `The Book Map was not confirmed, as the snapshot taken before extracting again failed: ${result.failure.detail}`
+        ])
       default:
         // A map the API's checks refuse, which the checks here should have
         // caught first.

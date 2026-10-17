@@ -24,6 +24,7 @@ import { TargetSecondsRange } from "../../../src/api/targetTimes.ts"
 import type { TutorSpendView } from "../../../src/api/Tutor.ts"
 import { call } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
+import { dayAndTime } from "../format.ts"
 
 interface Props {
   readonly onLocked: () => void
@@ -834,6 +835,12 @@ const TutorCap = ({ onFailure }: { readonly onFailure: (failure: { readonly _tag
         {formatDollars(spend.spent)} this month; once it reaches the
         cap, the chat says so until the month ends or you raise it.
       </p>
+      {spend.refused !== null && (
+        <p className="problem tutor-refused">
+          The model's API refused the latest Tutor Chat call, on {dayAndTime(spend.refused.at)}, saying "{spend.refused.detail}".
+          Learners are told to come to you. Check the API key and the Tutor Chat model above, then test the connection.
+        </p>
+      )}
       <form className="tutor-cap" noValidate onSubmit={(event) => void save(event)}>
         <div className="field">
           <label htmlFor={`${id}-cap`}>Monthly cap, dollars</label>
