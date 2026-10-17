@@ -869,3 +869,57 @@ export const dailyNotes = sqliteTable(
   },
   (t) => [index("daily_notes_profile_day").on(t.profileId, t.day)]
 )
+
+// A Lesson for a subject, a Skill or a Question Type: a version for each
+// time the worker writes one (decisions 93 to 97). Learners see the latest
+// approved version; a newer draft waits for the Curator.
+export const lessons = sqliteTable(
+  "lessons",
+  {
+    id: text("id").primaryKey(),
+    // skill or questionType
+    subjectKind: text("subject_kind").notNull(),
+    subjectId: text("subject_id").notNull(),
+    version: integer("version").notNull(),
+    // draft, approved or rejected
+    status: text("status").notNull(),
+    // JSON: the subject as the Taxonomy described it when the Lesson was
+    // written, so a change to it marks the Lesson for rewriting.
+    basis: text("basis").notNull(),
+    // JSON: the rules, methods, traps and the worked examples' walkthroughs.
+    content: text("content").notNull(),
+    // Its words, and the methods part's, for the Study Plan's estimate.
+    words: integer("words").notNull(),
+    methodsWords: integer("methods_words").notNull(),
+    // JSON arrays of Question ids, in the order picked.
+    examples: text("examples").notNull(),
+    checks: text("checks").notNull(),
+    model: text("model").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    jobId: text("job_id"),
+    createdAt: integer("created_at").notNull(),
+    decidedAt: integer("decided_at"),
+    // The Curator's note on a rejection.
+    note: text("note")
+  },
+  (t) => [uniqueIndex("lessons_subject_version").on(t.subjectKind, t.subjectId, t.version)]
+)
+
+// A Profile opening a Lesson, or marking a part of it read (decisions 99 and
+// 101). The worked examples count as Seen from the first time it opens.
+export const lessonViews = sqliteTable(
+  "lesson_views",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    lessonId: text("lesson_id").notNull().references(() => lessons.id, { onDelete: "restrict" }),
+    // opened or read
+    kind: text("kind").notNull(),
+    // whole or methods
+    part: text("part").notNull(),
+    // The Study Plan item it was opened from, if any.
+    planItemId: text("plan_item_id"),
+    viewedAt: integer("viewed_at").notNull()
+  },
+  (t) => [index("lesson_views_profile").on(t.profileId, t.viewedAt)]
+)

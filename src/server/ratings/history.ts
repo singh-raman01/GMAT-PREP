@@ -3,9 +3,9 @@ import { Effect } from "effect"
 import { type DayRule, studyDaysUnder } from "../../api/studyDay.ts"
 import { Db } from "../db/Database.ts"
 import { difficulty, questions, responses, servedQuestions, sessions } from "../db/schema.ts"
-import { currentDifficulty, isCorrect, keysOf, mergeTargets, paperSeenBy, readSelection } from "../practice/history.ts"
+import { currentDifficulty, isCorrect, keysOf, mergeTargets, seenWithoutSessionsBy, readSelection } from "../practice/history.ts"
 import { type AbilityFit, fitAbility, recencyWeight } from "./model.ts"
-import { firstSeenOf, paperEvents, ratedResponses, type SeenEvent } from "./rated.ts"
+import { firstSeenOf, unservedEvents, ratedResponses, type SeenEvent } from "./rated.ts"
 
 // A Profile's Rated Responses with what the fits need: each Question's
 // Section and current Difficulty, and whether the Response is right against
@@ -68,7 +68,7 @@ export const ratedHistory = (profileId: string, known?: ReadonlyArray<ServingFac
     }
     const served = [...firsts.values()]
       .map((event): SeenEvent => ({ ...event, questionId: resolve(event.questionId) }))
-      .concat(paperEvents(yield* paperSeenBy(profileId)))
+      .concat(unservedEvents(yield* seenWithoutSessionsBy(profileId)))
     // Only Responses in a timed set where their Question was first Seen can
     // be Rated, so only those sets' Responses are read.
     const firstSets = [...new Set([...firstSeenOf(served).values()].filter((event) => event.timed).map((event) => event.sessionId))]

@@ -109,7 +109,9 @@ const PracticeConfig = Schema.Struct({
   unavailable: Schema.Array(Ref),
   // For a retry set: the Error Log entry and Retry Ladder step each planned
   // Question is for.
-  retry: Schema.optional(Schema.Array(RetryItem))
+  retry: Schema.optional(Schema.Array(RetryItem)),
+  // For a Lesson's check: the Lesson (decision 100).
+  lesson: Schema.optional(Schema.Struct({ id: Schema.String }))
 })
 type PracticeConfig = typeof PracticeConfig.Type
 const encodeConfig = Schema.encodeSync(Schema.fromJsonString(PracticeConfig))
@@ -212,6 +214,14 @@ export class Practice extends Context.Service<Practice, {
     items: ReadonlyArray<RetryItem>,
     timed: boolean,
     slow: ReadonlySet<string>,
+    planItemId?: string
+  ): Effect.Effect<PracticeView>
+  // A Lesson's check (decision 100): an untimed set of the Questions the
+  // caller has chosen.
+  startLessonCheck(
+    caller: Caller,
+    lesson: { readonly id: string; readonly title: string },
+    questionIds: ReadonlyArray<string>,
     planItemId?: string
   ): Effect.Effect<PracticeView>
 }>()("gmat-prep/server/Practice") {
@@ -1105,8 +1115,27 @@ export class Practice extends Context.Service<Practice, {
           retry: [...items]
         }, crypto.randomUUID(), timed, (position) => (slow.has(items[position]!.entry) ? SlowFactor : 1), planItemId).pipe(oneAtATime)
 
+      const startLessonCheck = (
+        caller: Caller,
+        lesson: { readonly id: string; readonly title: string },
+        questionIds: ReadonlyArray<string>,
+        planItemId?: string
+      ) =>
+        begin(caller, {
+          title: lesson.title,
+          choice: null,
+          similarTo: null,
+          requested: null,
+          bookId: null,
+          planned: [...questionIds],
+          heldForMocks: [],
+          unavailable: [],
+          lesson: { id: lesson.id }
+        }, crypto.randomUUID(), false, undefined, planItemId).pipe(oneAtATime)
+
       return Practice.of({
         startRetries,
+        startLessonCheck,
         options,
         preview,
         start,
