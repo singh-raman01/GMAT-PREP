@@ -13,6 +13,7 @@ import { Generation } from "./Generation.tsx"
 import { GoldenSet } from "./GoldenSet.tsx"
 import { OverviewPage } from "./OverviewPage.tsx"
 import { SiblingsPage } from "./SiblingsPage.tsx"
+import { CuratorLesson, CuratorLessons } from "./LessonsPage.tsx"
 import { ReviewQueue } from "./ReviewQueue.tsx"
 
 type Stop = (error: { readonly _tag: string }) => void
@@ -82,10 +83,13 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
         ? "generate"
         : path.startsWith("/curator/siblings")
         ? "siblings"
+        : path.startsWith("/curator/lessons")
+        ? "lessons"
         : path.startsWith("/curator/books")
         ? "books"
         : "overview"
       const bookId = /^\/curator\/books\/([^/]+)/.exec(path)?.[1]
+      const lessonId = /^\/curator\/lessons\/([^/]+)/.exec(path)?.[1]
       return (
         <>
           <header className="topbar">
@@ -118,6 +122,9 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
               <a {...linkProps("/curator/siblings")} aria-current={section === "siblings" ? "page" : undefined}>
                 <span className={section === "siblings" ? "mark" : undefined}>Siblings</span>
               </a>
+              <a {...linkProps("/curator/lessons")} aria-current={section === "lessons" && lessonId === undefined ? "page" : undefined}>
+                <span className={section === "lessons" ? "mark" : undefined}>Lessons</span>
+              </a>
               <a {...linkProps("/curator/jobs")} aria-current={section === "jobs" ? "page" : undefined}>
                 <span className={section === "jobs" ? "mark" : undefined}>Jobs</span>
               </a>
@@ -144,6 +151,10 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
               ? <Generation key="generate" onLocked={locked} onStopped={onStopped} />
               : section === "siblings"
               ? <SiblingsPage key="siblings" onLocked={locked} onStopped={onStopped} />
+              : section === "lessons"
+              ? lessonId === undefined
+                ? <CuratorLessons key="lessons" onLocked={locked} onStopped={onStopped} />
+                : <CuratorLesson key={lessonId} id={lessonId} onLocked={locked} onStopped={onStopped} />
               : section === "overview"
               ? <OverviewPage key="overview" onLocked={locked} onStopped={onStopped} />
               : bookId !== undefined

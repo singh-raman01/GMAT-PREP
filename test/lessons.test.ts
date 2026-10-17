@@ -169,6 +169,43 @@ describe("A Learner's Lesson", () => {
     })), 60_000)
 })
 
+describe("Rated Responses after a Lesson", () => {
+  test("a worked example first Seen in the Lesson is never Rated, though answered later in a timed set", () =>
+    run(Effect.gen(function*() {
+      yield* configure
+      yield* seedBook("Algebra", numbered(8, { seed: 0 }))
+      const curator = yield* curatorBrowser
+      const job = yield* curator.api.curatorLessons.write({ payload: { subjects: [PsSkill], spendCap: 1 } })
+      yield* advanceUntil(
+        curator.api.jobs.list().pipe(Effect.map((jobs) => jobs.find((each) => each.id === job.id && each.status === "done"))),
+        { step: "200 millis", maxSteps: 2000 }
+      )
+      const draftId = (yield* curator.api.curatorLessons.overview()).rows.find((each) => each.subject.id === PsSkill)!.draft!.id
+      yield* curator.api.curatorLessons.approve({ params: { id: draftId } })
+      const asha = yield* learner("Asha")
+      const lesson = yield* asha.lessons.open({ params: { subject: PsSkill }, payload: { part: "whole" } })
+      const exampleIds = new Set(lesson.body.examples.map((each) => each.question.id as string))
+      // Every Question, timed: the worked examples come too, as Seen.
+      let set: PracticeView = yield* asha.practice.start({
+        payload: { choice: { kind: "filters", status: "any", size: 8, timed: true } }
+      })
+      expect(set.total).toBe(8)
+      while (set.current !== null && set.status === "active") {
+        yield* TestClock.adjust("60 seconds")
+        set = yield* asha.practice.answer({
+          params: { id: set.id },
+          payload: { seq: set.nextSeq, questionId: set.current.question.id, selection: [{ part: 0, choice: "C" }], guessed: false }
+        })
+      }
+      const rated = new Map<string, boolean>()
+      for (let position = 0; position < set.total; position++) {
+        const served = yield* asha.practice.review({ params: { id: set.id, position } })
+        rated.set(served.question.id, served.response!.rated)
+      }
+      for (const [id, isRated] of rated) expect({ id, isRated }).toEqual({ id, isRated: !exampleIds.has(id) })
+    })), 60_000)
+})
+
 describe("Marking for rewriting", () => {
   test("a Taxonomy change to the subject marks its Lesson, which a new version replaces once approved", () =>
     run(Effect.gen(function*() {

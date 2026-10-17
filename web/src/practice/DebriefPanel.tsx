@@ -4,7 +4,9 @@ import type { ErrorLogEntry } from "../../../src/api/ErrorLog.ts"
 import type { Debrief, MissedPartView, MistakesView, PracticePart, ResponseView, TrapNoteView } from "../../../src/api/Practice.ts"
 import { call } from "../api.ts"
 import { spokenDuration } from "../format.ts"
+import { useLessonOn } from "../lessons/available.ts"
 import { RichText } from "../RichText.tsx"
+import { linkProps } from "../router.ts"
 import { reportUnsaved } from "../unsaved.ts"
 
 // What a Learner reads after a Question: whether the answer was right, why
@@ -142,7 +144,21 @@ export const DebriefPanel = (
             </ol>
           </>
         )}
+      <LessonLink skill={debrief.skill} />
     </section>
+  )
+}
+
+// The Lesson on the Question's primary Skill, once approved (decision 102).
+const LessonLink = ({ skill }: { readonly skill: Debrief["skill"] }) => {
+  const lesson = useLessonOn(skill?.id)
+  if (lesson === undefined) return null
+  return (
+    <p className="debrief-lesson">
+      <a className="button button-quiet" {...linkProps(`/lessons/${lesson.subject.id}`)}>
+        Read the Lesson on {lesson.subject.name}
+      </a>
+    </p>
   )
 }
 

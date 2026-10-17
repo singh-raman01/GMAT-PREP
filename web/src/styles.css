@@ -3414,3 +3414,127 @@ input[type="date"] {
 .score-list ~ .hint {
   margin-top: 0.75rem;
 }
+
+/* Lessons: one column of reading, the measure of a book page, with each
+   part under its own heading and each worked example set off by a rule. */
+
+.lesson {
+  max-width: 44rem;
+}
+
+.lesson .lede {
+  margin-bottom: 2.5rem;
+}
+
+.lesson-part > h2 {
+  margin-bottom: 1rem;
+}
+
+.lesson-rule + .lesson-rule {
+  margin-top: 1.5rem;
+}
+
+.lesson-rule h3,
+.lesson-methods h3,
+.lesson-traps h3,
+.worked-example h3 {
+  margin-bottom: 0.4rem;
+  font-size: var(--step-1);
+}
+
+.lesson-methods,
+.lesson-traps {
+  display: grid;
+  gap: 1.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lesson-methods .hint {
+  margin: 0 0 0.4rem;
+}
+
+.lesson-when {
+  margin: 0 0 0.6rem;
+}
+
+.lesson-traps li {
+  padding-left: 1rem;
+  border-left: 4px solid var(--highlight);
+}
+
+.worked-example {
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--rule);
+}
+
+.worked-example + .worked-example {
+  margin-top: 2rem;
+}
+
+.worked-question {
+  display: grid;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.walkthrough {
+  padding: 1rem 1.25rem;
+  background: var(--hover);
+  border-radius: var(--radius);
+}
+
+.walkthrough h4 {
+  margin-bottom: 0.5rem;
+  font-size: var(--step-0);
+}
+
+.lesson-part .actions + .actions {
+  margin-top: 1rem;
+}
+
+.lesson-part .actions .saved {
+  margin: 0;
+}
+
+.debrief-lesson {
+  margin: 1.5rem 0 0;
+}
+
+.lesson-group + .lesson-group {
+  margin-top: 2rem;
+}
+
+.lesson-write {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 1rem 1.5rem;
+  margin: 0 0 2.5rem;
+}
+
+.lesson-rows li > .button {
+  flex: none;
+}
+
+.lesson-decision {
+  margin-top: 3rem;
+  padding-top: 1.5rem;
+  border-top: 2px solid var(--graphite);
+}
+
+.lesson-decision textarea {
+  width: 100%;
+  max-width: 36rem;
+  padding: 0.45rem 0.75rem;
+  border: 2px solid var(--field);
+  border-radius: var(--radius);
+  background: var(--paper);
+  color: var(--graphite);
+  font: inherit;
+}
+
+.lesson-decision .actions {
+  margin-top: 1rem;
+}
