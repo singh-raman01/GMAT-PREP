@@ -57,8 +57,10 @@ readonly REASON_ID="qwen3.6-35b-a3b"
 readonly REASON_REPO="unsloth/Qwen3.6-35B-A3B-GGUF"
 readonly REASON_REV="a483e9e6cbd595906af30beda3187c2663a1118c"
 readonly REASON_PREFIX="Qwen3.6-35B-A3B"
-# Turing has no BF16, so the F16 vision projector.
+# Turing has no BF16, so the F16 vision projector (downloaded with --vision on).
 readonly REASON_MMPROJ_REGEX='^mmproj-F16\.gguf$'
+# The pinned 35B-A3B model has 40 layers, each with its own experts.
+readonly REASON_LAYERS=40
 
 readonly OCR_ID="ocr"
 readonly OCR_REPO="ggml-org/GLM-OCR-GGUF"
@@ -76,6 +78,10 @@ readonly EMBED_MODEL_REGEX='^Qwen3-Embedding-0\.6B-Q8_0\.gguf$'
 readonly SIZE_GB_FAST=3
 readonly SIZE_GB_REASON_Q3=18
 readonly SIZE_GB_REASON_Q2=14
+# The 35B-A3B files in MiB (16.85 and 12.29 GB on Hugging Face), for the RAM
+# estimate before they are downloaded.
+readonly SIZE_MIB_REASON_Q3=16065
+readonly SIZE_MIB_REASON_Q2=11721
 readonly SIZE_GB_OCR=2
 readonly SIZE_GB_EMBED=1
 
@@ -113,14 +119,22 @@ readonly STATE_RECORD="$ETC_DIR/installed.list"
 readonly LOCK_FILE="/run/gmat-llm-setup.lock"
 readonly DEFAULT_PORT=18100
 
-# Ports local LLM stacks use by default. The first list is specific to LLM
-# software; the second is shared with other programs, so a listener there is
-# only stopped when its program is a known LLM program.
-readonly LLM_PORTS_STRONG="11434 9931 1234 5001 7860 7861 4000 30000 39281"
-readonly LLM_PORTS_COMMON="8080 8000 8001 8081 3000 5000"
-# Lowercase patterns that identify LLM software in unit files, process
-# command lines, container images and folder names.
-readonly LLM_PATTERN='ollama|llama-server|llama-swap|llama_swap|llama\.cpp|llamacpp|llama_cpp|vllm|lmstudio|lm-studio|lm studio|llmster|open-webui|open_webui|openwebui|litellm|text-generation-webui|text_generation_webui|text-generation-inference|text-generation-launcher|oobabooga|koboldcpp|tabbyapi|localai|local-ai|sglang|exllama|aphrodite|gpt4all|ramalama|llamafile|mlc_llm|mlc-llm'
+# Ports local LLM stacks use by default. The first list is used by LLM
+# software only: Ollama 11434, llama-server 9931 (releases after b11400;
+# b11400 itself uses 8080), LM Studio 1234, Jan 1337, SGLang 30000, Cortex
+# 39281. The second is shared with web frameworks and other programs, so
+# anything there defaults to being left alone.
+readonly LLM_PORTS_STRONG="11434 9931 1234 1337 30000 39281"
+readonly LLM_PORTS_COMMON="8080 8000 8001 8081 3000 4000 5000 5001 7860 7861"
+# Lowercase names that identify LLM software in unit names, command lines and
+# folder names. They are matched as whole words (see is_llm_text), so
+# local-airflow or film-studio do not count.
+readonly LLM_PATTERN='ollama|llama-server|llama-swap|llama_swap|llama\.cpp|llamacpp|llama_cpp|vllm|lmstudio|lm-studio|lm studio|llmster|open-webui|open_webui|openwebui|litellm|text-generation-webui|text_generation_webui|text-generation-inference|text-generation-launcher|oobabooga|koboldcpp|tabbyapi|localai|local-ai|sglang|exllama|exllamav2|aphrodite|gpt4all|ramalama|llamafile|mlc_llm|mlc-llm'
+# Container images of LLM software, matched exactly on the repository (any
+# tag). A container counts only if its image is one of these, or its Compose
+# service or its own name is exactly one of the names below.
+readonly LLM_IMAGES="ollama/ollama ghcr.io/open-webui/open-webui vllm/vllm-openai localai/localai quay.io/go-skynet/local-ai ghcr.io/ggml-org/llama.cpp ghcr.io/ggerganov/llama.cpp ghcr.io/mostlygeek/llama-swap ghcr.io/berriai/litellm lmsysorg/sglang ghcr.io/huggingface/text-generation-inference koboldai/koboldcpp"
+readonly LLM_NAMES="ollama open-webui openwebui vllm localai local-ai llama-server llama-swap litellm sglang tgi text-generation-inference text-generation-webui koboldcpp"
 
 # ---------------------------------------------------------------------------
 # Runtime state
@@ -132,13 +146,29 @@ PROFILE="standard"
 PORT="$DEFAULT_PORT"
 REASON_QUANT="UD-Q3_K_XL"
 REASON_QUANT_SET=0
+REASON_QUANT_SAVED=0
 CTX_FAST=16384
 CTX_REASON=16384
 N_CPU_MOE=""
 REASONING="off"
 KEEP_AWAKE=0
 SKIP_CLEANUP=0
+# --yes alone never deletes models or environments; these options allow it.
+DELETE_OLD_MODELS=0
+DELETE_OLD_ENVS=0
+# The 35B-A3B's vision projector, off while the app sends no images.
+VISION="off"
 BUILD_JOBS=""
+# The SSH ports, from detect_ssh_ports.
+SSH_PORTS=""
+SSH_PORTS_ALL=""
+SSH_PORTS_SURE=0
+SSH_PORTS_NOTE=""
+SSH_LOOPBACK_SESSION=0
+IN_MULTIPLEXER=0
+FIREWALL_SKIPPED=0
+SSHD_PLACEMENT=""
+SSHD_CHANGED=0
 CURRENT_STEP="start"
 LOG_FILE=""
 BACKUP_DIR=""
@@ -204,9 +234,17 @@ on_error() {
 }
 
 on_interrupt() {
-  trap - INT TERM
-  printf '\nStopped during "%s". Run the script again to carry on; downloads resume where they stopped.\n' "$CURRENT_STEP" >&2
+  trap - INT TERM HUP
+  printf '\nStopped during "%s". Run the script again to carry on; downloads and the llama.cpp build resume where they stopped.\n' "$CURRENT_STEP" >&2
   exit 130
+}
+
+# A closed SSH connection sends SIGHUP. The log says what happened; the next
+# run carries on where this one stopped.
+on_hangup() {
+  trap - INT TERM HUP
+  printf '\nThe terminal closed during "%s" (SIGHUP). Run the script again to carry on, inside tmux so a dropped connection does not stop it.\n' "$CURRENT_STEP" >>"${LOG_FILE:-/dev/null}"
+  exit 129
 }
 
 # confirm QUESTION DEFAULT(y|n): returns 0 for yes. --yes takes the default,
@@ -238,6 +276,31 @@ confirm() {
       *) printf 'Please answer y or n.\n' >/dev/tty ;;
     esac
   done
+}
+
+# confirm_delete CATEGORY QUESTION DEFAULT: a question about deleting data that
+# costs a download or work to get back. With --yes the answer is no, unless
+# CATEGORY is models and --delete-old-models was given, or envs and
+# --delete-old-envs; CATEGORY "ask" is never answered by --yes.
+confirm_delete() {
+  local category=$1 question=$2 default=$3 allowed=0
+  case "$category" in
+    models) ((DELETE_OLD_MODELS)) && allowed=1 ;;
+    envs) ((DELETE_OLD_ENVS)) && allowed=1 ;;
+  esac
+  if ((ASSUME_YES)); then
+    if ((allowed)) && [[ "$default" == y ]]; then
+      confirm "$question" y
+      return
+    fi
+    case "$category" in
+      models) printf '%s Skipped: --yes does not delete models without --delete-old-models.\n' "$question" ;;
+      envs) printf '%s Skipped: --yes does not delete environments or source trees without --delete-old-envs.\n' "$question" ;;
+      *) printf '%s Skipped: this needs an answer at the terminal; --yes does not give it.\n' "$question" ;;
+    esac
+    return 1
+  fi
+  confirm "$question" "$default"
 }
 
 # ---------------------------------------------------------------------------
@@ -320,23 +383,46 @@ backup_path() {
   info "Backed up $path to $BACKUP_DIR$path"
 }
 
-# Refuses to delete system folders, home folders themselves and relative
-# paths.
-assert_safe_to_delete() {
-  local path=$1 normalized depth
-  [[ "$path" == /* ]] || die "Refusing to delete a relative path: $path"
-  [[ "$path" != *"/../"* && "$path" != *"/.." && "$path" != *"/./"* ]] || die "Refusing to delete a path with . or ..: $path"
-  normalized=${path%/}
+# Whether a path may be deleted: absolute, without . or .. parts, not a
+# system folder, not a top-level folder and not anyone's home folder. Prints
+# the reason when it may not.
+unsafe_to_delete() {
+  local path=$1 normalized depth home
+  if [[ "$path" != /* ]]; then
+    printf 'it is a relative path'
+    return 0
+  fi
+  if [[ "/$path/" == *"/./"* || "/$path/" == *"/../"* ]]; then
+    printf 'it has . or .. in it'
+    return 0
+  fi
+  normalized=$(realpath -m -- "$path")
   case "$normalized" in
-    "" | /bin | /boot | /dev | /etc | /home | /lib | /lib32 | /lib64 | /media | /mnt | /opt | /proc | /root | /run | /sbin | /snap | /srv | /sys | /tmp | /usr | /var | /var/lib | /var/log | /var/backups | /usr/local | /usr/lib | /usr/share | /usr/bin | /usr/sbin | /usr/local/bin | /usr/local/lib | /etc/systemd | /etc/systemd/system | /etc/ssh)
-      die "Refusing to delete the system folder $path"
+    / | /bin | /boot | /dev | /etc | /home | /lib | /lib32 | /lib64 | /media | /mnt | /opt | /proc | /root | /run | /sbin | /snap | /srv | /sys | /tmp | /usr | /var | /data | /var/lib | /var/log | /var/backups | /usr/local | /usr/lib | /usr/share | /usr/bin | /usr/sbin | /usr/local/bin | /usr/local/lib | /usr/local/share | /etc/systemd | /etc/systemd/system | /etc/ssh)
+      printf '%s is a system folder' "$normalized"
+      return 0
       ;;
   esac
   depth=$(awk -F/ '{print NF-1}' <<<"$normalized")
-  ((depth >= 2)) || die "Refusing to delete the top-level folder $path"
-  if [[ "$normalized" == /home/* ]] && ((depth < 3)); then
-    die "Refusing to delete the home folder $path"
+  if ((depth < 2)); then
+    printf '%s is a top-level folder' "$normalized"
+    return 0
   fi
+  while IFS= read -r home; do
+    [[ -n "$home" && "$home" != / ]] || continue
+    home=$(realpath -m -- "$home")
+    if [[ "$normalized" == "$home" ]]; then
+      printf '%s is a home folder' "$normalized"
+      return 0
+    fi
+  done < <(getent passwd | cut -d: -f6)
+  return 1
+}
+
+# Refuses, and stops the script, for a path that must not be deleted.
+assert_safe_to_delete() {
+  local reason
+  if reason=$(unsafe_to_delete "$1"); then die "Refusing to delete $1: $reason."; fi
 }
 
 remove_path() {
@@ -406,8 +492,34 @@ human_users() {
   getent passwd | awk -F: '$3 == 0 || ($3 >= 1000 && $3 < 60000) {print $1 ":" $6}'
 }
 
+# Whether a name or command line names LLM software, as a whole word:
+# "/usr/local/bin/ollama serve" does, "local-airflow-postgres-1" does not.
 is_llm_text() {
-  grep -qiE -- "$LLM_PATTERN" <<<"$1"
+  grep -qiE -- "(^|[^a-z0-9])($LLM_PATTERN)([^a-z0-9]|\$)" <<<"$1"
+}
+
+# Whether a container image is one of the known LLM images, whatever its tag
+# or digest: docker.io/ollama/ollama:0.5 counts, myorg/ollama-tools does not.
+is_llm_image() {
+  local ref=${1,,} image
+  ref=${ref%%@*}
+  # A tag follows the last colon after the last slash.
+  if [[ "${ref##*/}" == *:* ]]; then ref=${ref%:*}; fi
+  ref=${ref#docker.io/}
+  ref=${ref#index.docker.io/}
+  ref=${ref#library/}
+  for image in $LLM_IMAGES; do
+    [[ "$ref" == "$image" ]] && return 0
+  done
+  return 1
+}
+
+is_llm_name() {
+  local name=${1,,} known
+  for known in $LLM_NAMES; do
+    [[ "$name" == "$known" ]] && return 0
+  done
+  return 1
 }
 
 port_class() {
@@ -456,14 +568,23 @@ Usage:
 Setup options:
   --profile NAME     minimal (the 4B model only), standard (4B and 35B-A3B,
                      the default) or full (adds document OCR and embeddings)
-  --dry-run          print every change without making any
+  --dry-run          print every change without making any; it only writes
+                     its own log, checks the SSH config on a copy in /tmp,
+                     and builds and runs a tiny CUDA test program when a
+                     CUDA compiler is present
   --yes              take the default answer to every question; questions
-                     about things not identified as LLM software default to no
+                     about things not identified as LLM software default to no,
+                     and nothing that holds data is deleted (see the next two)
+  --delete-old-models  with --yes, also delete old LLM models and caches
+  --delete-old-envs  with --yes, also delete old llama.cpp source trees and
+                     Python environments of LLM servers
   --port N           port of the local endpoint on 127.0.0.1 (default $DEFAULT_PORT)
-  --quant NAME       quantization of the 35B-A3B model: UD-Q3_K_XL (default)
-                     or UD-Q2_K_XL (smaller, for less memory)
-  --n-cpu-moe N      keep the experts of N layers of the 35B-A3B model in
+  --quant NAME       quantization of the 35B-A3B model: UD-Q3_K_XL or
+                     UD-Q2_K_XL; by default setup picks the one that fits RAM
+  --n-cpu-moe N      keep the experts of the first N layers of the 35B-A3B in
                      system RAM instead of working it out from free VRAM
+  --vision on|off    download the 35B-A3B's vision projector and let it read
+                     images (default off: the app sends no images yet)
   --ctx-fast N       context of the 4B model (default 16384)
   --ctx-reason N     context of the 35B-A3B model (default 16384)
   --reasoning on|off let the Qwen models think before answering (default off,
@@ -504,18 +625,26 @@ load_setup_conf() {
     case "$key" in
       PROFILE) PROFILE=$value ;;
       PORT) PORT=$value ;;
-      REASON_QUANT) REASON_QUANT=$value ;;
+      REASON_QUANT)
+        REASON_QUANT=$value
+        REASON_QUANT_SAVED=1
+        ;;
       CTX_FAST) CTX_FAST=$value ;;
       CTX_REASON) CTX_REASON=$value ;;
       REASONING) REASONING=$value ;;
       N_CPU_MOE_SAVED) SAVED_N_CPU_MOE=$value ;;
       NGL_SAVED) SAVED_NGL=$value ;;
+      CPU_EXPERT_LAYERS) SAVED_CPU_LAYERS=$value ;;
+      VISION) VISION=$value ;;
     esac
   done <"$SETUP_CONF"
 }
 
 SAVED_N_CPU_MOE=""
 SAVED_NGL=""
+# "auto" until llama-fit-params has measured; then the layer list, which is
+# empty when every expert fits in VRAM.
+SAVED_CPU_LAYERS="auto"
 
 save_setup_conf() {
   write_file "$SETUP_CONF" 0644 root:root <<EOF
@@ -528,6 +657,8 @@ CTX_REASON=$CTX_REASON
 REASONING=$REASONING
 N_CPU_MOE_SAVED=${SAVED_N_CPU_MOE}
 NGL_SAVED=${SAVED_NGL}
+CPU_EXPERT_LAYERS=${SAVED_CPU_LAYERS}
+VISION=$VISION
 EOF
 }
 
@@ -554,10 +685,18 @@ model_id() {
   esac
 }
 
+# The app tasks each model serves, as the Mac script sets them: one model,
+# the 35B-A3B, for everything a book run does, so a run never swaps models;
+# the 4B for Tutor Chat, or for every local task in the minimal profile.
 model_tasks() {
   case "$1" in
-    fast) printf 'tagging, statement-translation, tutor-chat' ;;
-    reason) printf 'solving, book-map, extraction (reads images)' ;;
+    fast)
+      if profile_has reason; then printf 'tutor-chat'; else printf 'tagging, statement-translation, tutor-chat, solving, book-map, extraction'; fi
+      ;;
+    reason)
+      printf 'tagging, statement-translation, solving, book-map, extraction'
+      if [[ "$VISION" == on ]]; then printf ' (reads images)'; fi
+      ;;
     ocr) printf 'document OCR (no app task uses it yet)' ;;
     embed) printf 'embeddings (no app task uses them yet)' ;;
   esac
@@ -573,6 +712,7 @@ detect_ssh_session() {
   local pid=$$ comm ppid line
   while [[ "$pid" =~ ^[0-9]+$ ]] && ((pid > 1)); do
     comm=$(ps -o comm= -p "$pid" 2>/dev/null || true)
+    case "$comm" in tmux* | screen* | SCREEN* | byobu*) IN_MULTIPLEXER=1 ;; esac
     if [[ "$comm" == sshd* ]]; then
       line=$(ss -tnpH state established 2>/dev/null | grep -F "pid=$pid," | head -n 1 || true)
       if [[ -n "$line" ]]; then
@@ -591,7 +731,10 @@ detect_ssh_session() {
   return 0
 }
 
+# Whether this session, or any SSH session open now, comes from this computer
+# itself, as one through a reverse tunnel does.
 session_comes_through_tunnel() {
+  ((SSH_LOOPBACK_SESSION)) && return 0
   case "$SSH_SESSION_PEER" in
     127.* | "[::1]"* | ::1*) return 0 ;;
   esac
@@ -658,6 +801,15 @@ read_gpu() {
   return 0
 }
 
+# A dry run without a working driver still shows the cleanup (step 2); the
+# steps after it need the driver. Returns 1 for a real run, which stops.
+NO_DRIVER=0
+driver_dry_run_goes_on() {
+  ((DRY_RUN)) || return 1
+  NO_DRIVER=1
+  say "The dry run goes on with step 2 (the cleanup) and stops after it: steps 3 to 8 need the driver."
+}
+
 offer_driver_install() {
   say "No working NVIDIA driver was found (nvidia-smi is missing or cannot reach the driver)."
   if grep -q '^nouveau ' /proc/modules 2>/dev/null; then
@@ -666,7 +818,8 @@ offer_driver_install() {
   if [[ -n "$(installed_matching 'nvidia-driver-*' 'nvidia-headless-*')" ]]; then
     say "NVIDIA driver packages are installed but the driver is not running. Reboot first."
     say "If it still fails after a reboot and Secure Boot is on (mokutil --sb-state), enroll the key the driver install asked for, or turn Secure Boot off."
-    exit 1
+    driver_dry_run_goes_on || exit 1
+    return 0
   fi
   if ! have ubuntu-drivers; then
     apt_update_once
@@ -685,15 +838,21 @@ offer_driver_install() {
     fi
     if [[ -n "$version" ]]; then
       run env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y "nvidia-utils-$version-server"
+    elif ((DRY_RUN)); then
+      say "The real run also installs nvidia-smi (nvidia-utils-<version>-server) for the driver version ubuntu-drivers picks."
     else
       say "Install nvidia-smi too: sudo apt-get install nvidia-utils-<version>-server, with the version ubuntu-drivers installed."
     fi
     say ""
-    say "The driver is installed. Reboot (sudo reboot), then run this script again."
+    if ((DRY_RUN)); then
+      say "After the real run installs the driver, reboot (sudo reboot) and run this script again."
+    else
+      say "The driver is installed. Reboot (sudo reboot), then run this script again."
+    fi
   else
     say "Install the driver yourself (sudo ubuntu-drivers install --gpgpu), reboot, then run this script again."
   fi
-  exit 0
+  driver_dry_run_goes_on || exit 0
 }
 
 check_gpu() {
@@ -711,6 +870,8 @@ check_gpu() {
   fi
   if ! read_gpu; then
     offer_driver_install
+    # Only a dry run gets here.
+    return 0
   fi
   info "GPU: $GPU_NAME, $GPU_VRAM_MIB MiB, driver $GPU_DRIVER, supports CUDA ${DRIVER_CUDA:-unknown}"
   if [[ "$GPU_CC" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
@@ -728,9 +889,10 @@ check_gpu() {
     if confirm "Install a newer driver with ubuntu-drivers now?" y; then
       run ubuntu-drivers install --gpgpu
       say "Reboot (sudo reboot), then run this script again."
-      exit 0
+      driver_dry_run_goes_on || exit 0
+      return 0
     fi
-    die "A driver of version 525 or newer is needed."
+    driver_dry_run_goes_on || die "A driver of version 525 or newer is needed."
   fi
   if ((GPU_VRAM_MIB > 0 && GPU_VRAM_MIB < 5500)) && profile_has reason; then
     warn "The GPU has $GPU_VRAM_MIB MiB; the 35B-A3B model will keep almost all of its experts in system RAM."
@@ -743,8 +905,9 @@ check_memory_and_disk() {
   mem_gib=$(awk -v k="$MEM_TOTAL_KIB" 'BEGIN {printf "%.1f", k / 1048576}')
   avail_kib=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
   info "RAM: $mem_gib GiB in total, $(awk -v k="$avail_kib" 'BEGIN {printf "%.1f", k / 1048576}') GiB available now"
-  if profile_has reason && ((MEM_TOTAL_KIB < 14 * 1048576)) && [[ "$REASON_QUANT" == "UD-Q3_K_XL" ]]; then
-    warn "Less than 14 GiB of RAM: the 3-bit 35B-A3B model will not fit. Use --quant UD-Q2_K_XL or --profile minimal."
+  if profile_has reason; then
+    if ((REASON_QUANT_SET == 0 && REASON_QUANT_SAVED == 0)); then REASON_QUANT=$(fitting_reason_quant); fi
+    info "35B-A3B: the $REASON_QUANT file needs about $(($(reason_ram_mib "$REASON_QUANT") / 1024)) GiB of RAM for its experts and the program; the service may use $(((MEM_TOTAL_KIB / 1024 - 1024) / 1024)) GiB."
   fi
   models_gb=$(estimate_models_gb)
   # llama.cpp's source and build, the CUDA toolkit and apt's package cache.
@@ -765,7 +928,7 @@ check_memory_and_disk() {
     problem="Not enough free disk space for llama.cpp and the CUDA toolkit: $software_gb GB needed under /opt and /usr/local, $(human_bytes "$free_software") free."
   fi
   if [[ -n "$problem" ]]; then
-    if ((FAKE_HARDWARE)); then warn "$problem (going on: pretend-hardware dry run)"; else die "$problem"; fi
+    if ((DRY_RUN)); then warn "$problem The dry run goes on; the real run stops here."; else die "$problem"; fi
   fi
 }
 
@@ -829,7 +992,12 @@ check_network() {
   esac
   info "Host name: $(hostname), published on the network as $(hostname).local once avahi-daemon runs"
   if [[ -n "$SSH_SESSION_PEER" ]]; then
-    info "You are connected over SSH from $SSH_SESSION_PEER; SSH stays open throughout."
+    info "You are connected over SSH from $SSH_SESSION_PEER; sshd is never stopped or restarted."
+  fi
+  if ((IN_MULTIPLEXER)); then
+    info "This runs inside tmux or screen, so a dropped SSH connection does not stop it."
+  elif [[ -n "$SSH_SESSION_PEER" ]]; then
+    info "If the SSH connection drops, this run stops; running it again carries on. Inside tmux (sudo apt install tmux, then tmux) a dropped connection does not stop it."
   fi
 }
 
@@ -844,6 +1012,8 @@ preflight() {
   done
   check_privileges
   detect_ssh_session
+  detect_ssh_ports
+  report_ssh_ports
   check_gpu
   check_memory_and_disk
   check_internet
@@ -944,47 +1114,103 @@ container_tool() {
   fi
 }
 
+# The Compose service name in a container's labels, as Docker
+# ("a=b,com.docker.compose.service=ollama") or Podman ("map[...]") prints them.
+compose_service_of() {
+  grep -oE 'com\.docker\.compose\.service[=:][^], ]+' <<<"$1" | head -n 1 | sed -E 's/^com\.docker\.compose\.service[=:]//' || true
+}
+
+# Containers of LLM software: the image is a known LLM image, or the Compose
+# service or the container's own name is exactly a known LLM name. Prints
+# "id<TAB>image<TAB>name<TAB>status" lines.
+find_llm_containers() {
+  local tool=$1 id image name status labels service
+  while IFS=$'\t' read -r id image name status labels; do
+    [[ -n "$id" ]] || continue
+    service=$(compose_service_of "$labels")
+    if is_llm_image "$image" || is_llm_name "$name" || { [[ -n "$service" ]] && is_llm_name "$service"; }; then
+      printf '%s\t%s\t%s\t%s\n' "$id" "$image" "$name" "$status"
+    fi
+  done < <("$tool" ps -a --format '{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}\t{{.Labels}}' 2>/dev/null || true)
+}
+
+# Named volumes of the given containers, one per line.
+volumes_of_containers() {
+  local tool=$1 id
+  shift
+  for id in "$@"; do
+    "$tool" inspect --format '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{"\n"}}{{end}}{{end}}' "$id" 2>/dev/null || true
+  done | sed '/^$/d' | sort -u
+}
+
 cleanup_containers() {
-  local tool containers images volumes line
+  local tool containers images="" volumes id image name status ref size vol mount users others ids=()
   tool=$(container_tool)
   if [[ -z "$tool" ]]; then
     info "No Docker or Podman engine running."
     return 0
   fi
-  containers=$($tool ps -a --format '{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}' 2>/dev/null | while IFS=$'\t' read -r id image name status; do
-    if is_llm_text "$image" || is_llm_text "$name"; then printf '%s\t%s\t%s\t%s\n' "$id" "$image" "$name" "$status"; fi
-  done || true)
+  containers=$(find_llm_containers "$tool")
+  while IFS=$'\t' read -r id _; do
+    [[ -n "$id" ]] || continue
+    ids+=("$id")
+  done <<<"$containers"
+  # Volumes are listed before the containers go, while their mounts still show.
+  volumes=""
+  if ((${#ids[@]} > 0)); then volumes=$(volumes_of_containers "$tool" "${ids[@]}"); fi
   if [[ -n "$containers" ]]; then
-    say "$tool containers of LLM software:"
-    while IFS=$'\t' read -r id image name status; do info "$name ($image, $status)"; done <<<"$containers"
+    say "$tool containers of LLM software (known images or names):"
+    while IFS=$'\t' read -r id image name status; do
+      [[ -n "$id" ]] || continue
+      info "$name ($image, $status)"
+    done <<<"$containers"
+    info "Files a container keeps outside its volumes go with it."
     if confirm "Stop and remove these containers?" y; then
-      while IFS=$'\t' read -r id _; do run "$tool" rm -f "$id"; done <<<"$containers"
+      for id in "${ids[@]}"; do run "$tool" rm -f "$id" || warn "Could not remove container $id"; done
     fi
   fi
-  images=$($tool images --format '{{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.Size}}' 2>/dev/null | while IFS=$'\t' read -r ref id size; do
-    if is_llm_text "$ref"; then printf '%s\t%s\t%s\n' "$ref" "$id" "$size"; fi
-  done || true)
+  while IFS=$'\t' read -r ref id size; do
+    [[ -n "$ref" ]] || continue
+    if is_llm_image "$ref"; then images+="$ref"$'\t'"$id"$'\t'"$size"$'\n'; fi
+  done < <("$tool" images --format '{{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.Size}}' 2>/dev/null || true)
   if [[ -n "$images" ]]; then
     say "$tool images of LLM software:"
-    while IFS=$'\t' read -r ref id size; do info "$ref ($size)"; done <<<"$images"
-    if confirm "Remove these images?" y; then
-      while IFS=$'\t' read -r ref id _; do run "$tool" rmi -f "$id" || warn "Could not remove $ref"; done <<<"$images"
+    while IFS=$'\t' read -r ref id size; do
+      [[ -n "$ref" ]] || continue
+      info "$ref ($size)"
+    done <<<"$images"
+    if confirm "Remove these images (they can be pulled again)?" y; then
+      while IFS=$'\t' read -r ref id _; do
+        [[ -n "$ref" ]] || continue
+        run "$tool" rmi -f "$id" || warn "Could not remove $ref"
+      done <<<"$images"
     fi
   fi
-  volumes=$($tool volume ls --format '{{.Name}}' 2>/dev/null | while read -r name; do
-    if is_llm_text "$name"; then
-      line=$($tool volume inspect --format '{{.Mountpoint}}' "$name" 2>/dev/null || true)
-      printf '%s\t%s\n' "$name" "$(human_bytes "$(dir_size_bytes "$line")")"
-    fi
-  done || true)
+  # Volumes hold chat histories, accounts and models. Each one is asked about
+  # on its own, defaults to no and is never removed by --yes.
   if [[ -n "$volumes" ]]; then
-    say "$tool volumes of LLM software (these hold models and chat data):"
-    while IFS=$'\t' read -r name size; do info "$name ($size)"; done <<<"$volumes"
-    if confirm "Remove these volumes?" y; then
-      while IFS=$'\t' read -r name _; do run "$tool" volume rm "$name" || warn "Could not remove volume $name (still in use?)"; done <<<"$volumes"
-    fi
+    say "Volumes those containers used:"
+    while IFS= read -r vol; do
+      [[ -n "$vol" ]] || continue
+      mount=$("$tool" volume inspect --format '{{.Mountpoint}}' "$vol" 2>/dev/null || true)
+      size=$(human_bytes "$(dir_size_bytes "$mount")")
+      users=$("$tool" ps -a --filter "volume=$vol" --format '{{.Names}}' 2>/dev/null | tr '\n' ' ' || true)
+      others=""
+      for name in $users; do
+        grep -qxF "$name" <(cut -f3 <<<"$containers") || others+="$name "
+      done
+      if [[ -n "$others" ]]; then
+        info "$vol ($size): also used by ${others% }; left alone."
+        continue
+      fi
+      info "$vol ($size)${users:+, used by ${users% }}"
+      if confirm_delete ask "Delete the volume $vol and everything in it ($size)?" n; then
+        run "$tool" volume rm "$vol" || warn "Could not remove the volume $vol (a container still uses it?)"
+      fi
+    done <<<"$volumes"
   fi
   if [[ -z "$containers$images$volumes" ]]; then info "No containers, images or volumes of LLM software."; fi
+  return 0
 }
 
 # Processes listening on LLM ports whose program is LLM software, one
@@ -1035,136 +1261,255 @@ cleanup_listeners() {
 }
 
 cleanup_ollama() {
-  local bin found=0 paths=() p entry home size
-  for bin in /usr/local/bin/ollama /usr/bin/ollama /bin/ollama; do
-    [[ -e "$bin" ]] && paths+=("$bin")
+  local bin software=() models=() p entry home total=0 user_home="" user_exists=0 remove_software=0 remove_models=0
+  for bin in /usr/local/bin/ollama /usr/bin/ollama /bin/ollama /usr/local/lib/ollama /usr/lib/ollama /etc/systemd/system/ollama.service; do
+    if [[ -e "$bin" ]]; then software+=("$bin"); fi
   done
-  for p in /usr/local/lib/ollama /usr/lib/ollama /usr/share/ollama /etc/systemd/system/ollama.service; do
-    [[ -e "$p" ]] && paths+=("$p")
-  done
+  if getent passwd ollama >/dev/null 2>&1; then
+    user_exists=1
+    user_home=$(getent passwd ollama | cut -d: -f6)
+  fi
+  # Models: the service user's home and each login user's ~/.ollama.
+  if [[ -d /usr/share/ollama ]]; then models+=(/usr/share/ollama); fi
   while IFS= read -r entry; do
     home=${entry#*:}
-    [[ -d "$home/.ollama" ]] && paths+=("$home/.ollama")
+    if [[ -d "$home/.ollama" ]]; then models+=("$home/.ollama"); fi
   done < <(human_users)
-  if getent passwd ollama >/dev/null 2>&1; then found=1; fi
-  if ((${#paths[@]} == 0 && found == 0)); then
+  if ((${#software[@]} == 0 && ${#models[@]} == 0 && user_exists == 0)); then
     info "No Ollama installation."
     return 0
   fi
-  say "Ollama (binary, libraries, models and its service user):"
-  for p in "${paths[@]}"; do
-    size=$(human_bytes "$(dir_size_bytes "$p")")
-    info "$p ($size)"
+  say "Ollama:"
+  for p in "${software[@]}"; do info "$p (program, $(human_bytes "$(dir_size_bytes "$p")"))"; done
+  ((user_exists)) && info "the ollama user and group"
+  for p in "${models[@]}"; do
+    info "$p (models and keys, $(human_bytes "$(dir_size_bytes "$p")"))"
+    total=$((total + $(dir_size_bytes "$p")))
   done
-  ((found)) && info "the ollama user and group"
-  if confirm "Remove Ollama, its models and its user, as Ollama's uninstall guide does?" y; then
+  if ((${#software[@]} > 0 || user_exists)) && confirm "Stop Ollama and remove its program and service, as Ollama's uninstall guide does?" y; then
+    remove_software=1
+  fi
+  if ((${#models[@]} > 0)) && confirm_delete models "Delete Ollama's models ($(human_bytes "$total"))?" y; then
+    remove_models=1
+  fi
+  if ((remove_software)); then
     if systemctl cat ollama.service >/dev/null 2>&1; then
       run systemctl disable --now ollama.service || true
     fi
-    for p in "${paths[@]}"; do
-      [[ "$p" == *.service ]] && backup_path "$p"
+    for p in "${software[@]}"; do
+      if [[ "$p" == *.service ]]; then backup_path "$p"; fi
       remove_path "$p"
     done
     run systemctl daemon-reload
-    if getent passwd ollama >/dev/null 2>&1; then run userdel ollama || warn "Could not remove the ollama user"; fi
-    if getent group ollama >/dev/null 2>&1; then run groupdel ollama || warn "Could not remove the ollama group"; fi
   fi
-}
-
-# Model stores and caches of LLM tools in each login user's home folder.
-cleanup_caches() {
-  local entry user home rel path list="" size total=0 bytes
-  while IFS= read -r entry; do
-    user=${entry%%:*}
-    home=${entry#*:}
-    [[ -d "$home" ]] || continue
-    # The Hugging Face hub cache, llama.cpp's -hf download cache, LM Studio's
-    # home and model folder (new and old), and vLLM's cache.
-    for rel in .cache/huggingface .cache/llama.cpp .lmstudio .cache/lm-studio .cache/vllm; do
-      path="$home/$rel"
-      if [[ -e "$path" ]]; then
-        bytes=$(dir_size_bytes "$path")
-        total=$((total + bytes))
-        list+="$path"$'\t'"$bytes"$'\n'
+  if ((remove_models)); then
+    # The ollama user's home holds the service's models; the user goes first,
+    # so the folder is no longer anyone's home.
+    if ((user_exists)); then
+      run userdel ollama || warn "Could not remove the ollama user"
+      if getent group ollama >/dev/null 2>&1; then run groupdel ollama || warn "Could not remove the ollama group"; fi
+    fi
+    for p in "${models[@]}"; do
+      if [[ "$p" == "$user_home" && "$p" == /usr/share/ollama ]]; then
+        run rm -rf --one-file-system -- "$p"
+      else
+        remove_path "$p"
       fi
     done
-  done < <(human_users)
-  if [[ -z "$list" ]]; then
-    info "No Hugging Face, llama.cpp, LM Studio or vLLM caches."
-    return 0
+  elif ((remove_software && user_exists)); then
+    info "The ollama user stays, as its home holds the models you kept."
   fi
-  say "Model caches and LLM app data in home folders ($(human_bytes "$total") in total):"
-  while IFS=$'\t' read -r path size; do [[ -n "$path" ]] && info "$path ($(human_bytes "$size"))"; done <<<"$list"
-  if confirm "Remove these caches and their models?" y; then
-    while IFS=$'\t' read -r path size; do [[ -n "$path" ]] && remove_path "$path"; done <<<"$list"
-  fi
+  return 0
 }
 
-# GGUF model files outside the caches above, grouped by folder.
+# Model files of LLM tools in each login user's home folder: the model
+# folders of the Hugging Face hub cache (never its token, datasets or other
+# caches), llama.cpp's -hf download cache, LM Studio's model folders and
+# vLLM's cache.
+cleanup_caches() {
+  local entry home rel path bytes hf="" tools="" hf_total=0 tools_total=0
+  while IFS= read -r entry; do
+    home=${entry#*:}
+    [[ -d "$home" ]] || continue
+    for path in "$home"/.cache/huggingface/hub/models--*; do
+      [[ -d "$path" && ! -L "$path" ]] || continue
+      bytes=$(dir_size_bytes "$path")
+      hf+="$path"$'\t'"$bytes"$'\n'
+      hf_total=$((hf_total + bytes))
+    done
+    for rel in .cache/llama.cpp .lmstudio/models .cache/lm-studio/models .cache/vllm; do
+      path="$home/$rel"
+      [[ -e "$path" && ! -L "$path" ]] || continue
+      bytes=$(dir_size_bytes "$path")
+      tools+="$path"$'\t'"$bytes"$'\n'
+      tools_total=$((tools_total + bytes))
+    done
+  done < <(human_users)
+  if [[ -z "$hf$tools" ]]; then
+    info "No Hugging Face models, llama.cpp download cache, LM Studio models or vLLM cache."
+    return 0
+  fi
+  if [[ -n "$tools" ]]; then
+    say "Model folders of llama.cpp, LM Studio and vLLM ($(human_bytes "$tools_total")):"
+    while IFS=$'\t' read -r path bytes; do
+      [[ -n "$path" ]] || continue
+      info "$path ($(human_bytes "$bytes"))"
+    done <<<"$tools"
+    if confirm_delete models "Delete these model folders?" y; then
+      while IFS=$'\t' read -r path bytes; do
+        [[ -n "$path" ]] || continue
+        remove_path "$path"
+      done <<<"$tools"
+    fi
+  fi
+  if [[ -n "$hf" ]]; then
+    say "Models in the Hugging Face cache ($(human_bytes "$hf_total")). Some may not be LLMs; the token and datasets are not touched:"
+    while IFS=$'\t' read -r path bytes; do
+      [[ -n "$path" ]] || continue
+      info "${path##*/models--} ($(human_bytes "$bytes")): $path"
+    done <<<"$hf"
+    while IFS=$'\t' read -r path bytes; do
+      [[ -n "$path" ]] || continue
+      if confirm_delete models "Delete the Hugging Face model ${path##*/models--} ($(human_bytes "$bytes"))?" n; then
+        remove_path "$path"
+      fi
+    done <<<"$hf"
+  fi
+  return 0
+}
+
+# GGUF model files outside the stores above, grouped by folder. They may be
+# fine-tunes someone made, so each folder defaults to no.
 cleanup_gguf_folders() {
-  local roots=() r dirs dir bytes total=0 list=""
-  for r in /home /root /opt /srv /data /mnt /media /usr/local/share /var/lib; do [[ -d "$r" ]] && roots+=("$r"); done
+  local roots=() r dirs dir bytes total=0 list="" f reason depth
+  for r in /home /root /opt /srv /data /mnt /media /usr/local/share /var/lib; do
+    if [[ -d "$r" ]]; then roots+=("$r"); fi
+  done
   ((${#roots[@]} > 0)) || return 0
-  dirs=$(find "${roots[@]}" -xdev -maxdepth 7 \( -path "$STATE_DIR" -o -path "$INSTALL_ROOT" -o -path /var/lib/docker -o -path /var/lib/containers -o -name node_modules -o -name .git \) -prune -o -type f -iname '*.gguf' -size +20M -printf '%h\n' 2>/dev/null | sort -u || true)
-  [[ -n "$dirs" ]] || {
+  dirs=$(find "${roots[@]}" -xdev -maxdepth 7 \( -path "$STATE_DIR" -o -path "$INSTALL_ROOT" -o -path /var/lib/docker -o -path /var/lib/containers -o -path '*/.cache/huggingface' -o -path '*/.cache/llama.cpp' -o -path '*/.lmstudio' -o -path '*/.cache/lm-studio' -o -path '*/.ollama' -o -path /usr/share/ollama -o -name node_modules -o -name .git \) -prune -o -type f -iname '*.gguf' -size +20M -printf '%h\n' 2>/dev/null | sort -u || true)
+  if [[ -z "$dirs" ]]; then
     info "No other GGUF model files."
     return 0
-  }
+  fi
   while IFS= read -r dir; do
     [[ -n "$dir" ]] || continue
     bytes=$(find "$dir" -maxdepth 1 -type f -iname '*.gguf' -printf '%s\n' 2>/dev/null | awk '{s += $1} END {print s + 0}')
     total=$((total + bytes))
     list+="$dir"$'\t'"$bytes"$'\n'
   done <<<"$dirs"
-  say "Other folders with GGUF model files ($(human_bytes "$total") in total):"
-  while IFS=$'\t' read -r dir bytes; do [[ -n "$dir" ]] && info "$dir ($(human_bytes "$bytes") of .gguf files)"; done <<<"$list"
-  if confirm "Delete the .gguf files in these folders (other files stay)?" y; then
-    while IFS=$'\t' read -r dir bytes; do
-      [[ -n "$dir" ]] || continue
-      assert_safe_to_delete "$dir/x"
-      if ((DRY_RUN)); then
-        printf '[dry-run] would delete the .gguf files in %s\n' "$dir"
-      else
-        find "$dir" -maxdepth 1 -type f -iname '*.gguf' -delete
-        rmdir --ignore-fail-on-non-empty "$dir" 2>/dev/null || true
+  say "Other folders with GGUF model files ($(human_bytes "$total") in total). They may hold models you made, so each defaults to no:"
+  while IFS=$'\t' read -r dir bytes; do
+    [[ -n "$dir" ]] || continue
+    info "$dir ($(human_bytes "$bytes") of .gguf files)"
+  done <<<"$list"
+  while IFS=$'\t' read -r dir bytes; do
+    [[ -n "$dir" ]] || continue
+    confirm_delete models "Delete the .gguf files in $dir ($(human_bytes "$bytes"))? Other files stay." n || continue
+    for f in "$dir"/*.gguf "$dir"/*.GGUF; do
+      [[ -f "$f" ]] || continue
+      if reason=$(unsafe_to_delete "$f"); then
+        warn "Skipping $f: $reason."
+        continue
       fi
-    done <<<"$list"
+      run rm -f -- "$f"
+    done
+    # The folder goes only when it is now empty, deep enough and nobody's home.
+    depth=$(awk -F/ '{print NF-1}' <<<"$dir")
+    if ((depth >= 3)) && ! unsafe_to_delete "$dir" >/dev/null; then
+      if ((DRY_RUN)); then
+        printf '[dry-run] would remove %s if it is empty then\n' "$dir"
+      else
+        rmdir --ignore-fail-on-non-empty -- "$dir" 2>/dev/null || true
+      fi
+    fi
+  done <<<"$list"
+  return 0
+}
+
+# Runs git as the owner of a work tree, so a repository's own settings can
+# never run anything as root, and without optional locks, so a status check
+# does not write the repository's index.
+git_as_owner() {
+  local tree=$1 owner
+  shift
+  owner=$(stat -c %U -- "$tree" 2>/dev/null || true)
+  [[ -n "$owner" && "$owner" != UNKNOWN ]] || return 1
+  if [[ "$owner" == root ]]; then
+    git --no-optional-locks -C "$tree" "$@"
+  else
+    runuser -u "$owner" -- git --no-optional-locks -C "$tree" "$@"
   fi
 }
 
 # Old llama.cpp source trees and builds, and llama.cpp programs in
-# /usr/local/bin.
+# /usr/local/bin. Trees with work not committed, and trees inside another
+# project (vendored or a submodule), are left alone.
 cleanup_llama_builds() {
-  local roots=() r trees tree list="" bytes bins=() b
-  for r in /home /root /opt /srv /usr/local/src; do [[ -d "$r" ]] && roots+=("$r"); done
+  local roots=() r trees tree list="" bytes bins=() b status
+  for r in /home /root /opt /srv /usr/local/src; do
+    if [[ -d "$r" ]]; then roots+=("$r"); fi
+  done
   ((${#roots[@]} > 0)) || return 0
   trees=$(find "${roots[@]}" -xdev -maxdepth 5 \( -path "$INSTALL_ROOT" -o -name node_modules -o -name .cache \) -prune -o -type f -name CMakeLists.txt -path '*/ggml/CMakeLists.txt' -printf '%h\n' 2>/dev/null | sed 's#/ggml$##' | sort -u || true)
   while IFS= read -r tree; do
     [[ -n "$tree" && -f "$tree/CMakeLists.txt" ]] || continue
     grep -q 'project("llama.cpp"' "$tree/CMakeLists.txt" 2>/dev/null || continue
+    if [[ -f "$tree/.git" ]] || git_as_owner "$(dirname "$tree")" rev-parse --show-toplevel >/dev/null 2>&1; then
+      info "$tree is part of another project; left alone."
+      continue
+    fi
+    if [[ -d "$tree/.git" ]]; then
+      if ! status=$(git_as_owner "$tree" status --porcelain 2>/dev/null); then
+        info "$tree: git cannot read its status; left alone."
+        continue
+      fi
+      if [[ -n "$status" ]]; then
+        info "$tree has changes that are not committed; left alone."
+        continue
+      fi
+    fi
     bytes=$(dir_size_bytes "$tree")
     list+="$tree"$'\t'"$bytes"$'\n'
   done <<<"$trees"
   for b in /usr/local/bin/llama-* /usr/local/bin/llama /usr/local/lib/libllama* /usr/local/lib/libggml*; do
-    [[ -e "$b" ]] && bins+=("$b")
+    if [[ -e "$b" ]]; then bins+=("$b"); fi
   done
   if [[ -z "$list" && ${#bins[@]} -eq 0 ]]; then
     info "No old llama.cpp builds."
     return 0
   fi
-  say "Old llama.cpp source trees, builds and installed programs:"
-  while IFS=$'\t' read -r tree bytes; do [[ -n "$tree" ]] && info "$tree ($(human_bytes "$bytes"))"; done <<<"$list"
-  for b in "${bins[@]}"; do info "$b"; done
-  if confirm "Remove them?" y; then
-    while IFS=$'\t' read -r tree bytes; do [[ -n "$tree" ]] && remove_path "$tree"; done <<<"$list"
-    for b in "${bins[@]}"; do remove_path "$b"; done
+  if ((${#bins[@]} > 0)); then
+    say "llama.cpp programs and libraries installed in /usr/local:"
+    for b in "${bins[@]}"; do info "$b"; done
+    if confirm "Remove them?" y; then
+      for b in "${bins[@]}"; do remove_path "$b"; done
+    fi
   fi
+  if [[ -n "$list" ]]; then
+    say "Old llama.cpp source trees with no work in progress:"
+    while IFS=$'\t' read -r tree bytes; do
+      [[ -n "$tree" ]] || continue
+      info "$tree ($(human_bytes "$bytes"))"
+    done <<<"$list"
+    if confirm_delete envs "Delete these source trees?" y; then
+      while IFS=$'\t' read -r tree bytes; do
+        [[ -n "$tree" ]] || continue
+        remove_path "$tree"
+      done <<<"$list"
+    fi
+  fi
+  return 0
 }
 
-# Python virtual environments that hold vLLM, Open WebUI, LiteLLM and the like.
+# Python environments that hold LLM servers (vLLM, Open WebUI, SGLang, text
+# generation inference) default to yes. An environment that only holds a
+# library such as litellm or llama_cpp (aider and similar tools use them),
+# or that belongs to a project, defaults to no and is never removed by --yes.
 cleanup_venvs() {
-  local roots=() r hits venv list="" bytes
-  for r in /home /root /opt /srv; do [[ -d "$r" ]] && roots+=("$r"); done
+  local roots=() r hits venv list="" bytes servers libs parent kind
+  for r in /home /root /opt /srv; do
+    if [[ -d "$r" ]]; then roots+=("$r"); fi
+  done
   ((${#roots[@]} > 0)) || return 0
   # pipx keeps its environments ten levels below /home.
   hits=$(find "${roots[@]}" -xdev -maxdepth 10 \( -name node_modules -o -name .git -o -name .cache -o -name snap \) -prune -o -type d \( -name vllm -o -name open_webui -o -name litellm -o -name sglang -o -name text_generation_server -o -name exllamav2 -o -name llama_cpp \) -path '*/site-packages/*' -print 2>/dev/null || true)
@@ -1184,12 +1529,38 @@ cleanup_venvs() {
   fi
   say "Python environments with LLM software:"
   while IFS= read -r venv; do
+    [[ -n "$venv" ]] || continue
+    servers=""
+    libs=""
+    for r in vllm open_webui sglang text_generation_server; do
+      if compgen -G "$venv/lib/python*/site-packages/$r" >/dev/null; then servers+="$r "; fi
+    done
+    for r in litellm llama_cpp exllamav2; do
+      if compgen -G "$venv/lib/python*/site-packages/$r" >/dev/null; then libs+="$r "; fi
+    done
+    parent=$(dirname "$venv")
+    kind=server
+    if [[ -z "$servers" ]]; then kind=library; fi
+    if compgen -G "$parent/pyproject.toml" >/dev/null || compgen -G "$parent/requirements*.txt" >/dev/null || compgen -G "$parent/setup.py" >/dev/null || compgen -G "$parent/Pipfile" >/dev/null || compgen -G "$parent/environment.y*ml" >/dev/null; then
+      kind=project
+    fi
     bytes=$(dir_size_bytes "$venv")
-    info "$venv ($(human_bytes "$bytes"))"
+    case "$kind" in
+      server)
+        info "$venv ($(human_bytes "$bytes")): ${servers% }"
+        if confirm_delete envs "Delete this environment?" y; then remove_path "$venv"; fi
+        ;;
+      library)
+        info "$venv ($(human_bytes "$bytes")): only the libraries ${libs% }, which other tools use too"
+        if confirm_delete ask "Delete this environment anyway?" n; then remove_path "$venv"; fi
+        ;;
+      project)
+        info "$venv ($(human_bytes "$bytes")): ${servers}${libs% }, inside the project $parent"
+        if confirm_delete ask "Delete this project's environment anyway?" n; then remove_path "$venv"; fi
+        ;;
+    esac
   done <<<"$list"
-  if confirm "Remove these environments?" y; then
-    while IFS= read -r venv; do remove_path "$venv"; done <<<"$list"
-  fi
+  return 0
 }
 
 # Describes the forwarding in an ssh command line: "L:8080" and the like,
@@ -1247,10 +1618,12 @@ spec_ports() {
   grep -oE '[0-9]{2,5}' <<<"$1" || true
 }
 
+# Whether a forwarding description names a port only LLM software uses.
+# Ports that web frameworks share (3000, 8080 and the like) do not count.
 specs_are_llm() {
   local port
   for port in $(spec_ports "$1"); do
-    [[ "$(port_class "$port")" != other ]] && return 0
+    if [[ "$(port_class "$port")" == strong ]]; then return 0; fi
   done
   return 1
 }
@@ -1258,44 +1631,53 @@ specs_are_llm() {
 # A reverse forward to this computer's SSH port may carry the session that
 # runs this script.
 specs_may_carry_session() {
-  local spec=$1 port
+  local spec=$1 port ssh_port
   session_comes_through_tunnel || return 1
   [[ "$spec" == *R:* || "$spec" == *[Rr]emote[Ff]orward* ]] || return 1
   for port in $(spec_ports "$spec"); do
-    [[ "$port" == 22 || "$port" == "${SSH_SESSION_PORT:-22}" ]] && return 0
+    for ssh_port in 22 $SSH_PORTS_ALL ${SSH_SESSION_PORT:-}; do
+      if [[ "$port" == "$ssh_port" ]]; then return 0; fi
+    done
   done
   return 1
 }
 
 cleanup_tunnel_processes() {
-  local pid user cmd specs llm list=""
-  while read -r pid user cmd; do
+  local pid user tty cmd specs list=""
+  while read -r pid user tty cmd; do
     [[ -n "$pid" ]] || continue
     case "$(basename "${cmd%% *}")" in ssh | autossh) ;; *) continue ;; esac
     specs=$(ssh_forward_specs "$cmd")
     [[ -n "$specs" ]] || continue
-    list+="$pid"$'\t'"$user"$'\t'"$specs"$'\t'"$cmd"$'\n'
-  done < <(ps -eo pid=,user=,args= 2>/dev/null)
+    list+="$pid"$'\t'"$user"$'\t'"$tty"$'\t'"$specs"$'\t'"$cmd"$'\n'
+  done < <(ps -eo pid=,user=,tty=,args= 2>/dev/null)
   if [[ -z "$list" ]]; then
     info "No SSH tunnel processes."
     return 0
   fi
   say "SSH tunnel processes:"
-  while IFS=$'\t' read -r pid user specs cmd; do
+  while IFS=$'\t' read -r pid user tty specs cmd; do
     [[ -n "$pid" ]] || continue
     if specs_may_carry_session "$specs"; then
       info "process $pid ($user): $cmd"
       warn "This reverse tunnel may carry the SSH session running this script; it is left alone. Stop it yourself later if it is from an old LLM setup."
       continue
     fi
-    if specs_are_llm "$specs"; then llm="LLM ports"; else llm="not identified as an LLM tunnel"; fi
-    info "process $pid ($user, $llm): $cmd"
-    if [[ "$llm" == "LLM ports" ]]; then
+    if [[ "$tty" != "?" && -n "$tty" ]]; then
+      # An ssh someone is typing in, which happens to forward a port.
+      info "process $pid ($user, an interactive session on $tty): $cmd"
+      if confirm_delete ask "Stop this interactive SSH session?" n; then stop_pid "$pid"; fi
+      continue
+    fi
+    if specs_are_llm "$specs"; then
+      info "process $pid ($user, forwards a port only LLM software uses): $cmd"
       if confirm "Stop process $pid?" y; then stop_pid "$pid"; fi
     else
+      info "process $pid ($user, not identified as an LLM tunnel): $cmd"
       if confirm "Stop process $pid anyway?" n; then stop_pid "$pid"; fi
     fi
   done <<<"$list"
+  return 0
 }
 
 cleanup_tunnel_units() {
@@ -1329,7 +1711,7 @@ cleanup_tunnel_units() {
   while IFS=$'\t' read -r user unit file specs; do
     [[ -n "$unit" ]] || continue
     local default=n label="not identified as an LLM tunnel"
-    if specs_are_llm "$specs"; then default=y label="LLM ports"; fi
+    if specs_are_llm "$specs"; then default=y label="forwards a port only LLM software uses"; fi
     if specs_may_carry_session "$specs"; then
       info "$unit ($user, $file): $specs"
       warn "This service runs a reverse tunnel that may carry the SSH session running this script; it is left alone."
@@ -1351,131 +1733,89 @@ cleanup_tunnel_units() {
       fi
     fi
   done <<<"$list"
+  return 0
 }
 
 # Comments out LocalForward, RemoteForward and DynamicForward lines in the
-# SSH client config of root and each login user, after a backup.
+# SSH client config of root and each login user. Lines on ports only LLM
+# software uses default to yes, the rest to no. The file is backed up to this
+# run's backup folder (not next to it, where an Include of config.d/* would
+# read the copy) and written in place, so a symlinked config stays a link.
 cleanup_ssh_client_configs() {
-  local entry user home cfg lines any=0
+  local entry home cfg listing num text llm_nums other_nums chosen any=0 tmp
   while IFS= read -r entry; do
-    user=${entry%%:*}
     home=${entry#*:}
     for cfg in "$home/.ssh/config" "$home"/.ssh/config.d/*; do
       [[ -f "$cfg" ]] || continue
       # ssh_config keywords are case-insensitive.
-      lines=$(grep -iE '^[[:space:]]*(LocalForward|RemoteForward|DynamicForward)[[:space:]=]' "$cfg" 2>/dev/null || true)
-      [[ -n "$lines" ]] || continue
+      listing=$(grep -niE '^[[:space:]]*(LocalForward|RemoteForward|DynamicForward)[[:space:]=]' "$cfg" 2>/dev/null || true)
+      [[ -n "$listing" ]] || continue
       any=1
-      say "Forwarding lines in $cfg:"
-      printf '%s\n' "$lines" | indent
-      local default=n
-      if specs_are_llm "$lines"; then default=y; fi
-      if confirm "Back up $cfg and comment these lines out?" "$default"; then
-        backup_path "$cfg"
-        if ((DRY_RUN)); then
-          printf '[dry-run] would comment out the forwarding lines in %s\n' "$cfg"
-        else
-          local tmp
-          tmp=$(mktemp "$cfg.gmat-llm.XXXXXX")
-          sed -E 's/^([[:space:]]*)((Local|Remote|Dynamic)Forward)([[:space:]=])/\1# disabled by gmat-llm setup: \2\4/I' "$cfg" >"$tmp"
-          chmod --reference="$cfg" "$tmp"
-          chown --reference="$cfg" "$tmp"
-          mv -f "$tmp" "$cfg"
-          info "Commented out the forwarding lines in $cfg"
-        fi
+      llm_nums=""
+      other_nums=""
+      chosen=""
+      while IFS=: read -r num text; do
+        [[ -n "$num" ]] || continue
+        if specs_are_llm "$text"; then llm_nums+=" $num"; else other_nums+=" $num"; fi
+      done <<<"$listing"
+      if [[ -n "$llm_nums" ]]; then
+        say "Forwarding lines in $cfg on ports only LLM software uses:"
+        for num in $llm_nums; do sed -n "${num}p" "$cfg" | indent; done
+        if confirm "Comment these lines out (the file is backed up first)?" y; then chosen+="$llm_nums"; fi
       fi
+      if [[ -n "$other_nums" ]]; then
+        say "Other forwarding lines in $cfg:"
+        for num in $other_nums; do sed -n "${num}p" "$cfg" | indent; done
+        if confirm "They are not identified as LLM forwarding. Comment them out as well?" n; then chosen+="$other_nums"; fi
+      fi
+      [[ -n "$chosen" ]] || continue
+      backup_path "$cfg"
+      # A linked config is edited through the link, so its target is what
+      # needs the copy.
+      if [[ -L "$cfg" ]]; then backup_path "$(readlink -f -- "$cfg")"; fi
+      if ((DRY_RUN)); then
+        printf '[dry-run] would comment out lines%s of %s\n' "$chosen" "$cfg"
+        continue
+      fi
+      tmp=$(mktemp)
+      awk -v nums="$chosen" '
+        BEGIN { n = split(nums, list, " "); for (i = 1; i <= n; i++) pick[list[i]] = 1 }
+        (FNR in pick) { print "# disabled by gmat-llm setup: " $0; next }
+        { print }' "$cfg" >"$tmp"
+      cat "$tmp" >"$cfg"
+      rm -f "$tmp"
+      info "Commented out lines${chosen} of $cfg"
     done
   done < <(human_users)
   ((any)) || info "No forwarding lines in SSH client configs."
+  return 0
 }
 
-# Server-side forwarding settings an old setup may have added. Drop-ins that
-# name LLM software are disabled; settings elsewhere are overridden by a
-# reset drop-in that sshd reads first. sshd is reloaded, never restarted.
-cleanup_sshd_forwarding() {
-  local files=() f hits llm_dropins=() other="" need_reset_gateway=0 need_reset_tunnel=0 changed=0
-  [[ -f /etc/ssh/sshd_config ]] || {
-    info "No OpenSSH server config."
-    return 0
-  }
-  files+=(/etc/ssh/sshd_config)
-  for f in /etc/ssh/sshd_config.d/*.conf; do
-    [[ "$f" == "$SSHD_DROPIN" || "$f" == "$SSHD_RESET_DROPIN" ]] && continue
-    files+=("$f")
-  done
-  for f in "${files[@]}"; do
-    hits=$(grep -niE '^[[:space:]]*(GatewayPorts|PermitTunnel|AllowTcpForwarding|PermitOpen|PermitListen|AllowStreamLocalForwarding|Match)[[:space:]]' "$f" 2>/dev/null || true)
-    [[ -n "$hits" ]] || continue
-    # A drop-in is identified as LLM-related when it names LLM software, or
-    # "llm" is in its file name.
-    if [[ "$f" != /etc/ssh/sshd_config ]] && { is_llm_text "$(cat "$f")" || [[ "$(basename "$f" | tr '[:upper:]' '[:lower:]')" == *llm* ]]; }; then
-      llm_dropins+=("$f")
-      continue
-    fi
-    other+="$f:"$'\n'"$(printf '%s\n' "$hits" | indent)"$'\n'
-    grep -qiE '^[[:space:]]*GatewayPorts[[:space:]]+(yes|clientspecified)' "$f" && need_reset_gateway=1
-    grep -qiE '^[[:space:]]*PermitTunnel[[:space:]]+(yes|point-to-point|ethernet)' "$f" && need_reset_tunnel=1
-  done
-  if ((${#llm_dropins[@]} > 0)); then
-    say "sshd drop-ins that look like they came from an old LLM or tunnel setup:"
-    for f in "${llm_dropins[@]}"; do
-      info "$f:"
-      sed 's/^/      /' "$f"
-    done
-    if confirm "Back up and disable these drop-ins?" y; then
-      for f in "${llm_dropins[@]}"; do
-        backup_path "$f"
-        run mv -f "$f" "$f.disabled-by-gmat-llm"
-      done
-      changed=1
-    fi
-  fi
-  if [[ -n "$other" ]]; then
-    say "Forwarding settings in the SSH server config (not identified as LLM-related, so not edited):"
-    printf '%s' "$other"
-  fi
-  if ((need_reset_gateway || need_reset_tunnel)); then
-    say "GatewayPorts or PermitTunnel are turned on above, which lets forwarded ports or tunnels reach the network."
-    if confirm "Turn them back off with a drop-in sshd reads first ($SSHD_RESET_DROPIN)?" y; then
-      {
-        printf '# Written by gmat-llm setup. sshd uses the first value it reads, and this file\n'
-        printf '# is read before the others, so it turns off forwarding an old setup turned on.\n'
-        printf '# Remove it to go back.\n'
-        ((need_reset_gateway)) && printf 'GatewayPorts no\n'
-        ((need_reset_tunnel)) && printf 'PermitTunnel no\n'
-      } | write_file "$SSHD_RESET_DROPIN" 0644 root:root
-      record_installed "file:$SSHD_RESET_DROPIN"
-      changed=1
-    fi
-  fi
-  if ((changed)); then
-    if sshd_config_ok; then
-      reload_sshd
-    else
-      warn "sshd -t rejected the changed config; putting it back."
-      [[ -f "$SSHD_RESET_DROPIN" ]] && run rm -f "$SSHD_RESET_DROPIN"
-      for f in "${llm_dropins[@]}"; do
-        [[ -f "$f.disabled-by-gmat-llm" ]] && run mv -f "$f.disabled-by-gmat-llm" "$f"
-      done
-    fi
-  fi
-  if ((${#llm_dropins[@]} == 0)) && [[ -z "$other" ]]; then info "No forwarding settings in the SSH server config."; fi
-}
+# ---------------------------------------------------------------------------
+# The SSH server: its binary, the ports it really listens on, and changes to
+# its config. A change is made on a copy first and goes ahead only if sshd -t
+# accepts it and every other user's login settings stay exactly the same; the
+# live change is checked again and rolled back on any difference.
+# ---------------------------------------------------------------------------
 
 sshd_binary() {
   if [[ -x /usr/sbin/sshd ]]; then printf '/usr/sbin/sshd'; else command -v sshd || true; fi
 }
 
-sshd_config_ok() {
-  local sshd
+# Runs sshd with the given options (-t or -T). sshd needs its empty folder
+# /run/sshd; a dry run that has to make it takes it away again.
+sshd_run() {
+  local sshd made=0 rc=0
   sshd=$(sshd_binary)
-  if ((DRY_RUN)); then
-    printf '[dry-run] would check the SSH server config with: %s -t\n' "${sshd:-sshd}"
-    return 0
-  fi
-  [[ -n "$sshd" ]] || return 1
-  mkdir -p /run/sshd
-  "$sshd" -t
+  [[ -n "$sshd" ]] || return 127
+  if [[ ! -d /run/sshd ]] && mkdir -p /run/sshd 2>/dev/null; then made=1; fi
+  "$sshd" "$@" || rc=$?
+  if ((made && DRY_RUN)); then rmdir /run/sshd 2>/dev/null || true; fi
+  return "$rc"
+}
+
+sshd_config_ok() {
+  sshd_run -t
 }
 
 # Reloads sshd so it reads its config again. Running sessions stay open.
@@ -1491,40 +1831,468 @@ reload_sshd() {
   info "The SSH server is not running as a service right now; it reads the new config when it next starts."
 }
 
-# Rules for LLM ports from earlier setups.
+# Works out the ports SSH really uses, from four places: the listening
+# sockets of sshd (or of systemd for Ubuntu 24.04's ssh.socket), the ports
+# sshd's config names (sshd -T), the ports ssh.socket names, and the server
+# ports of the SSH sessions open now. Sets:
+#   SSH_PORTS       the ports to keep open: those listened on and in use
+#   SSH_PORTS_ALL   every port any source names, never to be closed
+#   SSH_PORTS_SURE  1 when the sources agree, else 0 with SSH_PORTS_NOTE
+detect_ssh_ports() {
+  local out cfg_ports="" socket_ports="" socket_active=0 listen_ports="" session_ports="" line addr port users expected
+  if [[ -n "$(sshd_binary)" ]] && out=$(sshd_run -T 2>/dev/null); then
+    # ListenAddress lines carry the port sshd uses; Port lines are only a
+    # default for addresses without one.
+    cfg_ports=$(awk '$1 == "listenaddress" {n = split($2, a, ":"); print a[n]}' <<<"$out" | sort -un)
+    if [[ -z "$cfg_ports" ]]; then cfg_ports=$(awk '$1 == "port" {print $2}' <<<"$out" | sort -un); fi
+  fi
+  if have systemctl && [[ "$(systemctl is-active ssh.socket 2>/dev/null || true)" == active ]]; then
+    socket_active=1
+    socket_ports=$(systemctl show -p Listen --value ssh.socket 2>/dev/null | grep -oE ':[0-9]+ \(Stream\)' | grep -oE '[0-9]+' | sort -un || true)
+  fi
+  while read -r line; do
+    [[ -n "$line" ]] || continue
+    addr=$(awk '{print $4}' <<<"$line")
+    port=${addr##*:}
+    [[ "$port" =~ ^[0-9]+$ ]] || continue
+    users=$(grep -o 'users:(.*' <<<"$line" || true)
+    if grep -qE '\("sshd(-session)?",' <<<"$users"; then
+      listen_ports+="$port"$'\n'
+    elif ((socket_active)) && grep -qF '("systemd",pid=1,' <<<"$users" && grep -qx "$port" <<<"$socket_ports"; then
+      listen_ports+="$port"$'\n'
+    fi
+  done < <(ss -ltnpH 2>/dev/null || true)
+  listen_ports=$(sed '/^$/d' <<<"$listen_ports" | sort -un)
+  while read -r line; do
+    [[ -n "$line" ]] || continue
+    grep -qE '\("sshd(-session)?",' <<<"$line" || continue
+    addr=$(awk '{print $3}' <<<"$line")
+    port=${addr##*:}
+    if [[ "$port" =~ ^[0-9]+$ ]]; then session_ports+="$port"$'\n'; fi
+    # A session from this computer itself may come through a reverse tunnel.
+    case "$(awk '{print $4}' <<<"$line")" in
+      127.* | "[::1]"* | "[::ffff:127."*) SSH_LOOPBACK_SESSION=1 ;;
+    esac
+  done < <(ss -tnpH state established 2>/dev/null || true)
+  if [[ -n "$SSH_SESSION_PORT" ]]; then session_ports+="$SSH_SESSION_PORT"$'\n'; fi
+  session_ports=$(sed '/^$/d' <<<"$session_ports" | sort -un)
+  if ((socket_active)); then expected=$socket_ports; else expected=$cfg_ports; fi
+  SSH_PORTS=$(printf '%s\n%s\n' "$listen_ports" "$session_ports" | sed '/^$/d' | sort -un | tr '\n' ' ')
+  SSH_PORTS=${SSH_PORTS% }
+  SSH_PORTS_ALL=$(printf '%s\n%s\n%s\n%s\n' "$listen_ports" "$session_ports" "$cfg_ports" "$socket_ports" | sed '/^$/d' | sort -un | tr '\n' ' ')
+  SSH_PORTS_ALL=${SSH_PORTS_ALL% }
+  SSH_PORTS_SURE=0
+  SSH_PORTS_NOTE=""
+  if [[ -z "$listen_ports" ]]; then
+    SSH_PORTS_NOTE="ss shows no SSH server listening"
+  elif [[ -z "$expected" ]]; then
+    SSH_PORTS_NOTE="sshd -T could not show the ports sshd's config names"
+  elif [[ "$(tr '\n' ' ' <<<"$expected")" != "$(tr '\n' ' ' <<<"$listen_ports")" ]]; then
+    local named heard
+    named=$(tr '\n' ' ' <<<"$expected")
+    heard=$(tr '\n' ' ' <<<"$listen_ports")
+    SSH_PORTS_NOTE="the config names port(s) ${named% } but sshd listens on ${heard% }"
+  else
+    local stray=""
+    for port in $session_ports; do
+      grep -qx "$port" <<<"$listen_ports" || stray+="$port "
+    done
+    if [[ -n "$stray" ]]; then
+      SSH_PORTS_NOTE="an open SSH session uses port(s) ${stray}that sshd no longer listens on"
+    else
+      SSH_PORTS_SURE=1
+    fi
+  fi
+}
+
+report_ssh_ports() {
+  if ((SSH_PORTS_SURE)); then
+    info "SSH listens on port(s) $SSH_PORTS; the firewall keeps them open."
+  else
+    warn "The SSH port could not be worked out with confidence: $SSH_PORTS_NOTE. Setup will not turn on the firewall, and keeps every rule for port(s) ${SSH_PORTS_ALL:-22}."
+  fi
+}
+
+# The users and client addresses a change is checked for: the user who ran
+# sudo, root and a user no rule names, connecting from this session's
+# address, from this computer and from a hotspot address.
+sshd_probe_users() {
+  if [[ -n "$INVOKING_USER" && "$INVOKING_USER" != root ]]; then printf '%s\n' "$INVOKING_USER"; fi
+  printf '%s\n' root gmat-llm-nobody
+}
+
+sshd_probe_addrs() {
+  local peer=${SSH_SESSION_PEER%:*}
+  peer=${peer#[}
+  peer=${peer%]}
+  peer=${peer#::ffff:}
+  {
+    if [[ "$peer" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then printf '%s\n' "$peer"; fi
+    printf '%s\n' 127.0.0.1 172.20.10.2
+  } | sort -u
+}
+
+# Settings that decide who can log in and how. A change to the SSH server
+# config must leave all of them unchanged for every probe user.
+readonly SSHD_GUARD_KEYS="port listenaddress addressfamily passwordauthentication pubkeyauthentication kbdinteractiveauthentication challengeresponseauthentication authenticationmethods authorizedkeysfile authorizedkeyscommand authorizedkeyscommanduser authorizedprincipalsfile allowusers allowgroups denyusers denygroups permitrootlogin permitemptypasswords usepam hostbasedauthentication gssapiauthentication kerberosauthentication maxauthtries maxsessions maxstartups logingracetime pubkeyacceptedalgorithms trustedusercakeys revokedkeys forcecommand chrootdirectory permittty"
+
+# Prints those settings for every probe user and address, from the live
+# config or from CONFIG.
+sshd_login_snapshot() {
+  local config=$1 user addr out args=()
+  if [[ -n "$config" ]]; then args=(-f "$config"); fi
+  for user in $(sshd_probe_users); do
+    for addr in $(sshd_probe_addrs); do
+      if ! out=$(sshd_run -T "${args[@]}" -C "user=$user,host=$addr,addr=$addr" 2>&1); then
+        printf 'ERROR %s from %s: %s\n' "$user" "$addr" "$(first_line <<<"$out")"
+        continue
+      fi
+      awk -v who="$user from $addr" -v keys=" $SSHD_GUARD_KEYS " 'index(keys, " " $1 " ") {print who ": " $0}' <<<"$out"
+    done
+  done
+}
+
+# Copies the SSH server config to DIR: every file under /etc/ssh except the
+# host keys, with Include lines that point into /etc/ssh, or are relative
+# (sshd reads those from /etc/ssh), pointing into DIR instead. A symbolic
+# link is copied as the file it points to, so a change to the copy can never
+# write through to the live config.
+sshd_make_copy() {
+  local dir=$1
+  mkdir -p "$dir"
+  (cd /etc/ssh && find . \( -type f -o -type l \) ! -name 'ssh_host_*' ! -name moduli -exec cp -aL --parents {} "$dir/" \;) || return 1
+  python3 -I - "$dir" <<'PY'
+import os, re, shlex, sys
+root = sys.argv[1]
+safe = re.compile(r"^[A-Za-z0-9._/*?\[\]-]+$")
+def move(token):
+    if token.startswith("/etc/ssh/"):
+        token = root + token[len("/etc/ssh"):]
+    elif not token.startswith(("/", "~")):
+        token = root + "/" + token
+    return token if safe.match(token) else '"' + token.replace('"', '\\"') + '"'
+for base, _, names in os.walk(root):
+    for name in names:
+        path = os.path.join(base, name)
+        if os.path.islink(path):
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                lines = f.read().split("\n")
+        except (UnicodeDecodeError, OSError):
+            continue
+        changed = False
+        for i, line in enumerate(lines):
+            m = re.match(r"^(\s*)include(?:\s*=\s*|\s+)(.*)$", line, re.I)
+            if not m:
+                continue
+            try:
+                tokens = shlex.split(m.group(2), comments=True)
+            except ValueError:
+                sys.exit(3)
+            lines[i] = m.group(1) + "Include " + " ".join(move(t) for t in tokens)
+            changed = True
+        if changed:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+PY
+}
+
+# A checksum of the SSH server config files, to tell whether a change wrote
+# anything.
+sshd_config_checksum() {
+  (cd /etc/ssh && find . \( -type f -o -type l \) ! -name 'ssh_host_*' ! -name moduli -print0 | sort -z | xargs -0 -r sha256sum) 2>/dev/null | sha256sum | awk '{print $1}'
+}
+
+# sshd_apply CHANGE WHAT [CHECK]: CHANGE ROOT edits the SSH server config
+# under ROOT (/etc/ssh, or a copy). The copy goes first; the live config is
+# changed only if sshd -t accepts the copy, the probe users' login settings
+# stay exactly the same and CHECK CONFIG passes. The live result is checked
+# the same way, and any difference puts every file back. Returns 1 when the
+# change is not made. sshd is not reloaded here (see SSHD_CHANGED).
+# Whether setup may change the SSH server config at all: it must pass
+# sshd -t as it is, and hold no symbolic links, which the copy that a change
+# is rolled back from could not put back. Says why not.
+sshd_config_editable() {
+  local err linked
+  if ! err=$(sshd_run -t 2>&1); then
+    warn "The SSH server config already fails 'sshd -t', so setup does not change it: $(tr '\n' ' ' <<<"$err")"
+    return 1
+  fi
+  linked=$(find /etc/ssh/sshd_config /etc/ssh/sshd_config.d -maxdepth 1 -type l 2>/dev/null | tr '\n' ' ' || true)
+  if [[ -n "$linked" ]]; then
+    warn "${linked}is a symbolic link, which setup does not edit, so the SSH server config is not changed."
+    return 1
+  fi
+}
+
+sshd_apply() {
+  local change=$1 what=$2 check=${3:-} work before after users sum_before
+  sshd_config_editable || return 1
+  work=$(mktemp -d)
+  before=$(sshd_login_snapshot "")
+  if [[ -z "$before" ]] || grep -q '^ERROR ' <<<"$before"; then
+    warn "sshd -T cannot show the login settings to compare ($(grep '^ERROR ' <<<"$before" | first_line || true)), so $what cannot be checked and is not made."
+    rm -rf "$work"
+    return 1
+  fi
+  if ! sshd_make_copy "$work/ssh"; then
+    warn "The SSH server config could not be copied for a check (an Include line setup cannot read), so $what is not made."
+    rm -rf "$work"
+    return 1
+  fi
+  "$change" "$work/ssh"
+  if ! sshd_run -t -f "$work/ssh/sshd_config" >"$work/err" 2>&1; then
+    warn "sshd -t rejects the config with $what: $(tr '\n' ' ' <"$work/err")"
+    rm -rf "$work"
+    return 1
+  fi
+  after=$(sshd_login_snapshot "$work/ssh/sshd_config")
+  after=${after//"$work/ssh"/\/etc\/ssh}
+  if [[ "$after" != "$before" ]]; then
+    warn "$what would change how other users log in, so it is not made:"
+    diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") | grep '^[<>]' | sed 's/^</  before:/; s/^>/  after: /' >&2 || true
+    rm -rf "$work"
+    return 1
+  fi
+  if [[ -n "$check" ]] && ! "$check" "$work/ssh/sshd_config"; then
+    rm -rf "$work"
+    return 1
+  fi
+  users=$(sshd_probe_users | tr '\n' ' ')
+  if ((DRY_RUN)); then
+    printf '[dry-run] checked %s on a copy of the SSH server config: sshd -t accepts it, and logins stay the same for %s\n' "$what" "${users% }"
+    rm -rf "$work"
+    return 0
+  fi
+  # The live change, with a copy of every file to go back to.
+  mkdir -p "$work/restore"
+  (cd /etc/ssh && find . \( -type f -o -type l \) ! -name 'ssh_host_*' ! -name moduli -exec cp -a --parents {} "$work/restore/" \;)
+  (cd /etc/ssh && find . \( -type f -o -type l \) ! -name 'ssh_host_*' ! -name moduli | sort) >"$work/files-before"
+  backup_path /etc/ssh/sshd_config
+  if [[ -d /etc/ssh/sshd_config.d ]]; then backup_path /etc/ssh/sshd_config.d; fi
+  sum_before=$(sshd_config_checksum)
+  "$change" /etc/ssh
+  if sshd_run -t >"$work/err" 2>&1 && [[ "$(sshd_login_snapshot "")" == "$before" ]] && { [[ -z "$check" ]] || "$check" ""; }; then
+    if [[ "$(sshd_config_checksum)" != "$sum_before" ]]; then SSHD_CHANGED=1; fi
+    rm -rf "$work"
+    return 0
+  fi
+  warn "The SSH server config did not check out after $what; putting every file back."
+  sshd_restore "$work"
+  rm -rf "$work"
+  return 1
+}
+
+# Puts /etc/ssh back from sshd_apply's copy: files the change added go, the
+# others come back as they were.
+sshd_restore() {
+  local work=$1 f
+  (cd /etc/ssh && find . \( -type f -o -type l \) ! -name 'ssh_host_*' ! -name moduli | sort) >"$work/files-after"
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    rm -f -- "/etc/ssh/${f#./}"
+  done < <(comm -13 "$work/files-before" "$work/files-after")
+  (cd "$work/restore" && find . \( -type f -o -type l \) -exec cp -a --parents {} /etc/ssh/ \;)
+  if sshd_run -t >/dev/null 2>&1; then
+    info "The SSH server config is as it was before."
+  else
+    die "The SSH server config could not be put back. Copy the files from $BACKUP_DIR/etc/ssh to /etc/ssh before sshd restarts, and run sudo sshd -t."
+  fi
+}
+
+# Whether sshd_config reads sshd_config.d/*.conf before any Match block.
+sshd_reads_dropins() {
+  awk '
+    tolower($1) == "match" { exit 1 }
+    tolower($1) == "include" {
+      for (i = 2; i <= NF; i++) if ($i == "/etc/ssh/sshd_config.d/*.conf" || $i == "sshd_config.d/*.conf") found = 1
+    }
+    END { exit !found }' /etc/ssh/sshd_config 2>/dev/null
+}
+
+# Forwarding settings an old setup may have added.
+readonly SSHD_FORWARD_KEYS='GatewayPorts|PermitTunnel|AllowTcpForwarding|PermitOpen|PermitListen|AllowStreamLocalForwarding'
+
+# Lines to comment out, one "file<TAB>line numbers" per line (file relative
+# to /etc/ssh), and the content of the reset drop-in, for the change below.
+SSHD_COMMENT_LINES=""
+SSHD_RESET_CONTENT=""
+
+change_forwarding_cleanup() {
+  local root=$1 rel nums tmp
+  while IFS=$'\t' read -r rel nums; do
+    [[ -n "$rel" && -f "$root/$rel" ]] || continue
+    tmp=$(mktemp)
+    awk -v nums="$nums" '
+      BEGIN { n = split(nums, list, " "); for (i = 1; i <= n; i++) pick[list[i]] = 1 }
+      (FNR in pick) { print "# disabled by gmat-llm setup: " $0; next }
+      { print }' "$root/$rel" >"$tmp"
+    cat "$tmp" >"$root/$rel"
+    rm -f "$tmp"
+  done <<<"$SSHD_COMMENT_LINES"
+  if [[ -n "$SSHD_RESET_CONTENT" ]]; then
+    mkdir -p "$root/sshd_config.d"
+    printf '%s\n' "$SSHD_RESET_CONTENT" >"$root/sshd_config.d/${SSHD_RESET_DROPIN##*/}"
+    chmod 0644 "$root/sshd_config.d/${SSHD_RESET_DROPIN##*/}"
+  fi
+}
+
+# The reset drop-in must really turn the settings off.
+check_forwarding_reset() {
+  local config=$1 args=() out
+  [[ -n "$SSHD_RESET_CONTENT" ]] || return 0
+  if [[ -n "$config" ]]; then args=(-f "$config"); fi
+  out=$(sshd_run -T "${args[@]}" -C "user=gmat-llm-nobody,host=127.0.0.1,addr=127.0.0.1" 2>/dev/null || true)
+  if grep -qiE '^gatewayports (yes|clientspecified)' <<<"$out" || grep -qiE '^permittunnel (yes|point-to-point|ethernet)' <<<"$out"; then
+    warn "A reset drop-in would not take effect here: sshd_config sets these before it reads sshd_config.d."
+    return 1
+  fi
+}
+
+# Server-side forwarding settings an old setup may have added. In drop-ins
+# that name LLM software, only the forwarding lines are offered for
+# commenting out; the rest of such a file stays. Settings anywhere else are
+# shown and left alone, except that GatewayPorts or PermitTunnel can be
+# turned off by a drop-in sshd reads first. sshd is reloaded, never restarted.
+cleanup_sshd_forwarding() {
+  local files=() f rel hits nums other="" widen need_gateway=0 need_tunnel=0 default
+  if [[ ! -f /etc/ssh/sshd_config ]]; then
+    info "No OpenSSH server config."
+    return 0
+  fi
+  files=(/etc/ssh/sshd_config)
+  for f in /etc/ssh/sshd_config.d/*.conf; do
+    if [[ "$f" != "$SSHD_DROPIN" && "$f" != "$SSHD_RESET_DROPIN" ]]; then files+=("$f"); fi
+  done
+  SSHD_COMMENT_LINES=""
+  SSHD_RESET_CONTENT=""
+  for f in "${files[@]}"; do
+    hits=$(grep -niE "^[[:space:]]*($SSHD_FORWARD_KEYS)([[:space:]]|=)" "$f" 2>/dev/null || true)
+    [[ -n "$hits" ]] || continue
+    if [[ "$f" != /etc/ssh/sshd_config ]] && { is_llm_text "$(cat "$f")" || [[ "$(basename "$f" | tr '[:upper:]' '[:lower:]')" == *llm* ]]; }; then
+      say "Forwarding lines in $f, a drop-in that looks like it came from an old LLM setup:"
+      indent <<<"$hits"
+      widen=0
+      grep -qiE '(GatewayPorts[[:space:]=]+(yes|clientspecified))|(PermitTunnel[[:space:]=]+(yes|point-to-point|ethernet))|(PermitListen[[:space:]=]+any)|(PermitOpen[[:space:]=]+any)' <<<"$hits" && widen=1
+      default=n
+      ((widen)) && default=y
+      info "Only these lines would be commented out; the rest of the file stays."
+      if confirm "Comment these lines out?" "$default"; then
+        rel=${f#/etc/ssh/}
+        nums=$(cut -d: -f1 <<<"$hits" | tr '\n' ' ')
+        SSHD_COMMENT_LINES+="$rel"$'\t'"${nums% }"$'\n'
+      fi
+      continue
+    fi
+    other+="$f:"$'\n'"$(indent <<<"$hits")"$'\n'
+    if grep -qiE 'GatewayPorts[[:space:]=]+(yes|clientspecified)' <<<"$hits"; then need_gateway=1; fi
+    if grep -qiE 'PermitTunnel[[:space:]=]+(yes|point-to-point|ethernet)' <<<"$hits"; then need_tunnel=1; fi
+  done
+  if [[ -n "$other" ]]; then
+    say "Forwarding settings in the SSH server config (not identified as LLM-related, so not edited):"
+    printf '%s' "$other"
+  fi
+  if ((need_gateway || need_tunnel)) && sshd_reads_dropins; then
+    say "GatewayPorts or PermitTunnel is turned on above, which lets forwarded ports or tunnels reach the network. The tunnel user has both off in its own rules either way."
+    if confirm "Turn them off for every user with a drop-in sshd reads first ($SSHD_RESET_DROPIN)?" n; then
+      SSHD_RESET_CONTENT="# Written by gmat-llm setup. sshd uses the first value it reads, and this file
+# is read before the others, so it turns off forwarding an old setup turned on.
+# Remove it to go back."
+      ((need_gateway)) && SSHD_RESET_CONTENT+=$'\nGatewayPorts no'
+      ((need_tunnel)) && SSHD_RESET_CONTENT+=$'\nPermitTunnel no'
+    fi
+  fi
+  if [[ -n "$SSHD_COMMENT_LINES$SSHD_RESET_CONTENT" ]]; then
+    if sshd_apply change_forwarding_cleanup "the forwarding changes" check_forwarding_reset; then
+      if [[ -n "$SSHD_RESET_CONTENT" ]]; then record_installed "file:$SSHD_RESET_DROPIN"; fi
+      if ((!DRY_RUN && SSHD_CHANGED)); then reload_sshd; fi
+    else
+      warn "The SSH server config is left as it was."
+    fi
+  elif [[ -z "$other" ]]; then
+    info "No forwarding settings in the SSH server config."
+  fi
+  return 0
+}
+
+# The ports a ufw rule names, one "first last" pair per line (a single port
+# is first = last). Prints nothing for a rule without a port, which covers
+# every port.
+ufw_rule_ports() {
+  local words=() word items=() item
+  read -r -a words <<<"$1"
+  for word in "${words[@]}"; do
+    word=${word%/tcp}
+    word=${word%/udp}
+    [[ "$word" =~ ^[0-9]+([:,][0-9]+)*$ ]] || continue
+    IFS=, read -r -a items <<<"$word"
+    for item in "${items[@]}"; do
+      if [[ "$item" == *:* ]]; then printf '%s %s\n' "${item%%:*}" "${item##*:}"; else printf '%s %s\n' "$item" "$item"; fi
+    done
+  done
+}
+
+# Rules for LLM ports from earlier setups. A rule that names an SSH port, an
+# SSH application profile, a range around an SSH port, or no port at all is
+# never deleted. While ufw is on, every deletion defaults to no.
 cleanup_ufw_rules() {
   have ufw || {
     info "ufw is not installed yet."
     return 0
   }
-  local rules rule spec port class default words=()
-  rules=$(ufw show added 2>/dev/null || true)
-  rules=$(grep -E '^ufw ' <<<"$rules" || true)
-  [[ -n "$rules" ]] || {
+  local rules rule spec pairs first last p protected keep class default words=() found=0 active=0
+  [[ "$(ufw status 2>/dev/null | first_line || true)" == *"Status: active"* ]] && active=1
+  rules=$(ufw show added 2>/dev/null | grep -E '^ufw ' || true)
+  if [[ -z "$rules" ]]; then
     info "No ufw rules yet."
     return 0
-  }
-  local found=0
+  fi
+  protected="22 $SSH_PORTS_ALL ${SSH_SESSION_PORT:-}"
   while IFS= read -r rule; do
-    [[ "$rule" == *"gmat-llm"* ]] && continue
+    [[ -n "$rule" ]] || continue
+    [[ "$rule" != *"gmat-llm"* ]] || continue
     # ufw delete takes the rule without its comment.
     spec=${rule#ufw }
     spec=${spec%% comment *}
-    while read -r port; do
-      [[ -n "$port" ]] || continue
-      class=$(port_class "$port")
-      [[ "$class" == other ]] && continue
-      found=1
-      if [[ "$class" == strong ]]; then default=y; else default=n; fi
-      info "ufw rule: $rule (port $port)"
-      if confirm "Delete this ufw rule?" "$default"; then
-        read -r -a words <<<"$spec"
-        run ufw --force delete "${words[@]}" || warn "Could not delete: $rule"
-      fi
-      break
-    done < <(grep -oE '(^|[ :])[0-9]{2,5}(/tcp|/udp)?( |$)' <<<"$spec" | grep -oE '[0-9]{2,5}' || true)
+    pairs=$(ufw_rule_ports "$spec")
+    keep=""
+    if [[ -z "$pairs" ]]; then
+      keep="it covers every port"
+    elif grep -qi 'ssh' <<<"$spec"; then
+      keep="it is an SSH rule"
+    else
+      while read -r first last; do
+        [[ -n "$first" ]] || continue
+        for p in $protected; do
+          if ((p >= first && p <= last)); then keep="it covers the SSH port $p"; fi
+        done
+      done <<<"$pairs"
+    fi
+    class=other
+    while read -r first last; do
+      [[ -n "$first" && "$first" == "$last" ]] || continue
+      case "$(port_class "$first")" in
+        strong) class=strong ;;
+        common) [[ "$class" == strong ]] || class=common ;;
+      esac
+    done <<<"$pairs"
+    [[ "$class" != other ]] || continue
+    found=1
+    if [[ -n "$keep" ]]; then
+      info "ufw rule: $rule (kept: $keep)"
+      continue
+    fi
+    default=n
+    if ((!active)) && [[ "$class" == strong ]]; then default=y; fi
+    info "ufw rule: $rule"
+    if confirm "Delete this ufw rule?" "$default"; then
+      read -r -a words <<<"$spec"
+      run ufw --force delete "${words[@]}" || warn "Could not delete: $rule"
+    fi
   done <<<"$rules"
   ((found)) || info "No ufw rules for LLM ports."
+  return 0
 }
 
 cleanup_old_setup() {
@@ -1534,7 +2302,8 @@ cleanup_old_setup() {
     return 0
   fi
   say "Looking for services, containers, processes, models and SSH tunnels of earlier setups."
-  say "Nothing is removed without a yes, and nothing is removed that is not identified as LLM software."
+  say "Nothing is removed without a yes. --yes alone removes programs and services of LLM software, never models,"
+  say "environments or container volumes (see --delete-old-models and --delete-old-envs)."
   cleanup_units
   cleanup_containers
   cleanup_listeners
@@ -1580,9 +2349,26 @@ missing_packages() {
   done
 }
 
+# The names of all installed packages, sorted, to tell afterwards which ones
+# an install brought in.
+installed_package_list() {
+  dpkg-query -W -f='${Status}\t${Package}\n' 2>/dev/null | awk -F'\t' '$1 == "install ok installed" {print $2}' | sort -u
+}
+
+# Records every package that is installed now and was not in BEFORE (a file
+# from installed_package_list), so uninstall knows exactly what came in.
+record_new_packages() {
+  local before=$1 pkg
+  ((DRY_RUN)) && return 0
+  while IFS= read -r pkg; do
+    [[ -n "$pkg" ]] || continue
+    record_installed "apt:$pkg"
+  done < <(comm -13 "$before" <(installed_package_list))
+}
+
 install_base_packages() {
   local wanted=(build-essential cmake ninja-build git curl ca-certificates pkg-config libssl-dev python3 avahi-daemon ufw pciutils openssh-server)
-  local missing bytes
+  local missing bytes before
   missing=$(missing_packages "${wanted[@]}" | tr '\n' ' ')
   if [[ -z "${missing// /}" ]]; then
     info "Build tools, avahi-daemon and ufw are installed."
@@ -1593,10 +2379,12 @@ install_base_packages() {
   bytes=$(apt_download_bytes $missing)
   say "Packages to install: $missing($(download_note "$bytes"))"
   confirm "Install them?" y || die "These packages are needed."
+  before=$(mktemp)
+  installed_package_list >"$before"
   # shellcheck disable=SC2086
   run env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends $missing
-  local pkg
-  for pkg in $missing; do record_installed "apt:$pkg"; done
+  record_new_packages "$before"
+  rm -f "$before"
 }
 
 nvcc_version() {
@@ -1695,7 +2483,9 @@ EOF
 
 # An older setup may have added NVIDIA's repository another way (an apt-key
 # key and its own .list file). Two entries for the same repository with
-# different keys make apt update fail, so those entries are turned off.
+# different keys make apt update fail, so those entries are turned off, and
+# turned back on if the CUDA install is declined after all.
+DISABLED_CUDA_SOURCES=()
 disable_conflicting_cuda_sources() {
   local f own="/etc/apt/sources.list.d/cuda-ubuntu${OS_VERSION//./}-x86_64.list" found=()
   for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
@@ -1720,10 +2510,27 @@ disable_conflicting_cuda_sources() {
       else
         run mv -f "$f" "$f.disabled-by-gmat-llm"
       fi
+      DISABLED_CUDA_SOURCES+=("$f")
     done
   else
     warn "apt update may fail with \"Conflicting values set for option Signed-By\" until these entries are removed."
   fi
+}
+
+restore_cuda_sources() {
+  local f
+  for f in "${DISABLED_CUDA_SOURCES[@]}"; do
+    if [[ "$f" == /etc/apt/sources.list ]]; then
+      if ((DRY_RUN)); then
+        printf '[dry-run] would put back %s from %s\n' "$f" "$BACKUP_DIR$f"
+      else
+        cp -a -- "$BACKUP_DIR$f" "$f"
+      fi
+    else
+      run mv -f "$f.disabled-by-gmat-llm" "$f"
+    fi
+  done
+  DISABLED_CUDA_SOURCES=()
 }
 
 install_cuda_toolkit() {
@@ -1732,7 +2539,7 @@ install_cuda_toolkit() {
     info "Using the CUDA compiler $NVCC (CUDA $(nvcc_version "$NVCC"))"
     return 0
   fi
-  local url sha deb tmpdir bytes
+  local url sha deb tmpdir bytes before added_keyring=0 added_pin=0
   if [[ "$OS_VERSION" == "22.04" ]]; then
     url=$CUDA_KEYRING_URL_2204
     sha=$CUDA_KEYRING_SHA256_2204
@@ -1740,8 +2547,14 @@ install_cuda_toolkit() {
     url=$CUDA_KEYRING_URL_2404
     sha=$CUDA_KEYRING_SHA256_2404
   fi
-  say "No suitable CUDA compiler. Installing CUDA 12.8 from NVIDIA's repository: $CUDA_PACKAGES"
+  say "No suitable CUDA compiler. llama.cpp needs CUDA 12.8 from NVIDIA's repository:"
+  info "the cuda-keyring package, which adds NVIDIA's repository to apt;"
+  info "an apt pin ($APT_PIN_FILE) that keeps the driver coming from Ubuntu;"
+  info "the packages $CUDA_PACKAGES, about 1 GB to download."
+  confirm "Add NVIDIA's repository and go on?" y || die "llama.cpp needs the CUDA toolkit to use the GPU; nothing was added."
   disable_conflicting_cuda_sources
+  before=$(mktemp)
+  installed_package_list >"$before"
   if ! pkg_installed cuda-keyring; then
     tmpdir=$(mktemp -d)
     deb="$tmpdir/cuda-keyring.deb"
@@ -1752,7 +2565,9 @@ install_cuda_toolkit() {
     run dpkg -i "$deb"
     rm -rf "$tmpdir"
     record_installed "apt:cuda-keyring"
+    added_keyring=1
   fi
+  if [[ ! -f "$APT_PIN_FILE" ]]; then added_pin=1; fi
   write_driver_pin
   APT_UPDATED=0
   apt_update_once
@@ -1763,11 +2578,20 @@ install_cuda_toolkit() {
   else
     say "The CUDA toolkit packages need about 1 GB of downloads."
   fi
-  confirm "Download and install them?" y || die "llama.cpp needs the CUDA toolkit to use the GPU."
+  if ! confirm "Download and install them?" y; then
+    # Back to how apt was: no NVIDIA repository left behind.
+    if ((added_keyring)); then run dpkg --purge cuda-keyring || warn "Could not remove cuda-keyring; remove it with: sudo apt purge cuda-keyring"; fi
+    if ((added_pin)); then run rm -f "$APT_PIN_FILE"; fi
+    restore_cuda_sources
+    APT_UPDATED=0
+    apt_update_once
+    rm -f "$before"
+    die "llama.cpp needs the CUDA toolkit to use the GPU. NVIDIA's repository was removed again."
+  fi
   # shellcheck disable=SC2086
   run env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends $CUDA_PACKAGES
-  local pkg
-  for pkg in $CUDA_PACKAGES; do record_installed "apt:$pkg"; done
+  record_new_packages "$before"
+  rm -f "$before"
   NVCC="$CUDA_HOME_PINNED/bin/nvcc"
   if ((DRY_RUN)); then return 0; fi
   nvcc_works "$NVCC" || die "The CUDA toolkit installed but a test program failed; see the warning above."
@@ -1834,8 +2658,20 @@ install_llama_cpp() {
       fi
     fi
     jobs=$(build_jobs)
-    say "Building llama.cpp with CUDA for sm_$GPU_CUDA_ARCH, $jobs compile job(s) at a time. This takes 20 to 60 minutes on a laptop."
-    remove_path "$build"
+    # A build that stopped part way (a dropped connection, Ctrl+C) carries on
+    # where it stopped, as long as it was made with the same tag, compiler and
+    # GPU; anything else starts from a clean build folder.
+    if [[ -d "$build" ]] && [[ -f "$root/build-config" ]] && [[ "$(cat "$root/build-config")" == "$info" ]]; then
+      say "Carrying on with the llama.cpp build that stopped part way, $jobs compile job(s) at a time."
+    else
+      say "Building llama.cpp with CUDA for sm_$GPU_CUDA_ARCH, $jobs compile job(s) at a time. This takes 20 to 60 minutes on a laptop."
+      remove_path "$build"
+      remove_path "$root/build-info"
+      if ((!DRY_RUN)); then
+        mkdir -p "$root"
+        printf '%s\n' "$info" >"$root/build-config"
+      fi
+    fi
     local rpath_args=() libdir
     libdir=$(cuda_lib_dir "$NVCC")
     # A dry run has not installed the toolkit; NVIDIA's packages put the
@@ -2022,7 +2858,8 @@ plan_model() {
     reason)
       repo=$REASON_REPO rev=$REASON_REV
       regex="^${REASON_PREFIX//./\\.}-${REASON_QUANT}(-[0-9]{5}-of-[0-9]{5})?\\.gguf$"
-      mmproj_regex=$REASON_MMPROJ_REGEX
+      mmproj_regex=""
+      if [[ "$VISION" == on ]]; then mmproj_regex=$REASON_MMPROJ_REGEX; fi
       ;;
     ocr)
       repo=$OCR_REPO rev=$OCR_REV regex=$OCR_MODEL_REGEX mmproj_regex=$OCR_MMPROJ_REGEX
@@ -2084,7 +2921,8 @@ download_models() {
   for key in $(profile_models); do plan_model "$key"; done
   say "Files for the $PROFILE profile:"
   while IFS=$'\t' read -r id role repo rev path size sha; do
-    [[ -n "$id" ]] && info "$id: $path ($(human_bytes "$size")) from $repo"
+    [[ -n "$id" ]] || continue
+    info "$id: $path ($(human_bytes "$size")) from $repo"
   done <<<"$MODEL_PLAN"
   bytes=$(remaining_bytes)
   if ((bytes == 0)); then
@@ -2092,8 +2930,8 @@ download_models() {
   else
     free=$(free_bytes_for "$MODELS_DIR")
     if ((free < bytes + 2000000000)); then
-      if ((FAKE_HARDWARE)); then
-        warn "Not enough disk space: $(human_bytes "$bytes") to download, $(human_bytes "$free") free (going on: pretend-hardware dry run)."
+      if ((DRY_RUN)); then
+        warn "Not enough disk space: $(human_bytes "$bytes") to download, $(human_bytes "$free") free. The dry run goes on; the real run stops here."
       else
         die "Not enough disk space: $(human_bytes "$bytes") to download, $(human_bytes "$free") free."
       fi
@@ -2154,17 +2992,52 @@ remove_stale_models() {
   done
 }
 
-# The 3-bit 35B-A3B model needs about 17 GB of RAM and VRAM together.
+# RAM the 35B-A3B needs with a quantization, in MiB, estimated from its file
+# size and the VRAM: its experts are all but about 2.4 GiB of the file, and
+# stay in RAM except for what fits on the GPU beside the other weights
+# (1.9 GiB), the 16K cache (0.3 GiB), the CUDA buffers (1 GiB) and a 1.5 GiB
+# margin. The token embeddings (0.5 GiB) and the program (1 GiB) come on top.
+reason_ram_mib() {
+  local file_mib experts gpu vram=${GPU_VRAM_MIB:-0}
+  if [[ "$1" == UD-Q2_K_XL ]]; then file_mib=$SIZE_MIB_REASON_Q2; else file_mib=$SIZE_MIB_REASON_Q3; fi
+  experts=$((file_mib - 2440))
+  gpu=$((vram - 1945 - 320 - 1024 - 1536))
+  ((gpu < 0)) && gpu=0
+  ((gpu > experts)) && gpu=$experts
+  printf '%s' $((experts - gpu + 512 + 1024))
+}
+
+# The larger quantization that leaves 1.5 GiB of the service's memory limit
+# (RAM less 1 GiB) for the page cache to keep the experts in.
+fitting_reason_quant() {
+  local limit=$((MEM_TOTAL_KIB / 1024 - 1024))
+  if (($(reason_ram_mib UD-Q3_K_XL) + 1536 <= limit)); then printf 'UD-Q3_K_XL'; else printf 'UD-Q2_K_XL'; fi
+}
+
+# Picks the 35B-A3B's quantization: the one given with --quant or saved from
+# the last run, else the 3-bit file when RAM allows it, else the 2-bit file.
 choose_reason_quant() {
-  local mem_gib
-  mem_gib=$((MEM_TOTAL_KIB / 1048576))
-  if [[ "$REASON_QUANT" == "UD-Q3_K_XL" ]] && ((REASON_QUANT_SET == 0)) && ((mem_gib < 14)); then
-    say "This computer has $mem_gib GiB of RAM, too little for the 3-bit 35B-A3B model."
-    if confirm "Use the smaller 2-bit quantization (UD-Q2_K_XL) instead?" y; then
-      REASON_QUANT="UD-Q2_K_XL"
-    else
-      die "Choose --quant UD-Q2_K_XL or --profile minimal."
+  local limit need3 need2
+  limit=$((MEM_TOTAL_KIB / 1024 - 1024))
+  need3=$(reason_ram_mib UD-Q3_K_XL)
+  need2=$(reason_ram_mib UD-Q2_K_XL)
+  if ((REASON_QUANT_SET || REASON_QUANT_SAVED)); then
+    if [[ "$REASON_QUANT" == UD-Q3_K_XL ]] && ((need3 + 1536 > limit)); then
+      warn "The 3-bit file needs about $((need3 / 1024)) GiB of RAM here and the service may use $((limit / 1024)) GiB, so the kernel will keep reading experts from disk and replies will be slow. --quant UD-Q2_K_XL avoids that."
     fi
+  elif ((need3 + 1536 <= limit)); then
+    REASON_QUANT=UD-Q3_K_XL
+  else
+    say "With $GPU_VRAM_MIB MiB of VRAM, the 3-bit 35B-A3B file (16.9 GB) needs about $((need3 / 1024)) GiB of RAM for its experts and the program, and the service may use $((limit / 1024)) GiB. The kernel would keep reading experts from disk, which makes every reply slow. The 2-bit file (12.3 GB) needs about $((need2 / 1024)) GiB."
+    if confirm "Use the 2-bit quantization (UD-Q2_K_XL)?" y; then
+      REASON_QUANT=UD-Q2_K_XL
+    else
+      REASON_QUANT=UD-Q3_K_XL
+      warn "Keeping the 3-bit file; expect slow replies from the 35B-A3B."
+    fi
+  fi
+  if [[ "$REASON_QUANT" == UD-Q2_K_XL ]] && ((need2 + 1024 > limit)); then
+    warn "Even the 2-bit file is tight with this much RAM; --profile minimal runs the 4B model only."
   fi
   info "35B-A3B quantization: $REASON_QUANT"
 }
@@ -2192,65 +3065,92 @@ ensure_service_user() {
   record_installed "dir:$ETC_DIR"
 }
 
-# Works out how many layers of the 35B-A3B model keep their experts in
-# system RAM, with llama.cpp's own estimate of what fits in free VRAM. The
-# vision projector and its image buffers come on top, so they are added to
-# the margin, as llama-server does.
-compute_n_cpu_moe() {
-  local model=$1 mmproj=$2 margin out line ngl overflow mmproj_mib
+# The 35B-A3B's experts that stay in system RAM, as a list of layer numbers.
+# llama-fit-params works out from free VRAM which layers' experts do not fit
+# and names them in an -ot list (it picks the last layers); that list goes
+# into the config as it is, so the VRAM used matches its estimate. The
+# margin keeps 1.5 GiB of VRAM free for the context and the CUDA buffers,
+# plus the vision projector when it is on. Prints "NGL<TAB>LAYERS", with
+# LAYERS empty when every expert fits, "auto" when nothing can be measured,
+# or "user" when --n-cpu-moe was given.
+compute_expert_layers() {
+  local model=$1 mmproj=$2 margin out line ngl layers
   if [[ -n "$N_CPU_MOE" ]]; then
-    printf '%s %s' "all" "$N_CPU_MOE"
+    printf 'all\tuser'
     return 0
   fi
   if ((DRY_RUN)) || [[ ! -f "$model" ]]; then
-    printf '%s %s' "all" "auto"
+    printf 'all\tauto'
     return 0
   fi
-  mmproj_mib=$(($(stat -c %s "$mmproj") / 1048576))
-  margin=$((1024 + mmproj_mib + 512))
+  margin=1536
+  if [[ -n "$mmproj" && -f "$mmproj" ]]; then margin=$((margin + $(stat -c %s "$mmproj") / 1048576)); fi
   out=$("$(llama_bin llama-fit-params)" --model "$model" --ctx-size "$CTX_REASON" --parallel 1 --fit-target "$margin" 2>/dev/null || true)
   line=$(grep -E '^-c [0-9]+ -ngl' <<<"$out" | tail -n 1 || true)
   if [[ -z "$line" ]]; then
     warn "llama-fit-params gave no answer; keeping every expert in system RAM."
-    printf '%s %s' "all" "40"
+    printf 'all\t%s' "$(seq -s, 0 $((REASON_LAYERS - 1)))"
     return 0
   fi
   ngl=$(awk '{print $4}' <<<"$line")
-  overflow=$(grep -o 'blk\\\.[0-9]*\\\.' <<<"$line" | sort -u | grep -c . || true)
-  ((overflow > 0)) || overflow=0
-  printf '%s %s' "$ngl" "$overflow"
+  layers=$(grep -oE 'blk\\\.[0-9]+\\\.ffn' <<<"$line" | grep -oE '[0-9]+' | sort -un | tr '\n' ',' || true)
+  printf '%s\t%s' "$ngl" "${layers%,}"
+}
+
+# The -ot patterns for a list of layers, as llama-fit-params writes them.
+expert_override() {
+  local layer out=""
+  for layer in ${1//,/ }; do
+    out+="${out:+,}blk\\.${layer}\\.ffn_(up|down|gate)_(ch|)exps=CPU"
+  done
+  printf '%s' "$out"
+}
+
+# How many layers keep their experts in RAM.
+expert_layer_count() {
+  if [[ -z "$1" ]]; then printf '0'; else tr ',' '\n' <<<"$1" | grep -c .; fi
 }
 
 # Host memory llama.cpp expects the model to use with these settings, in MiB.
 host_mib_needed() {
-  local model=$1 ngl=$2 ncmoe=$3 out
-  out=$("$(llama_bin llama-fit-params)" --model "$model" --ctx-size "$CTX_REASON" --parallel 1 -ngl "$ngl" --n-cpu-moe "$ncmoe" --fit-print on 2>/dev/null || true)
+  local model=$1 ngl=$2 layers=$3 out args=()
+  if [[ -n "$layers" ]]; then args=(-ot "$(expert_override "$layers")"); fi
+  out=$("$(llama_bin llama-fit-params)" --model "$model" --ctx-size "$CTX_REASON" --parallel 1 -ngl "$ngl" "${args[@]}" --fit-print on 2>/dev/null || true)
   awk '$1 == "Host" {print $2 + $3 + $4}' <<<"$out" | tail -n 1
 }
 
 tune_reason_model() {
-  local model=$1 mmproj=$2 result ngl ncmoe host mem_mib
-  result=$(compute_n_cpu_moe "$model" "$mmproj")
-  ngl=${result%% *}
-  ncmoe=${result##* }
-  if [[ "$ncmoe" == auto ]]; then
-    info "The dry run cannot measure VRAM; the real run works out --n-cpu-moe with llama-fit-params."
-    SAVED_NGL="all"
-    SAVED_N_CPU_MOE="auto"
-    return 0
-  fi
+  local model=$1 mmproj=$2 result ngl layers host mem_mib
+  result=$(compute_expert_layers "$model" "$mmproj")
+  ngl=${result%%$'\t'*}
+  layers=${result#*$'\t'}
+  case "$layers" in
+    user)
+      info "35B-A3B: the experts of the first $N_CPU_MOE layers stay in system RAM (--n-cpu-moe)."
+      SAVED_NGL=all
+      SAVED_CPU_LAYERS=""
+      return 0
+      ;;
+    auto)
+      info "The dry run cannot measure VRAM; the real run works out which experts stay in RAM with llama-fit-params."
+      SAVED_NGL=all
+      SAVED_CPU_LAYERS=auto
+      return 0
+      ;;
+  esac
+  SAVED_NGL=$ngl
+  SAVED_CPU_LAYERS=$layers
+  SAVED_N_CPU_MOE=""
   if ((!DRY_RUN)) && [[ -f "$model" ]]; then
-    host=$(host_mib_needed "$model" "$ngl" "$ncmoe")
+    host=$(host_mib_needed "$model" "$ngl" "$layers")
     mem_mib=$((MEM_TOTAL_KIB / 1024))
     if [[ -n "$host" ]]; then
-      info "35B-A3B: $ncmoe of 40 layers keep their experts in system RAM; llama.cpp expects $host MiB of RAM and the rest in VRAM."
-      if ((host + 1536 > mem_mib)); then
-        warn "That leaves less than 1.5 GiB of the $mem_mib MiB of RAM for everything else. If the model fails to load or runs slowly, run setup again with --quant UD-Q2_K_XL."
+      info "35B-A3B: $(expert_layer_count "$layers") of $REASON_LAYERS layers keep their experts in system RAM; llama.cpp expects $host MiB of RAM and the rest in VRAM."
+      if ((host + 1536 > mem_mib - 1024)); then
+        warn "That leaves less than 1.5 GiB of the service's $((mem_mib - 1024)) MiB limit for the page cache and everything else, so the kernel will read experts from disk again and again and replies will be slow. Run setup again with --quant UD-Q2_K_XL to avoid that."
       fi
     fi
   fi
-  SAVED_NGL=$ngl
-  SAVED_N_CPU_MOE=$ncmoe
 }
 
 # One model's entry in the llama-swap config. llama-swap fills in ${PORT}.
@@ -2264,11 +3164,11 @@ swap_model_entry() {
   case "$key" in
     fast)
       printf '    name: "Qwen3.5 4B %s"\n' "$FAST_QUANT"
-      printf '    description: "Fast all-rounder for %s"\n' "$(model_tasks fast)"
+      printf '    description: "For %s"\n' "$(model_tasks fast)"
       ;;
     reason)
       printf '    name: "Qwen3.6 35B-A3B %s"\n' "$REASON_QUANT"
-      printf '    description: "Reasoning and vision for %s"\n' "solving, book-map, extraction"
+      printf '    description: "For %s"\n' "$(model_tasks reason)"
       ;;
     ocr)
       printf '    name: "GLM-OCR Q8_0"\n'
@@ -2281,6 +3181,8 @@ swap_model_entry() {
   esac
   printf '    ttl: 1800\n'
   printf '    cmd: |\n'
+  # The keys in llama-swap's environment stay out of the model's.
+  printf '      /usr/bin/env -u GMAT_LLM_API_KEY -u GMAT_LLM_CLOUD_API_KEY\n'
   printf '      %s\n' "$server"
   printf '      --host 127.0.0.1\n'
   # shellcheck disable=SC2016 # ${PORT} is llama-swap's macro, written as is
@@ -2306,12 +3208,17 @@ swap_model_entry() {
       printf '      --min-p 0\n'
       ;;
     reason)
-      printf '      --mmproj %s\n' "$mmproj"
-      if [[ -n "$SAVED_N_CPU_MOE" && "$SAVED_N_CPU_MOE" != auto ]]; then
-        printf '      # attention and shared weights on the GPU; the experts of the first\n'
-        printf '      # %s layers stay in system RAM (setup worked this out from free VRAM)\n' "$SAVED_N_CPU_MOE"
+      if [[ "$VISION" == on && -n "$mmproj" ]]; then printf '      --mmproj %s\n' "$mmproj"; fi
+      if [[ "$SAVED_N_CPU_MOE" =~ ^[0-9]+$ ]]; then
+        printf '      # the experts of the first %s layers stay in system RAM (--n-cpu-moe)\n' "$SAVED_N_CPU_MOE"
         printf '      --n-gpu-layers %s\n' "${SAVED_NGL:-all}"
         printf '      --n-cpu-moe %s\n' "$SAVED_N_CPU_MOE"
+        printf '      --fit off\n'
+      elif [[ "$SAVED_CPU_LAYERS" != auto ]]; then
+        printf '      # attention and shared weights on the GPU; the experts of %s layers\n' "$(expert_layer_count "$SAVED_CPU_LAYERS")"
+        printf '      # stay in system RAM, as llama-fit-params worked out from free VRAM\n'
+        printf '      --n-gpu-layers %s\n' "${SAVED_NGL:-all}"
+        if [[ -n "$SAVED_CPU_LAYERS" ]]; then printf "      --override-tensor '%s'\n" "$(expert_override "$SAVED_CPU_LAYERS")"; fi
         printf '      --fit off\n'
       else
         printf '      # not measured yet: llama.cpp places layers and experts to fit free\n'
@@ -2326,7 +3233,9 @@ swap_model_entry() {
       printf '      --cache-ram 0\n'
       printf '      --jinja\n'
       printf '      --reasoning %s\n' "$REASONING"
-      printf '      --temp 0.7\n'
+      printf "      # a low temperature: extraction copies text, and the app's three\n"
+      printf '      # solver prompts differ already\n'
+      printf '      --temp 0.3\n'
       printf '      --top-p 0.8\n'
       printf '      --top-k 20\n'
       printf '      --min-p 0\n'
@@ -2553,11 +3462,14 @@ ensure_tunnel_user() {
 }
 
 sshd_dropin() {
-  cat <<EOF
+  cat <<EOT
 # Written by gmat-llm setup. The tunnel user may only forward one local port,
 # to the LLM endpoint; it gets no shell, no remote forwarding and no password
-# login. Other users are not affected.
+# login. AllowUsers and AllowGroups here apply to this user only, so a global
+# AllowUsers list does not shut it out. Other users are not affected.
 Match User $TUNNEL_USER
+    AllowUsers $TUNNEL_USER
+    AllowGroups $TUNNEL_USER
     AuthorizedKeysFile $AUTH_KEYS_FILE
     AuthenticationMethods publickey
     PasswordAuthentication no
@@ -2572,115 +3484,183 @@ Match User $TUNNEL_USER
     PermitTunnel no
     PermitTTY no
     ForceCommand /usr/sbin/nologin
-EOF
+EOT
 }
 
-# The effective sshd settings for a connection by the tunnel user.
-sshd_effective_for_tunnel() {
-  local sshd
-  sshd=$(sshd_binary)
-  [[ -n "$sshd" ]] || return 1
-  mkdir -p /run/sshd
-  "$sshd" -T -C "user=$TUNNEL_USER,host=gmat-llm-check,addr=127.0.0.1" 2>/dev/null
+readonly SSHD_BLOCK_BEGIN="# BEGIN gmat-llm tunnel rules (written by gmat-llm setup; remove this block to undo)"
+readonly SSHD_BLOCK_END="# END gmat-llm tunnel rules"
+
+# Removes the marked block from FILE, if it is there.
+drop_sshd_block() {
+  local file=$1 tmp
+  grep -qxF "$SSHD_BLOCK_BEGIN" "$file" 2>/dev/null || return 0
+  tmp=$(mktemp)
+  awk -v begin="$SSHD_BLOCK_BEGIN" -v end="$SSHD_BLOCK_END" '$0 == begin {skip = 1} !skip {print} $0 == end {skip = 0}' "$file" >"$tmp"
+  cat "$tmp" >"$file"
+  rm -f "$tmp"
+}
+
+# Writes the tunnel user's rules under ROOT (/etc/ssh or a copy): as a
+# drop-in when sshd_config reads sshd_config.d, otherwise as a marked block
+# at the end of sshd_config. An Include line is never added, since it would
+# turn on every other file in sshd_config.d.
+change_tunnel_rules() {
+  local root=$1 main="$1/sshd_config" dropin
+  dropin="$root/sshd_config.d/${SSHD_DROPIN##*/}"
+  drop_sshd_block "$main"
+  if [[ "$SSHD_PLACEMENT" == dropin ]]; then
+    mkdir -p "$root/sshd_config.d"
+    sshd_dropin >"$dropin"
+    chmod 0644 "$dropin"
+  else
+    rm -f "$dropin"
+    if [[ -s "$main" && "$(tail -c 1 "$main")" != "" ]]; then printf '\n' >>"$main"; fi
+    {
+      printf '%s\n' "$SSHD_BLOCK_BEGIN"
+      sshd_dropin
+      printf '%s\n' "$SSHD_BLOCK_END"
+    } >>"$main"
+  fi
+}
+
+# The rules must take effect for the tunnel user from every probe address,
+# and nothing in the config may deny it outright.
+check_tunnel_rules() {
+  local config=$1 args=() addr out deny
+  if [[ -n "$config" ]]; then args=(-f "$config"); fi
+  for addr in $(sshd_probe_addrs); do
+    out=$(sshd_run -T "${args[@]}" -C "user=$TUNNEL_USER,host=$addr,addr=$addr" 2>/dev/null || true)
+    if ! { grep -qx 'allowtcpforwarding local' <<<"$out" && grep -qx "permitopen 127.0.0.1:$PORT" <<<"$out" &&
+      grep -qx 'permitlisten none' <<<"$out" && grep -qx 'forcecommand /usr/sbin/nologin' <<<"$out" &&
+      grep -qx "authorizedkeysfile $AUTH_KEYS_FILE" <<<"$out" && grep -qx "allowusers $TUNNEL_USER" <<<"$out"; }; then
+      warn "The tunnel rules do not take effect for $TUNNEL_USER connecting from $addr (an earlier Match block may set the same options first)."
+      return 1
+    fi
+    deny=$(awk '$1 == "denyusers" || $1 == "denygroups" {print $1 " " $2}' <<<"$out")
+    if [[ -n "$deny" ]]; then
+      warn "The SSH server config has $(tr '\n' ' ' <<<"$deny")which may refuse $TUNNEL_USER; check that it does not."
+    fi
+  done
+  return 0
+}
+
+# Where to try the rules: as a drop-in when sshd_config reads sshd_config.d
+# at its top level, else (or when that does not take effect) in sshd_config.
+sshd_placements() {
+  if sshd_reads_dropins; then printf '%s\n' dropin block; else printf '%s\n' block; fi
 }
 
 setup_ssh_access() {
+  local placement applied=0
   ensure_tunnel_user
-  if [[ ! -f /etc/ssh/sshd_config ]] && ((DRY_RUN)); then
-    printf '[dry-run] openssh-server is installed in step 3; its sshd_config reads sshd_config.d by default\n'
-  elif ! grep -qE '^[[:space:]]*Include[[:space:]]+(/etc/ssh/)?sshd_config\.d/\*\.conf' /etc/ssh/sshd_config 2>/dev/null; then
-    say "/etc/ssh/sshd_config does not read /etc/ssh/sshd_config.d, where the tunnel rules go."
-    if confirm "Back up sshd_config and add 'Include /etc/ssh/sshd_config.d/*.conf' at its top?" y; then
-      backup_path /etc/ssh/sshd_config
-      if ((DRY_RUN)); then
-        printf '[dry-run] would add the Include line at the top of /etc/ssh/sshd_config\n'
-      else
-        { printf 'Include /etc/ssh/sshd_config.d/*.conf\n\n'; cat /etc/ssh/sshd_config; } >/etc/ssh/sshd_config.gmat-llm.new
-        chmod --reference=/etc/ssh/sshd_config /etc/ssh/sshd_config.gmat-llm.new
-        mv -f /etc/ssh/sshd_config.gmat-llm.new /etc/ssh/sshd_config
-      fi
-    else
-      die "The tunnel needs the sshd_config.d drop-in; add the Include line and run again."
+  if [[ ! -f /etc/ssh/sshd_config ]]; then
+    if ((DRY_RUN)); then
+      printf '[dry-run] openssh-server is installed in step 3; the tunnel rules are checked against its config when setup runs for real\n'
+      return 0
     fi
+    die "/etc/ssh/sshd_config is missing although openssh-server is installed; reinstall openssh-server."
   fi
-  local content previous=""
-  content=$(sshd_dropin)
-  [[ -f "$SSHD_DROPIN" ]] && previous=$(cat "$SSHD_DROPIN")
-  if [[ "$content" != "$previous" ]]; then
-    [[ -f "$SSHD_DROPIN" ]] && backup_path "$SSHD_DROPIN"
-    printf '%s\n' "$content" | write_file "$SSHD_DROPIN" 0644 root:root
-    record_installed "file:$SSHD_DROPIN"
-    if sshd_config_ok; then
-      reload_sshd
+  SSHD_CHANGED=0
+  # Rules someone added by hand, where setup's own would not take effect or
+  # in a config setup does not edit, count as long as they take effect.
+  if [[ ! -f "$SSHD_DROPIN" ]] && ! grep -qxF "$SSHD_BLOCK_BEGIN" /etc/ssh/sshd_config 2>/dev/null && check_tunnel_rules "" >/dev/null 2>&1; then
+    info "The tunnel rules already in the SSH server config take effect for $TUNNEL_USER; it is not changed."
+    return 0
+  fi
+  sshd_config_editable || die "The tunnel rules were not added and the SSH server config was not changed. Fix the cause above and run setup again, or add these lines to the SSH server config yourself where they take effect, check it with sudo sshd -t, reload sshd (sudo systemctl reload ssh) and run setup again:
+$(sshd_dropin)"
+  for placement in $(sshd_placements); do
+    SSHD_PLACEMENT=$placement
+    if [[ "$placement" == dropin ]]; then
+      say "The tunnel user's rules go in $SSHD_DROPIN, which sshd_config already reads:"
     else
-      warn "sshd -t rejects the new drop-in; removing it again."
-      if [[ -n "$previous" ]]; then printf '%s\n' "$previous" | write_file "$SSHD_DROPIN" 0644 root:root; else run rm -f "$SSHD_DROPIN"; fi
-      die "The SSH server config did not accept the tunnel rules; nothing was reloaded."
+      say "The tunnel user's rules go in a marked block at the end of /etc/ssh/sshd_config. Setup does not make sshd_config read sshd_config.d, which would turn on the files there:"
     fi
-  else
-    info "The SSH rules for $TUNNEL_USER are in place ($SSHD_DROPIN)."
-  fi
-  if ((!DRY_RUN)); then
-    local effective
-    effective=$(sshd_effective_for_tunnel || true)
-    if grep -q '^allowtcpforwarding local' <<<"$effective" && grep -q "^permitopen 127.0.0.1:$PORT" <<<"$effective" && grep -q '^permitlisten none' <<<"$effective"; then
-      info "sshd applies the tunnel rules: local forwarding to 127.0.0.1:$PORT only."
-    else
-      die "sshd does not apply the rules in $SSHD_DROPIN to $TUNNEL_USER (check with: sudo sshd -T -C user=$TUNNEL_USER,host=x,addr=127.0.0.1)."
+    sshd_dropin | indent
+    if sshd_apply change_tunnel_rules "the tunnel rules" check_tunnel_rules; then
+      applied=1
+      break
     fi
-  fi
-}
-
-ssh_ports() {
-  local sshd ports
-  sshd=$(sshd_binary)
-  if [[ -n "$sshd" ]]; then
-    mkdir -p /run/sshd 2>/dev/null || true
-    ports=$("$sshd" -T 2>/dev/null | awk '$1 == "port" {print $2}' | sort -u || true)
-  fi
-  [[ -n "${ports:-}" ]] || ports=22
-  if [[ -n "$SSH_SESSION_PORT" && "$SSH_SESSION_PORT" =~ ^[0-9]+$ ]] && ! grep -qx "$SSH_SESSION_PORT" <<<"$ports"; then
-    ports+=$'\n'"$SSH_SESSION_PORT"
-  fi
-  printf '%s\n' "$ports"
+  done
+  ((applied)) || die "The tunnel rules could not be added without changing other SSH settings, so nothing was changed (see the warnings above). Fix the cause, or add the rules above to /etc/ssh/sshd_config yourself where they take effect (before any Match block that sets the same options), check it with sudo sshd -t, reload sshd (sudo systemctl reload ssh) and run setup again."
+  if [[ "$SSHD_PLACEMENT" == dropin ]]; then record_installed "file:$SSHD_DROPIN"; else record_installed "sshd-block"; fi
+  ((DRY_RUN)) && return 0
+  if ((SSHD_CHANGED)); then reload_sshd; else info "The SSH rules for $TUNNEL_USER were already in place."; fi
+  info "sshd applies them: $TUNNEL_USER may forward to 127.0.0.1:$PORT only, and logins of $(sshd_probe_users | tr '\n' ' ')did not change."
 }
 
 # Programs other than sshd and avahi that accept connections from the
-# network; the firewall will block them.
+# network, TCP and UDP; the firewall will block them. Docker publishes ports
+# past ufw, so those stay reachable.
 warn_network_listeners() {
-  local listeners line addr name others=""
-  listeners=$(ss -ltnpH 2>/dev/null || true)
-  while read -r line; do
-    [[ -n "$line" ]] || continue
-    addr=$(awk '{print $4}' <<<"$line")
-    case "$addr" in 127.* | "[::1]"* | "::1"*) continue ;; esac
-    name=$(grep -o '(("[^"]*"' <<<"$line" | first_line | tr -d '("' || true)
-    case "$name" in sshd | systemd | avahi-daemon | systemd-resolve) continue ;; esac
-    others+="$addr ${name:-unknown}"$'\n'
-  done <<<"$listeners"
+  local line addr name proto others="" docker=""
+  for proto in t u; do
+    while read -r line; do
+      [[ -n "$line" ]] || continue
+      addr=$(awk '{print $4}' <<<"$line")
+      case "$addr" in 127.* | "[::1]"* | "::1"* | "[::ffff:127."*) continue ;; esac
+      name=$(grep -o '(("[^"]*"' <<<"$line" | first_line | tr -d '("' || true)
+      case "$name" in
+        sshd | sshd-session | systemd | avahi-daemon | systemd-resolve | systemd-network | systemd-timesyn | chronyd | dhclient) continue ;;
+        docker-proxy)
+          docker+="$addr"$'\n'
+          continue
+          ;;
+      esac
+      if [[ "$proto" == t ]]; then others+="$addr/tcp ${name:-unknown}"$'\n'; else others+="$addr/udp ${name:-unknown}"$'\n'; fi
+    done < <(ss "-l${proto}npH" 2>/dev/null || true)
+  done
   if [[ -n "$others" ]]; then
-    say "These programs accept connections from the network; after this step the firewall blocks them unless you add a rule (sudo ufw allow PORT/tcp):"
+    say "These programs accept connections from the network; with the firewall on they are blocked unless you add a rule (sudo ufw allow PORT/tcp or PORT/udp):"
     printf '%s' "$others" | indent
+  fi
+  if [[ -n "$docker" ]]; then
+    say "Docker publishes these ports itself, past ufw, so they stay reachable from the network. Stop those containers, or publish them on 127.0.0.1 only:"
+    printf '%s' "$docker" | indent
   fi
 }
 
 setup_firewall() {
-  local port status
+  local status port
   status=$(ufw status 2>/dev/null | first_line || true)
-  say "Firewall (ufw): deny incoming by default, SSH open with rate limiting. ${status:-ufw not installed}"
+  detect_ssh_ports
+  say "Firewall (ufw): ${status:-ufw not installed}"
+  if ((!SSH_PORTS_SURE)); then
+    FIREWALL_SKIPPED=1
+    warn "The firewall is left as it is: the SSH port could not be worked out with confidence ($SSH_PORTS_NOTE), and a wrong guess would lock SSH out."
+    say "Check the port sshd listens on (sudo ss -ltnp | grep sshd), then turn the firewall on yourself:"
+    for port in ${SSH_PORTS_ALL:-22}; do info "sudo ufw limit $port/tcp"; done
+    info "sudo ufw default deny incoming"
+    info "sudo ufw enable"
+    return 0
+  fi
+  if [[ "$status" == *"Status: active"* ]]; then
+    say "ufw is already on. Setup adds a rate-limited rule for SSH port(s) $SSH_PORTS and changes nothing else."
+    for port in $SSH_PORTS; do
+      run ufw limit "$port/tcp" comment "SSH, kept open by gmat-llm"
+      record_installed "ufw:limit $port/tcp"
+    done
+    return 0
+  fi
   warn_network_listeners
-  for port in $(ssh_ports); do
+  say "Setup can turn on the firewall with these rules:"
+  for port in $SSH_PORTS; do info "ufw limit $port/tcp: SSH, refusing an address that opens 6 or more connections within 30 seconds"; done
+  info "ufw default deny incoming, ufw default allow outgoing"
+  info "mDNS (UDP 5353 to 224.0.0.251) stays allowed by ufw's default rules, so $(hostname).local keeps working."
+  if ! confirm "Turn on the firewall with these rules?" y; then
+    FIREWALL_SKIPPED=1
+    say "The firewall stays off."
+    return 0
+  fi
+  for port in $SSH_PORTS; do
     run ufw limit "$port/tcp" comment "SSH, kept open by gmat-llm"
     record_installed "ufw:limit $port/tcp"
   done
   run ufw default deny incoming
   run ufw default allow outgoing
-  if [[ "$status" != *"Status: active"* ]]; then
-    # Open connections, this SSH session included, stay up when ufw starts.
-    run ufw --force enable
-    record_installed "ufw:enabled"
-  fi
-  info "mDNS (UDP 5353 to 224.0.0.251) is allowed by ufw's default rules, so $(hostname).local keeps working."
+  # Open connections, this SSH session included, stay up when ufw starts.
+  run ufw --force enable
+  record_installed "ufw:enabled"
 }
 
 setup_keep_awake() {
@@ -2768,13 +3748,18 @@ print(json.dumps(body))
 ' "$model" "$kind" "$image"
 }
 
+# The curl option that carries the API key, for --config: read from a pipe,
+# so the key never shows in a command line that ps would list.
+curl_key_config() {
+  printf 'header = "Authorization: Bearer %s"\n' "$(api_key)"
+}
+
 # Sends a request through llama-swap and prints the reply body; fails on an
 # HTTP error.
 endpoint_post() {
-  local path=$1 body=$2 timeout=${3:-900} key out code
-  key=$(api_key)
+  local path=$1 body=$2 timeout=${3:-900} out code
   out=$(mktemp)
-  code=$(curl --noproxy '*' -sS -o "$out" -w '%{http_code}' --max-time "$timeout" -H "Authorization: Bearer $key" -H 'Content-Type: application/json' --data-binary @- "http://127.0.0.1:$PORT$path" <<<"$body" || true)
+  code=$(curl --noproxy '*' -sS -o "$out" -w '%{http_code}' --max-time "$timeout" --config <(curl_key_config) -H 'Content-Type: application/json' --data-binary @- "http://127.0.0.1:$PORT$path" <<<"$body" || true)
   if [[ "$code" != 200 ]]; then
     printf 'HTTP %s: %s\n' "${code:-none}" "$(head -c 400 "$out")" >&2
     rm -f "$out"
@@ -2782,6 +3767,11 @@ endpoint_post() {
   fi
   cat "$out"
   rm -f "$out"
+}
+
+endpoint_get() {
+  local path=$1
+  curl --noproxy '*' -fsS --max-time 60 --config <(curl_key_config) "http://127.0.0.1:$PORT$path"
 }
 
 reply_summary() {
@@ -2810,12 +3800,72 @@ journal_since() {
   journalctl -u "$SERVICE_NAME" --since "@$1" --no-pager -o cat 2>/dev/null || true
 }
 
+# Whether the log shows the model ran out of VRAM or RAM. systemd reports a
+# kill by the cgroup's memory limit as "killed by the OOM killer", and
+# records oom-kill as the unit's result.
 ran_out_of_memory() {
-  grep -qiE 'out of memory|cudaMalloc failed|failed to allocate|unable to allocate|oom-kill|Killed process' <<<"$1"
+  grep -qiE 'out of memory|cudaMalloc failed|failed to allocate|unable to allocate|OOM killer|oom-kill' <<<"$1" && return 0
+  [[ "$(systemctl show -p Result --value "$SERVICE_NAME" 2>/dev/null || true)" == oom-kill ]]
+}
+
+# A long prompt like a book page and a reply about as long as extraction
+# writes, to see whether such a request finishes within the app's 180 s.
+long_request() {
+  python3 -I -c '
+import json, sys
+page = " ".join("Paragraph %d. The committee reviewed the proposal and noted that revenue grew by %d percent while costs rose by %d percent over the same period." % (i, 3 + i % 7, 2 + i % 5) for i in range(60))
+schema = {"type": "object", "properties": {"sentences": {"type": "array", "items": {"type": "string"}}},
+          "required": ["sentences"], "additionalProperties": False}
+body = {"model": sys.argv[1], "max_tokens": 1500,
+        "messages": [{"role": "system", "content": "Reply with JSON only."},
+                     {"role": "user", "content": "Copy every sentence of this page, word for word, into the list.\n\n" + page}],
+        "response_format": {"type": "json_schema", "json_schema": {"name": "page", "strict": True, "schema": schema}}}
+print(json.dumps(body))
+' "$1"
+}
+
+# Prompt and reply speeds of a reply, and their counts.
+reply_timings() {
+  python3 -I -c '
+import json, sys
+reply = json.load(sys.stdin)
+t = reply.get("timings") or {}
+print("%.1f\t%.1f\t%d\t%d" % (t.get("prompt_per_second") or 0, t.get("predicted_per_second") or 0, t.get("prompt_n") or 0, t.get("predicted_n") or 0))
+'
+}
+
+# Times one request to the 35B-A3B after unloading every model (a cold load,
+# as after a swap) and one right after (warm), then a long one.
+test_reason_speed() {
+  local id=$1 started cold warm reply pps tps pn tn projected
+  endpoint_get /unload >/dev/null || true
+  started=$(date +%s)
+  if ! endpoint_post /v1/chat/completions "$(chat_request "$id" text)" 900 >/dev/null; then
+    return 1
+  fi
+  cold=$(($(date +%s) - started))
+  started=$(date +%s)
+  endpoint_post /v1/chat/completions "$(chat_request "$id" text)" 300 >/dev/null || return 1
+  warm=$(($(date +%s) - started))
+  info "load: a first request took $cold s from cold (as after a model swap), the next $warm s"
+  started=$(date +%s)
+  if reply=$(endpoint_post /v1/chat/completions "$(long_request "$id")" 900); then
+    IFS=$'\t' read -r pps tps pn tn <<<"$(reply_timings <<<"$reply")"
+    info "long reply: $tn tokens in $(($(date +%s) - started)) s (prompt of $pn tokens at $pps tokens/s, reply at $tps tokens/s)"
+    projected=$(awk -v pn="$pn" -v pps="$pps" -v tps="$tps" 'BEGIN { if (pps > 0 && tps > 0) printf "%d", 2500 / pps + 2000 / tps; else print 0 }')
+    if ((projected > 150)); then
+      warn "At these speeds a 2,000-token extraction reply to a 2,500-token page takes about $projected s, near or past the app's 180 s per request. Keep long tasks on the cloud, or expect extraction jobs to time out and retry."
+    else
+      info "A 2,000-token reply to a 2,500-token page would take about $projected s (the app allows 180 s)."
+    fi
+  else
+    warn "$id did not finish a long reply."
+    return 1
+  fi
 }
 
 test_one_model() {
-  local key=$1 id reply summary content pps tps failures=0 started
+  local key=$1 id reply summary content pps tps failures=0 started log
   id=$(model_id "$key")
   say "Testing $id ($(model_tasks "$key"))"
   started=$(date +%s)
@@ -2834,8 +3884,6 @@ test_one_model() {
       IFS=$'\t' read -r content pps tps <<<"$summary"
       info "chat: \"$content\" (prompt $pps tokens/s, generation $tps tokens/s, first answer after $(($(date +%s) - started)) s including loading)"
     else
-      failures=$((failures + 1))
-      local log
       log=$(journal_since "$started")
       if ran_out_of_memory "$log"; then
         warn "$id ran out of memory while loading."
@@ -2870,7 +3918,7 @@ print(value["answer"])
       failures=$((failures + 1))
     fi
   fi
-  if [[ "$key" == reason || "$key" == ocr ]]; then
+  if [[ "$key" == ocr ]] || [[ "$key" == reason && "$VISION" == on ]]; then
     if reply=$(endpoint_post /v1/chat/completions "$(chat_request "$id" image)" 600); then
       summary=$(reply_summary <<<"$reply")
       IFS=$'\t' read -r content pps tps <<<"$summary"
@@ -2881,13 +3929,22 @@ print(value["answer"])
         failures=$((failures + 1))
       fi
     else
-      local log
       log=$(journal_since "$started")
       if ran_out_of_memory "$log"; then
         warn "$id ran out of memory reading an image."
         return 2
       fi
       warn "$id did not answer a vision request."
+      failures=$((failures + 1))
+    fi
+  fi
+  if [[ "$key" == reason ]]; then
+    if ! test_reason_speed "$id"; then
+      log=$(journal_since "$started")
+      if ran_out_of_memory "$log"; then
+        warn "$id ran out of memory."
+        return 2
+      fi
       failures=$((failures + 1))
     fi
   fi
@@ -2907,10 +3964,28 @@ test_api_key_enforced() {
   fi
 }
 
+# Moves the experts of three more layers to system RAM: the ones just below
+# those already there, as llama-fit-params counts from the last layer.
+more_experts_in_ram() {
+  local layers=$1 lowest next added=0
+  if [[ -z "$layers" ]]; then
+    lowest=$REASON_LAYERS
+  else
+    lowest=$(tr ',' '\n' <<<"$layers" | sort -n | head -n 1)
+  fi
+  next=$((lowest - 1))
+  while ((added < 3 && next >= 0)); do
+    layers="${next}${layers:+,$layers}"
+    next=$((next - 1))
+    added=$((added + 1))
+  done
+  printf '%s' "$layers"
+}
+
 run_health_checks() {
   local key result failed=0 attempt
   if ((DRY_RUN)); then
-    printf '[dry-run] would send a chat request, a response_format json_schema request and, for the vision models, an image to each model through llama-swap, and report tokens per second and memory use\n'
+    printf '[dry-run] would send a chat request and a response_format json_schema request to each model through llama-swap, time a cold and a warm load and a long reply of the 35B-A3B, read a test image with the models that read images, and report tokens per second and memory use\n'
     return 0
   fi
   test_api_key_enforced || failed=1
@@ -2919,11 +3994,10 @@ run_health_checks() {
     while true; do
       result=0
       test_one_model "$key" || result=$?
-      if ((result == 2)) && [[ "$key" == reason ]] && ((attempt <= 3)); then
-        if [[ "$SAVED_N_CPU_MOE" =~ ^[0-9]+$ ]] && ((SAVED_N_CPU_MOE < 40)); then
-          SAVED_N_CPU_MOE=$((SAVED_N_CPU_MOE + 3))
-          ((SAVED_N_CPU_MOE > 40)) && SAVED_N_CPU_MOE=40
-          say "Keeping the experts of $SAVED_N_CPU_MOE layers in system RAM and trying again."
+      if ((result == 2)) && [[ "$key" == reason ]] && ((attempt <= 3)) && [[ "$SAVED_CPU_LAYERS" != auto ]] && [[ -z "$SAVED_N_CPU_MOE" ]]; then
+        if (($(expert_layer_count "$SAVED_CPU_LAYERS") < REASON_LAYERS)); then
+          SAVED_CPU_LAYERS=$(more_experts_in_ram "$SAVED_CPU_LAYERS")
+          say "Keeping the experts of $(expert_layer_count "$SAVED_CPU_LAYERS") layers in system RAM and trying again."
           swap_config | write_file "$SWAP_CONFIG" 0644 root:root
           save_setup_conf
           systemctl restart "$SERVICE_NAME"
@@ -2937,7 +4011,7 @@ run_health_checks() {
     if ((result != 0)); then
       failed=1
       if ((result == 2)) && [[ "$key" == reason ]]; then
-        warn "The 35B-A3B model does not fit even with every expert in system RAM. Run setup again with --quant UD-Q2_K_XL."
+        warn "The 35B-A3B model does not fit. Run setup again with --quant UD-Q2_K_XL."
       fi
     fi
   done
@@ -2980,17 +4054,23 @@ print_summary() {
   step "8. Summary"
   install_self
   ip_list=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | tr '\n' ' ' || true)
+  ip_list=${ip_list% }
   say "The endpoint: http://127.0.0.1:$PORT/v1 on this computer only (llama-swap, OpenAI-compatible)."
   say "Models and the app tasks they serve:"
   for key in $(profile_models); do info "$(model_id "$key"): $(model_tasks "$key")"; done
   say "Generation, approaches and lessons stay on your cloud model (see docs/local-llm.md)."
   say ""
-  say "This computer: $(hostname) ($(hostname).local), addresses ${ip_list:-none}, SSH port(s) $(ssh_ports | tr '\n' ' ')"
+  say "This computer: $(hostname) ($(hostname).local), addresses ${ip_list:-none}, SSH port(s) ${SSH_PORTS:-unknown}"
+  if ((FIREWALL_SKIPPED)); then say "The firewall was not turned on; see step 6 for the commands to do it yourself."; fi
   say "SSH host key (ED25519): $(host_key_fingerprint)"
   if [[ -n "$API_KEY_NEW" ]]; then
     say ""
-    say "The API key, shown once (later: sudo gmat-llm show-api-key):"
-    to_tty "  $API_KEY_NEW"
+    if ((HAVE_TTY)); then
+      say "The API key, shown on the terminal only, not in the log (later: sudo gmat-llm show-api-key):"
+      to_tty "  $API_KEY_NEW"
+    else
+      say "An API key was made. Show it with: sudo gmat-llm show-api-key (it is not written to this log)."
+    fi
   fi
   say ""
   say "Pairing the Mac:"
@@ -3001,7 +4081,7 @@ print_summary() {
   info "3. It opens the tunnel, starts the app and sets the app's LLM settings."
   say ""
   say "Manage the server with: sudo gmat-llm status | test | logs | restart | add-client | remove-client | uninstall"
-  if [[ -n "$BACKUP_DIR" ]]; then say "Backups of changed files: $BACKUP_DIR"; fi
+  if [[ -n "$BACKUP_DIR" ]] && ((!DRY_RUN)); then say "Backups of changed files: $BACKUP_DIR"; fi
   say "Log of this run: $LOG_FILE"
 }
 
@@ -3024,17 +4104,18 @@ cmd_status() {
   require_installed
   say "Service $SERVICE_NAME: $(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true) ($(systemctl is-enabled "$SERVICE_NAME" 2>/dev/null || true))"
   say "Endpoint: http://127.0.0.1:$PORT/v1, health: $(curl --noproxy '*' -s --max-time 3 "http://127.0.0.1:$PORT/health" || printf 'no answer')"
-  local key models running
-  key=$(api_key)
-  models=$(curl --noproxy '*' -s --max-time 5 -H "Authorization: Bearer $key" "http://127.0.0.1:$PORT/v1/models" | python3 -I -c 'import json, sys; print(" ".join(m["id"] for m in json.load(sys.stdin)["data"]))' 2>/dev/null || true)
-  running=$(curl --noproxy '*' -s --max-time 5 -H "Authorization: Bearer $key" "http://127.0.0.1:$PORT/running" | python3 -I -c 'import json, sys
+  local models running
+  models=$(curl --noproxy '*' -s --max-time 5 --config <(curl_key_config) "http://127.0.0.1:$PORT/v1/models" | python3 -I -c 'import json, sys; print(" ".join(m["id"] for m in json.load(sys.stdin)["data"]))' 2>/dev/null || true)
+  running=$(curl --noproxy '*' -s --max-time 5 --config <(curl_key_config) "http://127.0.0.1:$PORT/running" | python3 -I -c 'import json, sys
 data = json.load(sys.stdin)
 items = data.get("running", data) if isinstance(data, dict) else data
 print(" ".join("%s (%s)" % (r.get("model"), r.get("state")) for r in items))' 2>/dev/null || true)
   say "Models: ${models:-unknown}"
   say "Loaded now: ${running:-none}"
   say "Memory: $(model_memory_report)"
-  say "Profile $PROFILE, 35B-A3B quantization $REASON_QUANT, --n-cpu-moe ${SAVED_N_CPU_MOE:-not set}, reasoning $REASONING"
+  local experts="not measured yet"
+  if [[ "$SAVED_N_CPU_MOE" =~ ^[0-9]+$ ]]; then experts="the first $SAVED_N_CPU_MOE layers (--n-cpu-moe)"; elif [[ "$SAVED_CPU_LAYERS" != auto ]]; then experts="$(expert_layer_count "$SAVED_CPU_LAYERS") of $REASON_LAYERS layers"; fi
+  say "Profile $PROFILE, 35B-A3B quantization $REASON_QUANT, experts in RAM: $experts, vision $VISION, reasoning $REASONING"
   say "Tunnel keys ($AUTH_KEYS_FILE):"
   list_client_keys | sed 's/^/  /'
   say "SSH host key (ED25519): $(host_key_fingerprint)"
@@ -3167,8 +4248,12 @@ cmd_set_cloud() {
   if [[ -n "$key_file" ]]; then
     [[ -f "$key_file" ]] || die "No such key file: $key_file"
     key=$(sed -n 1p "$key_file")
+  elif [[ -t 0 ]]; then
+    # Not echoed, so the key does not stay on the screen.
+    printf 'Paste the cloud API key, then press Enter: ' >&2
+    IFS= read -rs key || true
+    printf '\n' >&2
   else
-    if [[ -t 0 ]]; then printf 'Paste the cloud API key, then press Enter: ' >&2; fi
     IFS= read -r key || true
   fi
   key=$(tr -d '\r\n' <<<"$key")
@@ -3191,17 +4276,43 @@ cmd_clear_cloud() {
 
 # Rebuilds the model plan from the files setup downloaded, for commands run
 # after setup.
+# The base-name pattern of a model's files with the saved choices: the saved
+# quantization for the 35B-A3B, so a second quantization left in the folder
+# is never picked up.
+model_file_regex() {
+  case "$1" in
+    fast) printf '%s' "^${FAST_PREFIX//./\\.}-${FAST_QUANT}(-[0-9]{5}-of-[0-9]{5})?\\.gguf$" ;;
+    reason) printf '%s' "^${REASON_PREFIX//./\\.}-${REASON_QUANT}(-[0-9]{5}-of-[0-9]{5})?\\.gguf$" ;;
+    ocr) printf '%s' "$OCR_MODEL_REGEX" ;;
+    embed) printf '%s' "$EMBED_MODEL_REGEX" ;;
+  esac
+}
+
+model_mmproj_regex() {
+  case "$1" in
+    reason) if [[ "$VISION" == on ]]; then printf '%s' "$REASON_MMPROJ_REGEX"; fi ;;
+    ocr) printf '%s' "$OCR_MMPROJ_REGEX" ;;
+  esac
+}
+
+# Rebuilds the model plan from the files setup downloaded and the saved
+# choices, for commands run after setup.
 load_model_plan_from_disk() {
   MODEL_PLAN=""
-  local key id f name role
+  local key id f name regex mmproj_regex
   for key in $(profile_models); do
     id=$(model_id "$key")
+    regex=$(model_file_regex "$key")
+    mmproj_regex=$(model_mmproj_regex "$key")
     for f in "$MODELS_DIR/$id"/*.gguf; do
       name=$(basename "$f")
-      if [[ "$name" == mmproj* ]]; then role=mmproj; else role=model; fi
-      MODEL_PLAN+="$id"$'\t'"$role"$'\t-\t-\t'"$name"$'\t0\t\n'
+      if [[ "$name" =~ $regex ]]; then
+        MODEL_PLAN+="$id"$'\tmodel\t-\t-\t'"$name"$'\t0\t\n'
+      elif [[ -n "$mmproj_regex" && "$name" =~ $mmproj_regex ]]; then
+        MODEL_PLAN+="$id"$'\tmmproj\t-\t-\t'"$name"$'\t0\t\n'
+      fi
     done
-    [[ -n "$(model_file "$id" model)" ]] || die "The model files of $id are missing from $MODELS_DIR/$id; run the setup again."
+    [[ -n "$(model_file "$id" model)" ]] || die "The $key model's file for the saved choices is missing from $MODELS_DIR/$id; run the setup again."
   done
 }
 
@@ -3209,7 +4320,6 @@ load_model_plan_from_disk() {
 # the service.
 swap_config_from_saved() {
   load_model_plan_from_disk
-  SAVED_NGL=${SAVED_NGL:-all}
   swap_config | write_file "$SWAP_CONFIG" 0644 root:root
   validate_swap_config "$SWAP_CONFIG" || die "llama-swap rejects the new config."
   systemctl restart "$SERVICE_NAME"
@@ -3240,47 +4350,91 @@ cmd_test() {
   if run_health_checks; then say "Every model answered."; else die "Some checks failed; see above."; fi
 }
 
+# Takes the tunnel user's rules out of the SSH server config under ROOT.
+change_remove_tunnel_rules() {
+  local root=$1
+  rm -f "$root/sshd_config.d/${SSHD_DROPIN##*/}"
+  drop_sshd_block "$root/sshd_config"
+}
+
+change_remove_reset_dropin() {
+  rm -f "$1/sshd_config.d/${SSHD_RESET_DROPIN##*/}"
+}
+
+# Removes packages setup installed, after apt shows what would go: when apt
+# would also remove a package setup did not install, it asks first.
+remove_recorded_packages() {
+  local pkgs=$1 plan extra p
+  # shellcheck disable=SC2086 # package names, one word each
+  plan=$(apt-get -s remove $pkgs 2>/dev/null | awk '$1 == "Remv" {print $2}' || true)
+  extra=""
+  for p in $plan; do
+    grep -qxF "apt:$p" "$STATE_RECORD" 2>/dev/null || extra+="$p "
+  done
+  if [[ -n "$extra" ]]; then
+    warn "Removing them would also remove packages setup did not install: $extra"
+    confirm "Remove those as well?" n || {
+      info "The packages stay installed."
+      return 0
+    }
+  fi
+  # shellcheck disable=SC2086 # package names, one word each
+  DEBIAN_FRONTEND=noninteractive apt-get remove -y $pkgs || warn "apt-get remove failed; the packages may still be installed."
+}
+
 cmd_uninstall() {
   require_root
-  local item models_bytes
+  require_installed
+  local models_bytes cuda_pkgs="" keep_cuda=1
   say "This removes the GMAT prep LLM server: the service, llama.cpp, llama-swap, the config and keys, the tunnel user and its SSH rules."
   confirm "Go on?" n || exit 0
   systemctl disable --now "$SERVICE_NAME" 2>/dev/null || true
   rm -f "$SERVICE_FILE"
   systemctl daemon-reload
-  if [[ -f "$SSHD_DROPIN" ]]; then
-    rm -f "$SSHD_DROPIN"
-    if sshd_config_ok; then reload_sshd; fi
+  INVOKING_USER="${SUDO_USER:-}"
+  # The session's address is one of those the change is checked for.
+  detect_ssh_session
+  SSHD_CHANGED=0
+  if [[ -f "$SSHD_DROPIN" ]] || grep -qxF "$SSHD_BLOCK_BEGIN" /etc/ssh/sshd_config 2>/dev/null; then
+    if ! sshd_apply change_remove_tunnel_rules "removing the tunnel rules"; then
+      warn "The tunnel rules stay in place; remove $SSHD_DROPIN, or the marked block at the end of /etc/ssh/sshd_config, by hand."
+    fi
+  elif grep -rqsE "^[[:space:]]*Match[[:space:]]+User[[:space:]]+$TUNNEL_USER\$" /etc/ssh/sshd_config /etc/ssh/sshd_config.d; then
+    info "The SSH server config has rules for $TUNNEL_USER that setup did not write; remove them yourself if you like."
   fi
   if [[ -f "$SSHD_RESET_DROPIN" ]] && confirm "Remove $SSHD_RESET_DROPIN too? (it turned off GatewayPorts or PermitTunnel that an old setup had turned on)" n; then
-    rm -f "$SSHD_RESET_DROPIN"
-    if sshd_config_ok; then reload_sshd; fi
+    sshd_apply change_remove_reset_dropin "removing the reset drop-in" || warn "$SSHD_RESET_DROPIN stays."
   fi
-  getent passwd "$TUNNEL_USER" >/dev/null 2>&1 && userdel "$TUNNEL_USER" 2>/dev/null || true
-  getent group "$TUNNEL_USER" >/dev/null 2>&1 && groupdel "$TUNNEL_USER" 2>/dev/null || true
+  if ((SSHD_CHANGED)); then reload_sshd; fi
+  if getent passwd "$TUNNEL_USER" >/dev/null 2>&1; then userdel "$TUNNEL_USER" 2>/dev/null || true; fi
+  if getent group "$TUNNEL_USER" >/dev/null 2>&1; then groupdel "$TUNNEL_USER" 2>/dev/null || true; fi
   if [[ -d "$MODELS_DIR" ]]; then
     models_bytes=$(dir_size_bytes "$MODELS_DIR")
     if confirm "Delete the downloaded models ($(human_bytes "$models_bytes"))?" y; then rm -rf --one-file-system "$STATE_DIR"; fi
   fi
   if [[ -f "$STATE_RECORD" ]]; then
-    while IFS= read -r item; do
-      case "$item" in
-        file:"$LOGIND_DROPIN") rm -f "$LOGIND_DROPIN" ;;
-        masked-sleep) systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.target || true ;;
-        file:"$APT_PIN_FILE") rm -f "$APT_PIN_FILE" ;;
-      esac
-    done <"$STATE_RECORD"
-    local cuda_pkgs
-    cuda_pkgs=$(grep -E '^apt:(cuda-|libcublas)' "$STATE_RECORD" | sed 's/^apt://' | tr '\n' ' ' || true)
+    if grep -qxF "file:$LOGIND_DROPIN" "$STATE_RECORD"; then rm -f "$LOGIND_DROPIN"; fi
+    if grep -qxF "masked-sleep" "$STATE_RECORD"; then systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.target || true; fi
+    # The packages the CUDA install brought in, as recorded then.
+    cuda_pkgs=$(grep -E '^apt:' "$STATE_RECORD" | sed 's/^apt://' | grep -E '^(cuda-|libcublas|libnvjitlink|libnvptxcompiler|libcufft|libcurand|libcusolver|libcusparse|libnpp|nsight)' | tr '\n' ' ' || true)
     if [[ -n "${cuda_pkgs// /}" ]] && confirm "Remove the CUDA toolkit packages setup installed ($cuda_pkgs)?" n; then
-      # shellcheck disable=SC2086
-      DEBIAN_FRONTEND=noninteractive apt-get remove -y $cuda_pkgs || true
-      apt-get autoremove -y || true
+      remove_recorded_packages "$cuda_pkgs"
+      if ! pkg_installed cuda-keyring; then keep_cuda=0; fi
+    fi
+    # The driver pin goes only with NVIDIA's repository: while the repository
+    # is there, the pin keeps apt from taking the driver from it.
+    if grep -qxF "file:$APT_PIN_FILE" "$STATE_RECORD"; then
+      if ((keep_cuda == 0)) || ! pkg_installed cuda-keyring; then
+        rm -f "$APT_PIN_FILE"
+        info "Removed the driver pin $APT_PIN_FILE, as NVIDIA's repository is gone."
+      else
+        info "$APT_PIN_FILE stays while NVIDIA's repository (cuda-keyring) is installed."
+      fi
     fi
   fi
-  getent passwd "$SERVICE_USER" >/dev/null 2>&1 && userdel "$SERVICE_USER" 2>/dev/null || true
-  getent group "$SERVICE_USER" >/dev/null 2>&1 && groupdel "$SERVICE_USER" 2>/dev/null || true
-  say "The firewall stays on with SSH open; turn it off with: sudo ufw disable"
+  if getent passwd "$SERVICE_USER" >/dev/null 2>&1; then userdel "$SERVICE_USER" 2>/dev/null || true; fi
+  if getent group "$SERVICE_USER" >/dev/null 2>&1; then groupdel "$SERVICE_USER" 2>/dev/null || true; fi
+  say "The firewall stays as it is, with SSH open. To turn it off: sudo ufw disable"
   rm -rf "$ETC_DIR" "$LLAMA_CPP_ROOT" "$LLAMA_SWAP_ROOT"
   rm -f "$SELF_LINK"
   say "Removed. Backups of files setup changed are in $BACKUP_ROOT. The Mac keeps its tunnel key; delete ~/.ssh/gmat_llm_ed25519 there if you like."
@@ -3296,7 +4450,7 @@ parse_setup_args() {
   while (($#)); do
     option=$1
     case "$option" in
-      --profile | --port | --quant | --n-cpu-moe | --ctx-fast | --ctx-reason | --reasoning | --jobs)
+      --profile | --port | --quant | --n-cpu-moe | --ctx-fast | --ctx-reason | --reasoning | --jobs | --vision)
         (($# >= 2)) || die "$option needs a value (see --help)."
         case "$option" in
           --profile) PROFILE=$2 ;;
@@ -3310,6 +4464,7 @@ parse_setup_args() {
           --ctx-reason) CTX_REASON=$2 ;;
           --reasoning) REASONING=$2 ;;
           --jobs) BUILD_JOBS=$2 ;;
+          --vision) VISION=$2 ;;
         esac
         shift 2
         ;;
@@ -3329,6 +4484,14 @@ parse_setup_args() {
         SKIP_CLEANUP=1
         shift
         ;;
+      --delete-old-models)
+        DELETE_OLD_MODELS=1
+        shift
+        ;;
+      --delete-old-envs)
+        DELETE_OLD_ENVS=1
+        shift
+        ;;
       -h | --help)
         usage
         exit 0
@@ -3343,6 +4506,7 @@ parse_setup_args() {
   if [[ ! "$CTX_FAST" =~ ^[0-9]+$ ]] || ((CTX_FAST < 2048)); then die "--ctx-fast must be a number of at least 2048."; fi
   if [[ ! "$CTX_REASON" =~ ^[0-9]+$ ]] || ((CTX_REASON < 2048)); then die "--ctx-reason must be a number of at least 2048."; fi
   case "$REASONING" in on | off) ;; *) die "--reasoning must be on or off." ;; esac
+  case "$VISION" in on | off) ;; *) die "--vision must be on or off." ;; esac
   [[ -z "$BUILD_JOBS" || "$BUILD_JOBS" =~ ^[1-9][0-9]*$ ]] || die "--jobs must be a positive number."
   if ((FAKE_HARDWARE)) && ((!DRY_RUN)); then die "GMAT_LLM_FAKE_HARDWARE works with --dry-run only."; fi
   if [[ -n "$N_CPU_MOE" ]]; then SAVED_N_CPU_MOE=$N_CPU_MOE; fi
@@ -3359,7 +4523,7 @@ start_log() {
     : >"$LOG_FILE"
   )
   exec > >(tee -a "$LOG_FILE") 2>&1
-  say "gmat-llm setup $GMAT_LLM_SCRIPT_VERSION, $(date -R)$( ((DRY_RUN)) && printf ', dry run: nothing will be changed')"
+  say "gmat-llm setup $GMAT_LLM_SCRIPT_VERSION, $(date -R)$( ((DRY_RUN)) && printf ', dry run: changes are shown, not made')"
   say "Log: $LOG_FILE"
 }
 
@@ -3383,8 +4547,14 @@ setup_main() {
   take_lock
   trap 'on_error $? "$LINENO" "$BASH_COMMAND"' ERR
   trap on_interrupt INT TERM
+  trap on_hangup HUP
   preflight
   cleanup_old_setup
+  if ((NO_DRIVER)); then
+    say ""
+    say "The dry run stops here: steps 3 to 8 need a working NVIDIA driver. The real run installs it first; reboot after that and run setup again."
+    exit 0
+  fi
   install_software
   download_models
   write_config_and_service
