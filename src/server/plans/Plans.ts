@@ -28,7 +28,7 @@ import { Retries } from "../learning/Retries.ts"
 import { namesOf } from "../practice/content.ts"
 import { type Caller, Practice } from "../practice/Practice.ts"
 import { dayRulesOf, DefaultRules } from "../profiles/days.ts"
-import { totalScore } from "../ratings/scale.ts"
+import { sectionTargetOf } from "../ratings/scale.ts"
 import { Scores } from "../ratings/Scores.ts"
 import { Mocks } from "../sections/Mocks.ts"
 import { Sectionals } from "../sections/Sectionals.ts"
@@ -81,15 +81,6 @@ const isTimeZone = (timeZone: string) => {
   } catch {
     return false
   }
-}
-
-// The Section targets of a target Total (decision 82): the lowest Section
-// score that, given to all three Sections, reaches it.
-export const sectionTargetOf = (total: number) => {
-  for (let score = 60; score <= 90; score += 1) {
-    if (totalScore([score, score, score]) >= total) return score
-  }
-  return 90
 }
 
 export class Plans extends Context.Service<Plans, {
