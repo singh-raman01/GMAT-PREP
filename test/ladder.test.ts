@@ -6,7 +6,14 @@ import { type LadderEvent, ladderOf } from "../src/server/learning/ladder.ts"
 
 let at = 0
 const miss = (day: number): LadderEvent => ({ kind: "miss", day, at: ++at })
-const attempt = (step: 1 | 2 | 3, day: number, passed: boolean): LadderEvent => ({ kind: "attempt", step, day, at: ++at, passed })
+const attempt = (step: 1 | 2 | 3, day: number, passed: boolean, plannedAt = at): LadderEvent => ({
+  kind: "attempt",
+  step,
+  day,
+  at: ++at,
+  passed,
+  plannedAt
+})
 const skip = (step: 1 | 2 | 3, day: number): LadderEvent => ({ kind: "skip", step, day, at: ++at, note: "No unseen Sibling." })
 
 const where = (events: ReadonlyArray<LadderEvent>) => {

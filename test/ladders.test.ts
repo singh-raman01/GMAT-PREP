@@ -37,13 +37,19 @@ const response = (sessionId: string, questionId: string, day: number, choice: st
   ...changes
 })
 
-const retrySet = (id: string, items: RetrySession["retry"], shown = true): RetrySession => ({ id, shown, retry: items })
+const retrySet = (id: string, items: RetrySession["retry"], shown = true, createdAt = 0): RetrySession => ({
+  id,
+  shown,
+  retry: items,
+  createdAt
+})
 
 const run = (
   misses: ReadonlyArray<Miss>,
   sessions: ReadonlyArray<RetrySession> = [],
   responses: ReadonlyArray<ResponseFact> = [],
-  skips: ReadonlyArray<SkipFact> = []
+  skips: ReadonlyArray<SkipFact> = [],
+  resolve: (id: string) => string = (id) => id
 ) =>
   laddersOf({
     misses,
@@ -51,7 +57,7 @@ const run = (
     responses,
     questions,
     skips,
-    resolve: (id) => id,
+    resolve,
     dayOf: (at) => Math.floor(at / Day)
   })
 
@@ -128,5 +134,40 @@ describe("An entry's Retry Ladder", () => {
       [response("r1", "q1", 2, "C"), response("r2", "s1", 7, "C"), response("r3", "s2", 21, "C")]
     )
     expect(where(ladders, "q1")).toEqual({ status: "resolved", step: null, due: null })
+  })
+
+  test("follows a merge: a step-1 miss of the merged Question stays the step, and its Responses count", () => {
+    // q2 was merged into q1 after its step 1 was missed on day 2 and passed
+    // on day 4; the misses come judged as q1, as missesOf gives them.
+    const merged = (id: string) => (id === "q2" ? "q1" : id)
+    const ladders = run(
+      [miss("q1", 0), { ...miss("q1", 2, "r1"), responseId: "r1-q2" }],
+      [
+        retrySet("r1", [{ entry: "q2", step: 1, questionId: "q2" }], true, 2 * Day),
+        retrySet("r2", [{ entry: "q2", step: 1, questionId: "q2" }], true, 4 * Day)
+      ],
+      [response("r1", "q2", 2, "A"), response("r2", "q1", 4, "C")],
+      [],
+      merged
+    )
+    expect(where(ladders, "q1")).toEqual({ status: "open", step: 2, due: 7 })
+  })
+
+  test("a set made before the miss that starts a run takes none of its steps", () => {
+    const ladders = run(
+      [miss("q1", 0), miss("q1", 3, "p2")],
+      [retrySet("r1", [{ entry: "q1", step: 1, questionId: "q1" }], true, 2 * Day)],
+      [response("r1", "q1", 3, "C", { at: 3 * Day + 5 })]
+    )
+    expect(where(ladders, "q1")).toEqual({ status: "open", step: 1, due: 5 })
+  })
+
+  test("a step-1 miss starts the run when no other miss came before it, as after a Key Override", () => {
+    const ladders = run(
+      [miss("q1", 2, "r1")],
+      [retrySet("r1", [{ entry: "q1", step: 1, questionId: "q1" }], true, 2 * Day)],
+      [response("r1", "q1", 2, "A")]
+    )
+    expect(where(ladders, "q1")).toMatchObject({ status: "open", step: 1 })
   })
 })

@@ -1,6 +1,6 @@
 import { Clock, Context, Effect, Layer, Semaphore } from "effect"
 import { PracticeView, SessionId } from "../../api/Practice.ts"
-import { NoRetriesDue, RetriesRunning, RetriesView, RetryDue } from "../../api/Retries.ts"
+import { NoRetriesDue, RetriesRunning, RetriesView, RetryDue, RetrySetMax } from "../../api/Retries.ts"
 import { QuestionId } from "../../api/Review.ts"
 import { Db } from "../db/Database.ts"
 import { retrySkips } from "../db/schema.ts"
@@ -19,7 +19,7 @@ import { planRetries } from "./retryPlan.ts"
 const DayMs = 24 * 60 * 60 * 1000
 const dayText = (day: number) => new Date(day * DayMs).toISOString().slice(0, 10)
 
-// How many Study Days ahead the due list looks.
+// How many Study Days ahead the upcoming counts look.
 const Ahead = 7
 
 export const NoSiblingNote = "No unseen Sibling of its Question Type and Skill was left."
@@ -33,6 +33,11 @@ const dueOf = (state: RetryState): ReadonlyArray<Due> =>
     const timed = ladder.step > 1 || entry.ladder.reasons.includes("slow")
     return [{ ...entry, step: ladder.step, dueDay: ladder.dueDay, timed }]
   }).toSorted((a, b) => a.dueDay - b.dueDay || a.lastMissedAt - b.lastMissedAt)
+
+// A step 1 waits while its Question cannot be served: a running Sectional
+// or Mock holds it, or it is out of the Question Bank for a check.
+const waits = (due: Due, held: ReadonlySet<string>) =>
+  due.step === 1 && (held.has(due.questionId) || due.question.status !== "published")
 
 export class Retries extends Context.Service<Retries, {
   due(profileId: string): Effect.Effect<RetriesView>
@@ -55,10 +60,16 @@ export class Retries extends Context.Service<Retries, {
           const all = dueOf(state)
           const today = all.filter((each) => each.dueDay <= state.today)
           const held = today.length === 0 ? new Set<string>() : yield* run(heldBySections(profileId))
+          // Waiting steps are only counted, so the list never names a
+          // Question a running Section holds.
+          const ready = today.filter((each) => !waits(each, held))
+          const untimed = ready.filter((each) => !each.timed)
+          const timed = ready.filter((each) => each.timed)
+          const shown = new Set([...untimed.slice(0, RetrySetMax), ...timed.slice(0, RetrySetMax)])
           const named = (id: string) => names.named(id)
           return new RetriesView({
             today: dayText(state.today),
-            due: today.map((each) =>
+            due: ready.filter((each) => shown.has(each)).map((each) =>
               new RetryDue({
                 questionId: QuestionId.make(each.questionId),
                 step: each.step,
@@ -66,10 +77,12 @@ export class Retries extends Context.Service<Retries, {
                 primarySkill: each.question.primarySkill === null ? null : named(each.question.primarySkill),
                 reasons: each.ladder.reasons,
                 timed: each.timed,
-                dueOn: dayText(each.dueDay),
-                held: each.step === 1 && held.has(each.questionId)
+                dueOn: dayText(each.dueDay)
               })
             ),
+            untimed: untimed.length,
+            timed: timed.length,
+            waiting: today.length - ready.length,
             upcoming: Array.from({ length: Ahead }, (_, index) => state.today + 1 + index).map((day) => ({
               day: dayText(day),
               steps: all.filter((each) => each.dueDay === day).length
@@ -78,15 +91,15 @@ export class Retries extends Context.Service<Retries, {
           })
         })
 
-      // Starts a set of the steps due with the timing asked for. Each Sibling
-      // step picks its Sibling now; one with none left is skipped, stored
-      // with a note.
+      // Starts a set of the steps due with the timing asked for, the longest
+      // waiting first, up to the set's size. Each Sibling step picks its
+      // Sibling now; one with none left is skipped, stored with a note.
       const start = (caller: Caller, timed: boolean) =>
         Effect.gen(function*() {
           const state = yield* errorLog.retryState(caller.profileId)
           if (state.running !== undefined) return yield* new RetriesRunning({ id: SessionId.make(state.running) })
           const wanted = dueOf(state).filter((each) => each.dueDay <= state.today && each.timed === timed)
-          if (wanted.length === 0) return yield* new NoRetriesDue({ skipped: 0, held: 0 })
+          if (wanted.length === 0) return yield* new NoRetriesDue({ skipped: 0 })
           const held = yield* run(heldBySections(caller.profileId))
           const seen = yield* run(seenBy(caller.profileId))
           const resolve = yield* run(mergeTargets)
@@ -100,10 +113,12 @@ export class Retries extends Context.Service<Retries, {
                 questionType: each.question.questionType,
                 primarySkill: each.question.primarySkill,
                 secondarySkills: each.question.secondarySkills,
-                difficulty: each.question.difficulty
-              }
+                difficulty: each.question.difficulty,
+                stimulusId: each.question.stimulusId
+              },
+              published: each.question.status === "published"
             })),
-            { held, seen, pool, resolve, salt: String(now) }
+            { held, seen, pool, resolve, salt: String(now), size: RetrySetMax }
           )
           for (const skip of plan.skipped) {
             yield* run(db.insert(retrySkips).values({
@@ -115,10 +130,11 @@ export class Retries extends Context.Service<Retries, {
               createdAt: now
             }))
           }
-          if (plan.items.length === 0) {
-            return yield* new NoRetriesDue({ skipped: plan.skipped.length, held: plan.waiting.length })
-          }
-          return yield* practice.startRetries(caller, plan.items, timed)
+          if (plan.items.length === 0) return yield* new NoRetriesDue({ skipped: plan.skipped.length })
+          // A slow entry's steps pass within 1.5 times the Target Time, so its
+          // Questions get that long on the set's clock.
+          const slow = new Set(wanted.filter((each) => each.ladder.reasons.includes("slow")).map((each) => each.questionId))
+          return yield* practice.startRetries(caller, plan.items, timed, slow)
         }).pipe(oneAtATime)
 
       return Retries.of({ due, start })

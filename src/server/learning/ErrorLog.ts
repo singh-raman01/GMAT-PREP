@@ -42,11 +42,12 @@ import { type EntryLadder, laddersOf } from "./ladders.ts"
 import { type Miss, missesOf, type ResponseFact, type ServedFact, type SessionFact } from "./misses.ts"
 import { type RetryItem, retryListOf } from "./retryConfig.ts"
 
-// The Error Log service (docs/design.md, "Learning loop"): entries worked
-// out from the facts on every read, with the Learner's Mistake Types kept
-// as facts of their own. A list reads the Profile's whole history once; an
+// The Error Log service (docs/design.md, "Learning loop"): entries and
+// their Retry Ladders worked out from the facts on every read, with the
+// Learner's Mistake Types and skipped retry steps kept as facts of their
+// own. A list reads the Profile's whole history, kept between reads; an
 // entry, and a change to it, read only the Sessions that answered its
-// Question.
+// Question or took its retry steps.
 
 const DayMs = 24 * 60 * 60 * 1000
 const dayNumber = (day: string) => Date.parse(`${day}T00:00:00Z`) / DayMs
@@ -72,6 +73,7 @@ const byName = new Intl.Collator("en").compare
 type ShownSession = SessionFact & {
   readonly timed: boolean
   readonly finished: boolean
+  readonly createdAt: number
   // A retry set's Retry Ladder steps; none for any other Session.
   readonly retry: ReadonlyArray<RetryItem>
 }
@@ -214,6 +216,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
               status: sessions.status,
               timed: sessions.timed,
               timeLimitMs: sessions.timeLimitMs,
+              createdAt: sessions.createdAt,
               mockId: sql<string | null>`json_extract(${sessions.config}, '$.mock.id')`,
               retry: sql<string | null>`json_extract(${sessions.config}, '$.retry')`
             }).from(sessions).where(where)
@@ -230,6 +233,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             kind: row.kind,
             timed: row.timed,
             finished: row.status === "finished",
+            createdAt: row.createdAt,
             retry: row.kind === "practice" ? retryListOf(row.retry) : [],
             limitMs: row.timed ? row.timeLimitMs : null,
             shown: row.kind === "practice"
@@ -290,7 +294,9 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           const ladders = laddersOf({
             misses,
             sessions: [...found.values()].flatMap((session) =>
-              session.retry.length === 0 ? [] : [{ id: session.id, shown: session.shown, retry: session.retry }]
+              session.retry.length === 0
+                ? []
+                : [{ id: session.id, shown: session.shown, retry: session.retry, createdAt: session.createdAt }]
             ),
             responses: responseFacts,
             questions: questionFacts,

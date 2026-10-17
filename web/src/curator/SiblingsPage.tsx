@@ -41,16 +41,16 @@ export const SiblingsPage = ({ onLocked, onStopped }: Props) => {
       <p className="lede">
         A Retry Ladder's later steps serve an unseen Sibling: a Question of the same type and Skill, outside the Mock
         Reserve, close in Difficulty. These Skills have run out of them for some Learner, or have {FewSiblings} or fewer
-        to give. More Books, or generated Questions, for them keep the ladders going.
+        of a type to give. More Books, or generated Questions, for them keep the ladders going.
       </p>
       {skills === undefined ? <p className="quiet" aria-busy="true">Counting Siblings</p> : skills.length === 0
         ? <p className="empty">No Skill is running out of Siblings.</p>
         : (
           <ul className="set-list sibling-list">
             {skills.map((each) => (
-              <li key={each.skill.id} data-section={each.section.id}>
+              <li key={`${each.skill.id}-${each.questionType.id}`} data-section={each.section.id}>
                 <span className="swatch" aria-hidden="true" />
-                <span className="set-name">{each.skill.name}</span>
+                <span className="set-name">{each.skill.name}, {each.questionType.name}</span>
                 <span className="set-facts">
                   {each.section.name}.{" "}
                   {each.skipped === 0

@@ -14,8 +14,15 @@ export type LadderEvent =
   // A miss of the entry's Question outside the ladder: it starts the ladder,
   // or starts it again.
   | { readonly kind: "miss"; readonly day: number; readonly at: number }
-  // A step taken, passed or not.
-  | { readonly kind: "attempt"; readonly step: Step; readonly day: number; readonly at: number; readonly passed: boolean }
+  // A step taken, passed or not, in a set made at plannedAt.
+  | {
+    readonly kind: "attempt"
+    readonly step: Step
+    readonly day: number
+    readonly at: number
+    readonly passed: boolean
+    readonly plannedAt: number
+  }
   // A step with no Question to serve, skipped with a note.
   | { readonly kind: "skip"; readonly step: Step; readonly day: number; readonly at: number; readonly note: string }
 
@@ -31,7 +38,8 @@ export interface Ladder {
   // The step to take next and the Study Day it falls due; null once resolved.
   readonly step: Step | null
   readonly dueDay: number | null
-  // The Study Day of the miss this run of the ladder began with.
+  // The miss this run of the ladder began with, and its Study Day.
+  readonly startAt: number
   readonly startDay: number
   // This run's steps, in order.
   readonly history: ReadonlyArray<LadderStep>
@@ -43,10 +51,12 @@ export const ladderOf = (events: ReadonlyArray<LadderEvent>): Ladder | null => {
   let ladder: Ladder | null = null
   for (const event of events.toSorted((a, b) => a.at - b.at)) {
     if (event.kind === "miss") {
-      ladder = { status: "open", step: 1, dueDay: event.day + StepDays[1], startDay: event.day, history: [] }
+      ladder = { status: "open", step: 1, dueDay: event.day + StepDays[1], startAt: event.at, startDay: event.day, history: [] }
       continue
     }
     if (ladder === null || ladder.step !== event.step) continue
+    // A set made before this run began was planned for an earlier one.
+    if (event.kind === "attempt" && event.plannedAt < ladder.startAt) continue
     const passed = event.kind === "skip" || event.passed
     const done: LadderStep = event.kind === "skip"
       ? { step: event.step, day: event.day, outcome: "skipped", note: event.note }

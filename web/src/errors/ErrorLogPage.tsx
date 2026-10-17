@@ -59,9 +59,22 @@ const whyText = (entry: ErrorLogEntry) => {
 }
 
 // Where the entry's Retry Ladder stands.
+const stepsText = (steps: ReadonlyArray<number>) =>
+  steps.length === 1 ? `step ${steps[0]}` : `steps ${steps.slice(0, -1).join(", ")} and ${steps.at(-1)}`
+
+// How the run that resolved it went: each step's last outcome. A Sibling
+// step with no Sibling left was skipped, and counts as passed.
+const resolvedText = (ladder: NonNullable<ErrorLogEntry["ladder"]>) => {
+  const last = new Map(ladder.steps.map((step) => [step.step, step.outcome] as const))
+  const skipped = [1, 2, 3].filter((step) => last.get(step) === "skipped")
+  if (skipped.length === 0) return " Resolved: its three retries were right."
+  const right = [1, 2, 3].filter((step) => last.get(step) === "passed")
+  return ` Resolved: ${right.length === 0 ? "" : `${stepsText(right)} right, `}${stepsText(skipped)} skipped, as no unseen Question like it was left.`
+}
+
 const ladderText = (entry: ErrorLogEntry) =>
-  entry.status === "resolved"
-    ? " Resolved: its three retries were right."
+  entry.status === "resolved" && entry.ladder !== null
+    ? resolvedText(entry.ladder)
     : entry.ladder?.step != null && entry.ladder.dueOn !== null
     ? ` Retry step ${entry.ladder.step} on ${calendarDay(entry.ladder.dueOn)}.`
     : ""
