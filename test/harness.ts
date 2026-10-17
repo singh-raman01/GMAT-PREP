@@ -1,6 +1,7 @@
 import { BunHttpServer } from "@effect/platform-bun"
 import { Context, type Duration, Effect, type Fiber, Layer, Ref } from "effect"
 import { Cookies, HttpClient, HttpClientRequest, HttpRouter, type HttpServer } from "effect/http"
+import type { SqlClient } from "effect/sql"
 import { HttpApiClient } from "effect/http-api"
 import { TestClock } from "effect/testing"
 import { mkdtempSync } from "node:fs"
@@ -15,6 +16,8 @@ import { JobRunner } from "../src/server/jobs/JobRunner.ts"
 import type { JobStore } from "../src/server/jobs/JobStore.ts"
 import { ConnectionTest } from "../src/server/jobs/kinds/connectionTest.ts"
 import { type FakeLlm, LlmTransport, LlmTransportFake } from "../src/server/llm/LlmTransport.ts"
+import { SnapshotCopier, SnapshotCopierInProcess, SnapshotWorkFailed } from "../src/server/snapshots/copier.ts"
+import type { Snapshots } from "../src/server/snapshots/Snapshots.ts"
 import type { ApiKeyStore } from "../src/server/settings/ApiKeyStore.ts"
 import type { Settings } from "../src/server/settings/Settings.ts"
 import { workerServices } from "../src/server/worker/services.ts"
@@ -54,6 +57,7 @@ export const appLayer = (dataDir: string) =>
     Layer.provide(WorkerSupervisor.layerIdle),
     Layer.provide(AppConfig.layer({ dataDir, preferredPort: 0 })),
     Layer.provide(LlmTransportFake),
+    Layer.provide(SnapshotCopierTest),
     Layer.provideMerge(BunHttpServer.layerTest),
     Layer.provideMerge(TestClock.layer())
   )
@@ -62,6 +66,59 @@ export const runWithApp = <A, E>(
   effect: Effect.Effect<A, E, HttpClient.HttpClient | HttpServer.HttpServer>,
   dataDir: string = tempDataDir()
 ): Promise<A> => Effect.runPromise(effect.pipe(Effect.provide(appLayer(dataDir))))
+
+// Snapshot copies in this process, the next ones failing with the details a
+// test queues, as a full disk would make them. A test can also fail the next
+// checks, as a check that cannot start would, and run an effect at the
+// moment a copy to a given file starts, as a request arriving while a real
+// copy process works would.
+export class CopierFaults extends Context.Service<CopierFaults, {
+  failNext(...details: ReadonlyArray<string>): Effect.Effect<void>
+  failNextCheck(...details: ReadonlyArray<string>): Effect.Effect<void>
+  // Once, before the copy to the first file whose path matches.
+  onCopy(to: RegExp, effect: Effect.Effect<void>): Effect.Effect<void>
+}>()("gmat-prep/test/CopierFaults") {}
+
+export const SnapshotCopierTest = Layer.unwrap(
+  Effect.gen(function*() {
+    const faults = yield* Ref.make<ReadonlyArray<string>>([])
+    const checkFaults = yield* Ref.make<ReadonlyArray<string>>([])
+    const hooks = yield* Ref.make<ReadonlyArray<{ readonly to: RegExp; readonly effect: Effect.Effect<void> }>>([])
+    const real = yield* SnapshotCopier.pipe(Effect.provide(SnapshotCopierInProcess))
+    const next = (queue: Ref.Ref<ReadonlyArray<string>>) => Ref.modify(queue, (queued) => [queued[0], queued.slice(1)] as const)
+    const hookFor = (to: string) =>
+      Ref.modify(hooks, (queued) => {
+        const index = queued.findIndex((hook) => hook.to.test(to))
+        return index === -1 ? [Effect.void, queued] as const : [queued[index]!.effect, queued.toSpliced(index, 1)] as const
+      })
+    return Layer.mergeAll(
+      Layer.succeed(
+        SnapshotCopier,
+        SnapshotCopier.of({
+          ...real,
+          copy: (from, to) =>
+            Effect.gen(function*() {
+              yield* Effect.flatten(hookFor(to))
+              const detail = yield* next(faults)
+              return detail === undefined ? yield* real.copy(from, to) : yield* new SnapshotWorkFailed({ detail })
+            }),
+          check: (file, quick) =>
+            next(checkFaults).pipe(
+              Effect.flatMap((detail) => detail === undefined ? real.check(file, quick) : Effect.fail(new SnapshotWorkFailed({ detail })))
+            )
+        })
+      ),
+      Layer.succeed(
+        CopierFaults,
+        CopierFaults.of({
+          failNext: (...details) => Ref.update(faults, (queued) => [...queued, ...details]),
+          failNextCheck: (...details) => Ref.update(checkFaults, (queued) => [...queued, ...details]),
+          onCopy: (to, effect) => Ref.update(hooks, (queued) => [...queued, { to, effect }])
+        })
+      )
+    )
+  })
+)
 
 // Starts job workers in this process, each on its own database connection
 // with its own worker id, as separate worker processes would be. They share
@@ -96,8 +153,11 @@ export type WorkerTestServices =
   | ApiKeyStore
   | Db
   | AppConfig
+  | Snapshots
+  | CopierFaults
   | FigureFiles
   | ErrorLog
+  | SqlClient.SqlClient
 
 // Sets the fake clock before the app starts, as a start later in the day.
 const clockStartsAt = (millis: number | undefined) =>
@@ -107,6 +167,7 @@ export const appWithWorkersLayer = (dataDir: string, kinds: ReadonlyArray<AnyJob
   const server = HttpRouter.serve(AppRoutes, { disableListenLog: true, disableLogger: true }).pipe(
     Layer.provideMerge(makeAppServices(JobKinds.layer(kinds))),
     Layer.provide(WorkerSupervisor.layerIdle),
+    Layer.provideMerge(SnapshotCopierTest),
     Layer.provideMerge(AppConfig.layer({ dataDir, preferredPort: 0 })),
     Layer.provideMerge(BunHttpServer.layerTest),
     Layer.provideMerge(clockStartsAt(startAt)),

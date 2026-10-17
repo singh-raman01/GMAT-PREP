@@ -20,6 +20,7 @@ import {
   RunCapTooLow
 } from "../../api/Books.ts"
 import { JobId, LlmNotConfigured } from "../../api/Jobs.ts"
+import { SnapshotFailed } from "../../api/Snapshots.ts"
 import { Db } from "../db/Database.ts"
 import {
   bookMapProposals,
@@ -36,6 +37,8 @@ import { JobKinds } from "../jobs/JobKind.ts"
 import { JobStore, toJobView } from "../jobs/JobStore.ts"
 import { ApiKeyStore } from "../settings/ApiKeyStore.ts"
 import { missingSettings, Settings, taskReadsImages } from "../settings/Settings.ts"
+import { answered } from "../snapshots/rescores.ts"
+import { Snapshots } from "../snapshots/Snapshots.ts"
 import { BookFiles, type Received } from "./BookFiles.ts"
 import { mapProblems, tidyMap } from "../../api/bookMapRules.ts"
 import { BookIntake, SampleCap, scannedRouteFor } from "./intakeJob.ts"
@@ -85,7 +88,7 @@ export class Books extends Context.Service<Books, {
     id: BookId,
     ranges: ReadonlyArray<MapRangeInput>,
     spendCap: number | undefined
-  ): Effect.Effect<BookDetail, BookNotFound | BookNotReady | BookMapInvalid | RunCapNeeded>
+  ): Effect.Effect<BookDetail, BookNotFound | BookNotReady | BookMapInvalid | RunCapNeeded | SnapshotFailed>
   fileOf(id: BookId): Effect.Effect<{ readonly path: string; readonly title: string }, BookNotFound>
 }>()("gmat-prep/server/Books") {
   static readonly layer = Layer.effect(
@@ -97,6 +100,7 @@ export class Books extends Context.Service<Books, {
       const files = yield* BookFiles
       const settings = yield* Settings
       const keys = yield* ApiKeyStore
+      const snapshots = yield* Snapshots
       // Changes to Books read, decide and write; one at a time.
       const oneAtATime = (yield* Semaphore.make(1)).withPermits(1)
 
@@ -358,6 +362,14 @@ export class Books extends Context.Service<Books, {
           if (runCap === undefined) return yield* new RunCapNeeded()
           const problems = mapProblems(ranges, row.pageCount)
           if (problems.length > 0) return yield* new BookMapInvalid({ problems })
+          // Extracting again may change the keys of the Book's Questions, which
+          // judges their past answers again, so a snapshot comes first
+          // (decision 118); the map waits when it cannot be taken.
+          const given = yield* db.select({ id: sources.questionId }).from(sources).where(eq(sources.bookId, row.id))
+            .pipe(Effect.orDie)
+          if (yield* answered(given.map((source) => source.id)).pipe(Effect.provideService(Db, db))) {
+            yield* snapshots.take("pre-rescore")
+          }
           // Mapped by hand before any full run: extraction is the run.
           const llm = row.runCap === null ? yield* settings.llm : undefined
           const now = yield* Clock.currentTimeMillis

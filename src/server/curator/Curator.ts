@@ -20,6 +20,9 @@ export class Curator extends Context.Service<Curator, {
   // Sets the passphrase on first use and returns an unlock token.
   setPassphrase(passphrase: string): Effect.Effect<string, PassphraseAlreadySet>
   unlock(passphrase: string): Effect.Effect<string, PassphraseNotSet | WrongPassphrase | CuratorLocked>
+  // Checks the passphrase again before a change that cannot be undone, such
+  // as deleting a Profile; wrong entries count as for unlocking.
+  confirm(passphrase: string): Effect.Effect<void, PassphraseNotSet | WrongPassphrase | CuratorLocked>
   check(token: string): Effect.Effect<void, CuratorNotUnlocked>
   // Whether the token is still a live unlock, without counting as use, for
   // checks the Curator does not make, such as an open events stream's.
@@ -95,7 +98,7 @@ export class Curator extends Context.Service<Curator, {
         return yield* issueToken
       }, oneAtATime)
 
-      const unlock = Effect.fn("Curator.unlock")(function*(passphrase: string) {
+      const verify = Effect.fn("Curator.verify")(function*(passphrase: string) {
         const row = yield* access
         if (row === undefined) {
           return yield* new PassphraseNotSet()
@@ -117,9 +120,12 @@ export class Curator extends Context.Service<Curator, {
           case "Locked":
             return yield* new CuratorLocked({ lockedUntil: attempt.lockedUntil })
           case "Accepted":
-            return yield* issueToken
+            return
         }
-      }, oneAtATime)
+      })
+
+      const unlock = (passphrase: string) => verify(passphrase).pipe(Effect.andThen(issueToken), oneAtATime)
+      const confirm = (passphrase: string) => verify(passphrase).pipe(oneAtATime)
 
       const check = Effect.fn("Curator.check")(function*(token: string) {
         if (!(yield* isUnlocked(token))) {
@@ -136,7 +142,7 @@ export class Curator extends Context.Service<Curator, {
         yield* db.delete(curatorAccess).pipe(Effect.orDie)
       }).pipe(oneAtATime)
 
-      return Curator.of({ status, setPassphrase, unlock, check, stillUnlocked, lock, reset })
+      return Curator.of({ status, setPassphrase, unlock, confirm, check, stillUnlocked, lock, reset })
     })
   )
 }

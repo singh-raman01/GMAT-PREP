@@ -58,6 +58,9 @@ import {
 import { SolverRuns } from "../books/enrichment.ts"
 import { JobStore } from "../jobs/JobStore.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
+import { SnapshotFailed } from "../../api/Snapshots.ts"
+import { answered } from "../snapshots/rescores.ts"
+import { Snapshots } from "../snapshots/Snapshots.ts"
 import { runGate } from "./gate.ts"
 import { QuestionRefresh, RefreshCap } from "./refreshJob.ts"
 import { carryReports } from "./reportItems.ts"
@@ -116,14 +119,14 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
   usePassage(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | NoOtherPassage>
   merge(
     id: ReviewItemId
-  ): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | KeysDiffer | MergeTargetChecking>
+  ): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | KeysDiffer | MergeTargetChecking | SnapshotFailed>
   dismiss(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen>
   overrideKey(
     id: ReviewItemId,
     part: number,
     key: string,
     reason: string
-  ): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | KeyNotAnOption>
+  ): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen | KeyNotAnOption | SnapshotFailed>
   checkAgain(id: ReviewItemId): Effect.Effect<ReviewItemView, ReviewItemNotFound | ReviewItemNotOpen>
   readonly drafts: Effect.Effect<DraftsView>
   readonly checkDrafts: Effect.Effect<DraftsView>
@@ -132,6 +135,7 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
     ReviewQueue,
     Effect.gen(function*() {
       const db = yield* Db
+      const snapshots = yield* Snapshots
       const store = yield* JobStore
       const taxonomy = (yield* Taxonomy).view
       const oneAtATime = (yield* Semaphore.make(1)).withPermits(1)
@@ -512,8 +516,21 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
         db.select({ id: parts.id, position: parts.position, key: parts.key, keyBasis: parts.keyBasis }).from(parts)
           .where(eq(parts.questionId, questionId)).orderBy(asc(parts.position)).pipe(Effect.orDie)
 
+      // Whether merging the item's Question into the related one judges past
+      // Responses again: when their keys differ and it has been answered.
+      const mergeRescores = (id: ReviewItemId) =>
+        Effect.gen(function*() {
+          const row = yield* openItem(id, repeats)
+          const mine = joinedKey((yield* partsOf(row.questionId!)).map((part) => part.key))
+          const theirs = joinedKey((yield* partsOf(row.relatedQuestionId!)).map((part) => part.key))
+          return mine !== theirs && (yield* answered([row.questionId!]).pipe(Effect.provideService(Db, db)))
+        })
+
       const merge = (id: ReviewItemId) =>
         Effect.gen(function*() {
+          // A merge into a Question with another key judges the answers to
+          // this one by that key, so a snapshot comes first (decision 118).
+          if (yield* mergeRescores(id)) yield* snapshots.take("pre-rescore")
           const decided = yield* inTransaction(Effect.gen(function*() {
             const row = yield* openItem(id, repeats)
             const target = row.relatedQuestionId!
@@ -584,6 +601,21 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
           return yield* decide(row, "dismissed")
         })).pipe(Effect.flatMap(viewOf), oneAtATime)
 
+      // The open item and the Part its key is for, when the key is one of
+      // the Part's options.
+      const keyFor = (id: ReviewItemId, position: number, key: string) =>
+        Effect.gen(function*() {
+          const row = yield* openItem(id, isQuestion)
+          const [part] = yield* db.select().from(parts)
+            .where(and(eq(parts.questionId, row.questionId!), eq(parts.position, position))).pipe(Effect.orDie)
+          const choices = part === undefined
+            ? []
+            : (yield* db.select({ label: options.label }).from(options).where(eq(options.partId, part.id))
+              .orderBy(asc(options.position)).pipe(Effect.orDie)).map((option) => option.label)
+          if (part === undefined || !choices.includes(key)) return yield* new KeyNotAnOption({ options: choices })
+          return { row, part }
+        })
+
       // The Curator's key replaces the Book's, with a reason kept beside it.
       // Reasons about the key are settled; a changed key owes the Question new
       // Approaches and wrong-option notes, and its tags, Difficulty estimate
@@ -592,16 +624,14 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
       // that item.
       const overrideKey = (id: ReviewItemId, position: number, key: string, reason: string) =>
         Effect.gen(function*() {
+          // A new key judges every past Response to the Question again, so a
+          // snapshot comes first (decision 118), once the override is known
+          // to be one that goes through.
+          yield* keyFor(id, position, key)
+          yield* snapshots.take("pre-rescore")
           const row = yield* inTransaction(Effect.gen(function*() {
-            const row = yield* openItem(id, isQuestion)
+            const { row, part } = yield* keyFor(id, position, key)
             const questionId = row.questionId!
-            const [part] = yield* db.select().from(parts)
-              .where(and(eq(parts.questionId, questionId), eq(parts.position, position))).pipe(Effect.orDie)
-            const choices = part === undefined
-              ? []
-              : (yield* db.select({ label: options.label }).from(options).where(eq(options.partId, part.id))
-                .orderBy(asc(options.position)).pipe(Effect.orDie)).map((option) => option.label)
-            if (part === undefined || !choices.includes(key)) return yield* new KeyNotAnOption({ options: choices })
             const now = yield* Clock.currentTimeMillis
             yield* db.insert(keyOverrides).values({
               id: crypto.randomUUID(),

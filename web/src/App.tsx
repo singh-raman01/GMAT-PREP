@@ -13,6 +13,7 @@ import { SectionalScreen } from "./sectionals/SectionalScreen.tsx"
 import { SectionalsHome } from "./sectionals/SectionalsHome.tsx"
 import { ProfilePicker } from "./ProfilePicker.tsx"
 import { PlanPage } from "./plan/PlanPage.tsx"
+import { ProfilePage } from "./profile/ProfilePage.tsx"
 import { LessonPage, LessonsIndex } from "./lessons/LessonPage.tsx"
 import { lessonOfPath } from "./lessons/paths.ts"
 import { ProgressPage } from "./progress/ProgressPage.tsx"
@@ -96,6 +97,11 @@ export const App = () => {
     void recheck("Your profile was locked, so open it again to carry on.")
   }, [recheck])
 
+  const deleted = useCallback(() => {
+    announceUnlockChanged()
+    void recheck("The profile was deleted.")
+  }, [recheck])
+
   if (screen._tag === "Stopped") {
     return <Stopped trouble={screen.trouble} onRetry={() => void recheck()} />
   }
@@ -114,7 +120,7 @@ export const App = () => {
           <header className="topbar">
             <span className="wordmark">GMAT prep</span>
             <div className="who">
-              <span className="who-name">{screen.profile.name}</span>
+              <a className="who-name" {...linkProps("/profile")}>{screen.profile.name}</a>
               <button type="button" className="button button-quiet" onClick={() => void lock()}>
                 Lock
               </button>
@@ -122,7 +128,14 @@ export const App = () => {
           </header>
           <main className="page">
             <UnsavedNotices key={screen.profile.id} />
-            <LearnerArea key={screen.profile.id} path={path} onSessionLost={sessionLost} onStopped={stop} />
+            <LearnerArea
+              key={screen.profile.id}
+              profile={screen.profile}
+              path={path}
+              onDeleted={deleted}
+              onSessionLost={sessionLost}
+              onStopped={stop}
+            />
           </main>
         </>
       )
@@ -145,8 +158,10 @@ const UnsavedNotices = () => {
 // A Learner's pages: Practice and a set, the Study Plan, Sectionals and one
 // Sectional, Mocks and one Mock, Progress, the Error Log, Scores, and the
 // Taxonomy.
-const LearnerArea = ({ path, onSessionLost, onStopped }: {
+const LearnerArea = ({ profile, path, onDeleted, onSessionLost, onStopped }: {
+  readonly profile: ProfileSummary
   readonly path: string
+  readonly onDeleted: () => void
   readonly onSessionLost: () => void
   readonly onStopped: (error: { readonly _tag: string }) => void
 }) => {
@@ -179,6 +194,8 @@ const LearnerArea = ({ path, onSessionLost, onStopped }: {
     ? "plan"
     : path === "/lessons" || path.startsWith("/lessons/")
     ? "lessons"
+    : path === "/profile"
+    ? "profile"
     : "practice"
   const link = (to: string, name: typeof page, label: string) => (
     <a {...linkProps(to)} aria-current={page === name ? "page" : undefined}>
@@ -198,7 +215,9 @@ const LearnerArea = ({ path, onSessionLost, onStopped }: {
         {link("/scores", "scores", "Scores")}
         {link("/taxonomy", "taxonomy", "What the GMAT tests")}
       </nav>
-      {page === "taxonomy"
+      {page === "profile"
+        ? <ProfilePage profile={profile} onDeleted={onDeleted} onSessionLost={onSessionLost} onStopped={onStopped} />
+        : page === "taxonomy"
         ? <TaxonomyBrowser onSessionLost={onSessionLost} onStopped={onStopped} />
         : page === "sectionals"
         ? <SectionalsHome onSessionLost={onSessionLost} onStopped={onStopped} />

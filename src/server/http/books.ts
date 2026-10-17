@@ -23,6 +23,10 @@ import { Golden } from "../review/Golden.ts"
 import { ReviewQueue } from "../review/ReviewQueue.ts"
 import { SiblingsReport } from "../learning/SiblingsReport.ts"
 import { Overview } from "../review/Overview.ts"
+import { Snapshots } from "../snapshots/Snapshots.ts"
+import { Exports } from "../snapshots/Exports.ts"
+import { Profiles } from "../profiles/Profiles.ts"
+import { InstallExportPath } from "../../api/Exports.ts"
 
 export const BooksHandlers = HttpApiBuilder.group(
   Api,
@@ -194,6 +198,7 @@ const serveFile = Effect.gen(function*() {
 export const BookFileRoutes = HttpRouter.use(Effect.fn(function*(router) {
   yield* router.add("POST", BookUploadPath, serveUpload)
   yield* router.add("GET", "/api/curator/books/:id/file", serveFile)
+  yield* router.add("GET", InstallExportPath, serveExport)
 }))
 
 export const SiblingsHandlers = HttpApiBuilder.group(
@@ -204,6 +209,55 @@ export const SiblingsHandlers = HttpApiBuilder.group(
     return handlers.handleAll({ report: () => siblings.report })
   })
 )
+
+export const SnapshotsHandlers = HttpApiBuilder.group(
+  Api,
+  "snapshots",
+  Effect.fn(function*(handlers) {
+    const snapshots = yield* Snapshots
+    const curator = yield* Curator
+    return handlers.handleAll({
+      list: () => snapshots.list,
+      take: () => snapshots.take("manual").pipe(Effect.andThen(snapshots.list)),
+      // The passphrase again, as a restore replaces every Learner's work
+      // since the snapshot.
+      restore: ({ params, payload }) =>
+        curator.confirm(payload.passphrase).pipe(Effect.andThen(snapshots.restore(params.id)))
+    })
+  })
+)
+
+export const CuratorDataHandlers = HttpApiBuilder.group(
+  Api,
+  "curatorData",
+  Effect.fn(function*(handlers) {
+    const profiles = yield* Profiles
+    const curator = yield* Curator
+    const exports = yield* Exports
+    return handlers.handleAll({
+      profiles: () => profiles.forCurator,
+      resetPin: ({ params, payload }) => profiles.resetPin(params.id, payload.pin),
+      // The passphrase again, as the deletion cannot be undone but by a restore.
+      removeProfile: ({ params, payload }) =>
+        curator.confirm(payload.passphrase).pipe(Effect.andThen(profiles.removeByCurator(params.id))),
+      installExport: () => exports.latestInstall,
+      exportInstall: () => exports.install
+    })
+  })
+)
+
+// The latest archive of the install, as a download for the Curator.
+const serveExport = Effect.gen(function*() {
+  if (!(yield* isUnlocked)) {
+    return HttpServerResponse.text("Unlock the Curator tools to download the export.", { status: 401 })
+  }
+  const found = yield* (yield* Exports).installFile
+  if (found === undefined) return HttpServerResponse.text("No export has been made yet.", { status: 404 })
+  return yield* HttpServerResponse.file(found.path, {
+    contentType: "application/x-tar",
+    headers: { "content-disposition": `attachment; filename="${found.name}"`, "cache-control": "no-store" }
+  }).pipe(Effect.orDie)
+})
 
 export const OverviewHandlers = HttpApiBuilder.group(
   Api,

@@ -12,6 +12,7 @@ import {
 } from "../../api/Taxonomy.ts"
 import { Db } from "../db/Database.ts"
 import { taxonomyVersions } from "../db/schema.ts"
+import { Snapshots } from "../snapshots/Snapshots.ts"
 import taxonomyV1 from "../../../taxonomy/v1.yaml" with { type: "text" }
 
 export class TaxonomyInvalid extends Schema.TaggedError<TaxonomyInvalid>()("TaxonomyInvalid", {
@@ -182,6 +183,18 @@ export class Taxonomy extends Context.Service<Taxonomy, {
       const view = yield* parseTaxonomy(taxonomyV1)
       const fileHash = new Bun.CryptoHasher("sha256").update(taxonomyV1).digest("hex")
       const loadedAt = yield* Clock.currentTimeMillis
+      // A Taxonomy this database has not used before changes what its
+      // Questions and Lessons are filed under, so the server takes a snapshot
+      // first (decision 118); the job worker, started after it, has none to
+      // take. A failed one is recorded and shown to the Curator.
+      const known = yield* db.select().from(taxonomyVersions).pipe(Effect.orDie)
+      const snapshots = yield* Effect.serviceOption(Snapshots)
+      if (
+        snapshots._tag === "Some" && known.length > 0 &&
+        !known.some((row) => row.version === view.version && row.fileHash === fileHash)
+      ) {
+        yield* snapshots.value.take("pre-taxonomy").pipe(Effect.ignore)
+      }
       yield* db.insert(taxonomyVersions)
         .values({ version: view.version, fileHash, loadedAt })
         .onConflictDoNothing()
