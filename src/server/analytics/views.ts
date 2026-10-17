@@ -72,6 +72,7 @@ export interface TimedAnswer {
   // Its place in the Session, from 0.
   readonly position: number
   readonly questionType: string
+  // Whether the first Response was right, as Timing reads first Responses.
   readonly correct: boolean
   readonly timedOut: boolean
   // The first Response's time, and the Question's own Target Time.
@@ -112,18 +113,20 @@ export interface Accuracy {
   readonly answered: number
 }
 
-// How Sectionals and Mock Sections end: accuracy on each Section's last 5
-// Questions served against the rest.
+// How Sectionals and Mock Sections end: accuracy of the first Responses on
+// each Section's last 5 Questions served against the rest, time-outs left
+// out. lastServed gives each Session's last place served, from 0.
 export const LastQuestions = 5
-export const endingOf = (answers: ReadonlyArray<TimedAnswer>) => {
+export const endingOf = (answers: ReadonlyArray<TimedAnswer>, lastServed: (sessionId: string) => number | undefined) => {
   const last = { right: 0, answered: 0 }
   const rest = { right: 0, answered: 0 }
-  for (const session of Map.groupBy(answers.filter((answer) => answer.kind !== "practice"), (answer) => answer.sessionId).values()) {
-    const end = Math.max(...session.map((answer) => answer.position))
+  for (const [sessionId, session] of Map.groupBy(answers.filter((answer) => answer.kind !== "practice"), (answer) => answer.sessionId)) {
+    const end = lastServed(sessionId) ?? Math.max(...session.map((answer) => answer.position))
     for (const answer of session) {
+      if (answer.timedOut) continue
       const into = answer.position > end - LastQuestions ? last : rest
       into.answered++
-      if (answer.correct && !answer.timedOut) into.right++
+      if (answer.correct) into.right++
     }
   }
   return { last: last as Accuracy, rest: rest as Accuracy }
@@ -138,9 +141,10 @@ export interface PacingPoint {
 }
 
 // A Mock Section's pacing curve: the time used at each answer against an
-// even pace through its limit.
+// even pace through its limit over all its Questions, so a Section that ran
+// out of time shows behind. A time-out is no answer, so it has no point.
 export const pacingOf = (answers: ReadonlyArray<TimedAnswer>, limitMs: number, questions: number): ReadonlyArray<PacingPoint> =>
-  answers.filter((answer) => answer.servedElapsedMs !== null)
+  answers.filter((answer) => answer.servedElapsedMs !== null && !answer.timedOut)
     .toSorted((a, b) => a.position - b.position)
     .map((answer) => ({
       question: answer.position + 1,

@@ -72,7 +72,7 @@ export const BookPage = ({ id, notice, onLocked, onStopped }: Props) => {
       }, onLocked, () => mounted.current)
   )
 
-  const allBooks = <p className="back"><a className="quiet-link" {...linkProps("/curator")}>All books</a></p>
+  const allBooks = <p className="back"><a className="quiet-link" {...linkProps("/curator/books")}>All books</a></p>
 
   if (missing) {
     return (

@@ -104,7 +104,7 @@ export class Overview extends Context.Service<Overview, {
           reviewQueue: Number(open?.count ?? 0),
           monthFrom: from,
           spend: Number(spent?.total ?? 0),
-          jobs: (yield* jobs.list).filter((job) => job.updatedAt >= from)
+          jobs: yield* jobs.changedSince(from)
         })
       })
 

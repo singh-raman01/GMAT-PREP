@@ -82,9 +82,9 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
         ? "generate"
         : path.startsWith("/curator/siblings")
         ? "siblings"
-        : path.startsWith("/curator/overview")
-        ? "overview"
-        : "books"
+        : path.startsWith("/curator/books")
+        ? "books"
+        : "overview"
       const bookId = /^\/curator\/books\/([^/]+)/.exec(path)?.[1]
       return (
         <>
@@ -100,10 +100,10 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
           </header>
           <main className="page">
             <nav className="subnav" aria-label="Curator tools">
-              <a {...linkProps("/curator/overview")} aria-current={section === "overview" ? "page" : undefined}>
+              <a {...linkProps("/curator")} aria-current={section === "overview" ? "page" : undefined}>
                 <span className={section === "overview" ? "mark" : undefined}>Overview</span>
               </a>
-              <a {...linkProps("/curator")} aria-current={section === "books" && bookId === undefined ? "page" : undefined}>
+              <a {...linkProps("/curator/books")} aria-current={section === "books" && bookId === undefined ? "page" : undefined}>
                 <span className={section === "books" ? "mark" : undefined}>Books</span>
               </a>
               <a {...linkProps("/curator/review")} aria-current={section === "review" ? "page" : undefined}>

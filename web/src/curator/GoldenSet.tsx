@@ -88,7 +88,7 @@ export const GoldenSet = ({ onLocked, onStopped }: Props) => {
         : view.book === null
         ? (
           <p className="empty">
-            No book yet. <a {...linkProps("/curator")}>Add one</a>; its Questions appear here once they are extracted.
+            No book yet. <a {...linkProps("/curator/books")}>Add one</a>; its Questions appear here once they are extracted.
           </p>
         )
         : (

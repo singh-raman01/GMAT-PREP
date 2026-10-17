@@ -31,9 +31,9 @@ const PaceList = ({ rows }: { readonly rows: ReadonlyArray<{ readonly id: string
 
 const minutes = (millis: number) => Math.round(millis / 60_000)
 
-const MockPacing = ({ mock }: { readonly mock: TimingView["mocks"][number] }) => (
+const MockPacing = ({ mock, timeZone }: { readonly mock: TimingView["mocks"][number]; readonly timeZone: string }) => (
   <div className="mock-pacing">
-    <h3 className="map-topic">Mock of {dayAndTime(mock.finishedAt)}</h3>
+    <h3 className="map-topic">Mock of {dayAndTime(mock.finishedAt, timeZone)}</h3>
     {mock.sections.map((section) => {
       const tone = (["quant", "verbal", "di"].includes(section.section.id) ? section.section.id : "ink") as Tone
       const last = section.points.at(-1)
@@ -116,6 +116,10 @@ export const Timing = ({ onFailure }: { readonly onFailure: (failure: { readonly
       )}
       <section className="group" aria-labelledby="pace-ending">
         <h2 id="pace-ending">How Sections end</h2>
+        <p className="group-about">
+          Your first answers on the last 5 Questions of each Sectional and Mock Section, against the rest. Questions the
+          clock ran out on are left out.
+        </p>
         {ending.last.answered + ending.rest.answered === 0
           ? <p className="quiet">Sectionals and Mocks show this once you have taken one.</p>
           : (
@@ -137,7 +141,7 @@ export const Timing = ({ onFailure }: { readonly onFailure: (failure: { readonly
         <h2 id="pace-mocks">Mock pacing</h2>
         {view.mocks.length === 0
           ? <p className="quiet">Each finished Mock's pacing shows here, Section by Section.</p>
-          : view.mocks.slice(0, 3).map((mock) => <MockPacing key={mock.mockId} mock={mock} />)}
+          : view.mocks.slice(0, 3).map((mock) => <MockPacing key={mock.mockId} mock={mock} timeZone={view.timeZone} />)}
       </section>
     </>
   )

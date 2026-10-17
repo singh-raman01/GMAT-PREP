@@ -34,7 +34,10 @@ const isWeak = (scope: ScopeView) => scope.enough && scope.gap > 0
 
 const Row = ({ name, scope }: { readonly name: string; readonly scope: ScopeView }) => (
   <li className={scope.enough ? "map-row" : "map-row map-row-quiet"}>
-    <span className="map-name">{isWeak(scope) ? <span className="mark">{name}</span> : name}</span>
+    <span className="map-name">
+      {isWeak(scope) ? <span className="mark">{name}</span> : name}
+      {isWeak(scope) && <span className="visually-hidden">, a Weak Area</span>}
+    </span>
     {scope.enough ? <GapBar gap={scope.gap} /> : <span className="gap-bar gap-bar-empty" aria-hidden="true" />}
     <span className="map-facts">{scopeText(scope)}</span>
   </li>
@@ -80,7 +83,8 @@ export const SkillMap = ({ onFailure }: { readonly onFailure: (failure: { readon
           <h2 id={`map-${section.section.id}`}>
             <span className="swatch" aria-hidden="true" /> {section.section.name}
           </h2>
-          {section.ability === null
+          {section.questionTypes.every((each) => each.scope === null) &&
+              section.topics.every((topic) => topic.skills.every((each) => each.scope === null))
             ? <p className="quiet">No timed answers in this Section yet.</p>
             : (
               <>
