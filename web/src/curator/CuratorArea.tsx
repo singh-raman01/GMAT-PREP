@@ -11,6 +11,7 @@ import { CuratorJobs } from "./CuratorJobs.tsx"
 import { CuratorSettings } from "./CuratorSettings.tsx"
 import { Generation } from "./Generation.tsx"
 import { GoldenSet } from "./GoldenSet.tsx"
+import { OverviewPage } from "./OverviewPage.tsx"
 import { SiblingsPage } from "./SiblingsPage.tsx"
 import { ReviewQueue } from "./ReviewQueue.tsx"
 
@@ -81,6 +82,8 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
         ? "generate"
         : path.startsWith("/curator/siblings")
         ? "siblings"
+        : path.startsWith("/curator/overview")
+        ? "overview"
         : "books"
       const bookId = /^\/curator\/books\/([^/]+)/.exec(path)?.[1]
       return (
@@ -97,6 +100,9 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
           </header>
           <main className="page">
             <nav className="subnav" aria-label="Curator tools">
+              <a {...linkProps("/curator/overview")} aria-current={section === "overview" ? "page" : undefined}>
+                <span className={section === "overview" ? "mark" : undefined}>Overview</span>
+              </a>
               <a {...linkProps("/curator")} aria-current={section === "books" && bookId === undefined ? "page" : undefined}>
                 <span className={section === "books" ? "mark" : undefined}>Books</span>
               </a>
@@ -138,6 +144,8 @@ export const CuratorArea = ({ path, onStopped }: { readonly path: string; readon
               ? <Generation key="generate" onLocked={locked} onStopped={onStopped} />
               : section === "siblings"
               ? <SiblingsPage key="siblings" onLocked={locked} onStopped={onStopped} />
+              : section === "overview"
+              ? <OverviewPage key="overview" onLocked={locked} onStopped={onStopped} />
               : bookId !== undefined
               ? (
                 <BookPage

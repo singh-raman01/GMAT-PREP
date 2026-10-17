@@ -1,7 +1,7 @@
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
 import { Day } from "./day.ts"
-import { ScoreEstimateView } from "./Practice.ts"
+import { Named, ScoreEstimateView } from "./Practice.ts"
 import { ProfileSession } from "./Profiles.ts"
 
 // Official Scores: scores from official GMAT practice exams or real sittings,
@@ -75,8 +75,20 @@ export class ScoreEstimates extends Schema.Class<ScoreEstimates>("gmat-prep/api/
   today: Day
 }) {}
 
+const TrendPoint = Schema.Struct({ day: Day, score: Schema.Int, low: Schema.Int, high: Schema.Int })
+
+// Score trend (docs/design.md, "Analytics"): each Section's kept Score
+// Estimates, the last of each Study Day, on its current line; the Total on
+// each day all three had one; and the Official Scores.
+export class ScoreTrendView extends Schema.Class<ScoreTrendView>("gmat-prep/api/ScoreTrendView")({
+  sections: Schema.Array(Schema.Struct({ section: Named, points: Schema.Array(TrendPoint) })),
+  total: Schema.Array(TrendPoint),
+  official: Schema.Array(OfficialScoreView)
+}) {}
+
 export class ScoresApi extends HttpApiGroup.make("scores")
   .add(
+    HttpApiEndpoint.get("trend", "/trend", { success: ScoreTrendView }),
     // Each Section's Score Estimate now, and the Total once all three have one.
     HttpApiEndpoint.get("estimates", "/estimates", { success: ScoreEstimates }),
     // The Profile's Official Scores, the latest first.

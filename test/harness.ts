@@ -20,6 +20,7 @@ import type { Settings } from "../src/server/settings/Settings.ts"
 import { workerServices } from "../src/server/worker/services.ts"
 import { WorkerSupervisor } from "../src/server/worker/WorkerSupervisor.ts"
 import { FigureFiles } from "../src/server/books/FigureFiles.ts"
+import { ErrorLog } from "../src/server/learning/ErrorLog.ts"
 
 export const tempDataDir = () => mkdtempSync(join(tmpdir(), "gmat-prep-test-"))
 
@@ -95,6 +96,7 @@ export type WorkerTestServices =
   | Db
   | AppConfig
   | FigureFiles
+  | ErrorLog
 
 // Sets the fake clock before the app starts, as a start later in the day.
 const clockStartsAt = (millis: number | undefined) =>

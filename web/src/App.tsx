@@ -12,6 +12,7 @@ import { ScoresPage } from "./scores/ScoresPage.tsx"
 import { SectionalScreen } from "./sectionals/SectionalScreen.tsx"
 import { SectionalsHome } from "./sectionals/SectionalsHome.tsx"
 import { ProfilePicker } from "./ProfilePicker.tsx"
+import { ProgressPage } from "./progress/ProgressPage.tsx"
 import { linkProps, usePath } from "./router.ts"
 import { TaxonomyBrowser } from "./TaxonomyBrowser.tsx"
 import { onUnsaved } from "./unsaved.ts"
@@ -139,7 +140,7 @@ const UnsavedNotices = () => {
 }
 
 // A Learner's pages: Practice and a set, Sectionals and one Sectional, Mocks
-// and one Mock, the Error Log, Scores, and the Taxonomy.
+// and one Mock, Progress, the Error Log, Scores, and the Taxonomy.
 const LearnerArea = ({ path, onSessionLost, onStopped }: {
   readonly path: string
   readonly onSessionLost: () => void
@@ -167,6 +168,8 @@ const LearnerArea = ({ path, onSessionLost, onStopped }: {
     ? "scores"
     : path === "/error-log"
     ? "errors"
+    : path === "/progress" || path.startsWith("/progress/")
+    ? "progress"
     : "practice"
   const link = (to: string, name: typeof page, label: string) => (
     <a {...linkProps(to)} aria-current={page === name ? "page" : undefined}>
@@ -179,6 +182,7 @@ const LearnerArea = ({ path, onSessionLost, onStopped }: {
         {link("/", "practice", "Practice")}
         {link("/sectionals", "sectionals", "Sectionals")}
         {link("/mocks", "mocks", "Mocks")}
+        {link("/progress", "progress", "Progress")}
         {link("/error-log", "errors", "Error Log")}
         {link("/scores", "scores", "Scores")}
         {link("/taxonomy", "taxonomy", "What the GMAT tests")}
@@ -193,6 +197,8 @@ const LearnerArea = ({ path, onSessionLost, onStopped }: {
         ? <ScoresPage onSessionLost={onSessionLost} onStopped={onStopped} />
         : page === "errors"
         ? <ErrorLogPage onSessionLost={onSessionLost} onStopped={onStopped} />
+        : page === "progress"
+        ? <ProgressPage path={path} onSessionLost={onSessionLost} onStopped={onStopped} />
         : <PracticeHome onSessionLost={onSessionLost} onStopped={onStopped} />}
     </>
   )

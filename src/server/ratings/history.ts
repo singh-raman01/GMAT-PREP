@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm"
 import { Effect } from "effect"
-import { studyDayOf } from "../../api/studyDay.ts"
+import { studyDays } from "../../api/studyDay.ts"
 import { Db } from "../db/Database.ts"
 import { difficulty, questions, responses, servedQuestions, sessions } from "../db/schema.ts"
 import { currentDifficulty, isCorrect, keysOf, mergeTargets, paperSeenBy, readSelection } from "../practice/history.ts"
@@ -24,36 +24,49 @@ export interface RatedAnswer {
   readonly difficulty: number
   readonly correct: boolean
   readonly at: number
+  // The first Response's time in its set: an answer changed in Review &
+  // Edit took none of its own.
+  readonly timeSpentMs: number
 }
 
 // A Question the Curator merged into another counts as that one. A Withdrawn
 // Question's Responses stay in history but leave Ability.
-export const ratedHistory = (profileId: string) =>
+// A served row as the rated history reads it; order is the order rows were
+// written in.
+export interface ServingFact {
+  readonly questionId: string
+  readonly sessionId: string
+  readonly timed: boolean
+  readonly at: number
+  readonly order: number
+}
+
+// known: the Profile's served rows, when the caller has them already.
+export const ratedHistory = (profileId: string, known?: ReadonlyArray<ServingFact>) =>
   Effect.gen(function*() {
     const db = yield* Db
     const resolve = yield* mergeTargets
     // Each Question's first serving to the Profile is all that decides where
-    // it was first Seen; a merged Question's group takes the earliest of its
-    // members' first servings.
-    const ranked = db.select({
+    // it was first Seen, the earlier written first at one moment; a merged
+    // Question's group takes the earliest of its members' first servings.
+    // Found in one pass here, which is faster than ranking in SQL.
+    const servings = known ?? (yield* db.select({
       questionId: servedQuestions.questionId,
       sessionId: servedQuestions.sessionId,
       timed: sessions.timed,
       at: servedQuestions.servedAt,
-      order: sql<number>`${servedQuestions}.rowid`.as("served_order"),
-      rank: sql<number>`row_number() over (partition by ${servedQuestions.questionId} order by ${servedQuestions.servedAt}, ${servedQuestions}.rowid)`
-        .as("served_rank")
+      order: sql<number>`${servedQuestions}.rowid`
     }).from(servedQuestions)
       .innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
-      .where(eq(sessions.profileId, profileId))
-      .as("ranked")
-    const served = (yield* db.select({
-      questionId: ranked.questionId,
-      sessionId: ranked.sessionId,
-      timed: ranked.timed,
-      at: ranked.at,
-      order: ranked.order
-    }).from(ranked).where(eq(ranked.rank, 1)))
+      .where(eq(sessions.profileId, profileId)))
+    const firsts = new Map<string, ServingFact>()
+    for (const serving of servings) {
+      const found = firsts.get(serving.questionId)
+      if (found === undefined || serving.at < found.at || (serving.at === found.at && serving.order < found.order)) {
+        firsts.set(serving.questionId, serving)
+      }
+    }
+    const served = [...firsts.values()]
       .map((event): SeenEvent => ({ ...event, questionId: resolve(event.questionId) }))
       .concat(paperEvents(yield* paperSeenBy(profileId)))
     // Only Responses in a timed set where their Question was first Seen can
@@ -68,6 +81,7 @@ export const ratedHistory = (profileId: string) =>
       kind: responses.kind,
       seq: responses.seq,
       selection: responses.selection,
+      timeSpentMs: responses.timeSpentMs,
       createdAt: responses.createdAt,
       ended: sql<number>`${sessions.status} = 'finished'`,
       // A Mock's Section counts as ended once the Mock is over, so the Score
@@ -89,6 +103,12 @@ export const ratedHistory = (profileId: string) =>
     }))
     const rated = ratedResponses(served, counted)
     const kept = counted.filter((fact) => rated.has(fact.id))
+    const firstTime = new Map<string, { seq: number; timeSpentMs: number }>()
+    for (const fact of counted) {
+      const key = `${fact.sessionId}|${fact.questionId}`
+      const found = firstTime.get(key)
+      if (found === undefined || fact.seq < found.seq) firstTime.set(key, { seq: fact.seq, timeSpentMs: fact.timeSpentMs })
+    }
     if (kept.length === 0) return [] as ReadonlyArray<RatedAnswer>
     const ids = [...new Set(kept.map((fact) => fact.questionId))]
     const rows = yield* db.select({
@@ -113,7 +133,8 @@ export const ratedHistory = (profileId: string) =>
         section: question.section,
         difficulty: Number(question.difficulty),
         correct: isCorrect(readSelection(fact.selection), keys.get(fact.questionId) ?? []),
-        at: fact.createdAt
+        at: fact.createdAt,
+        timeSpentMs: firstTime.get(`${fact.sessionId}|${fact.questionId}`)?.timeSpentMs ?? fact.timeSpentMs
       }]
     })
   })
@@ -127,12 +148,13 @@ export interface StudyClock {
 // A Section's Ability from its Rated Responses, each weighted by how many
 // Study Days ago it was given.
 export const sectionFit = (history: ReadonlyArray<RatedAnswer>, section: string, clock: StudyClock): AbilityFit => {
-  const today = studyDayOf(clock.now, clock.timeZone, clock.rolloverHour)
+  const dayOf = studyDays(clock.timeZone, clock.rolloverHour)
+  const today = dayOf(clock.now)
   return fitAbility(
     history.filter((answer) => answer.section === section).map((answer) => ({
       difficulty: answer.difficulty,
       correct: answer.correct,
-      weight: recencyWeight(today - studyDayOf(answer.at, clock.timeZone, clock.rolloverHour))
+      weight: recencyWeight(today - dayOf(answer.at))
     }))
   )
 }

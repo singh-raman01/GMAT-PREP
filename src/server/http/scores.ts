@@ -12,6 +12,7 @@ export const ScoresHandlers = HttpApiBuilder.group(
     const profile = Effect.map(CurrentProfile, (current) => current.id)
     return handlers.handleAll({
       estimates: () => profile.pipe(Effect.flatMap(scores.estimates)),
+      trend: () => profile.pipe(Effect.flatMap(scores.trend)),
       official: () => profile.pipe(Effect.flatMap(scores.list)),
       addOfficial: ({ payload }) => profile.pipe(Effect.flatMap((id) => scores.add(id, payload))),
       removeOfficial: ({ params }) => profile.pipe(Effect.flatMap((id) => scores.remove(id, params.id)))

@@ -20,7 +20,7 @@ import {
 } from "../../api/ErrorLog.ts"
 import { MistakesView, Named, ResponseView, ServedView, SessionId } from "../../api/Practice.ts"
 import { QuestionId } from "../../api/Review.ts"
-import { studyDayOf } from "../../api/studyDay.ts"
+import { studyDayOf, studyDays } from "../../api/studyDay.ts"
 import { Db } from "../db/Database.ts"
 import { books, mistakeLabels, profiles, questions, responses, retrySkips, servedQuestions, sessions } from "../db/schema.ts"
 import { debriefOf, namesOf, practiceQuestion, storedQuestions } from "../practice/content.ts"
@@ -29,7 +29,6 @@ import { ratedAmong } from "../ratings/rated.ts"
 import { Settings } from "../settings/Settings.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import {
-  inChunks,
   labelsOf,
   missedPartView,
   questionFactOf,
@@ -39,6 +38,7 @@ import {
 } from "./facts.ts"
 import type { Step } from "./ladder.ts"
 import { type EntryLadder, laddersOf } from "./ladders.ts"
+import { keptRows } from "./kept.ts"
 import { type Miss, missesOf, type ResponseFact, type ServedFact, type SessionFact } from "./misses.ts"
 import { type RetryItem, retryListOf } from "./retryConfig.ts"
 
@@ -70,12 +70,14 @@ const Kinds = ["practice", "sectional", "mock-section"]
 // Facet values sort by name the same way on every read.
 const byName = new Intl.Collator("en").compare
 
-type ShownSession = SessionFact & {
+export type ShownSession = SessionFact & {
   readonly timed: boolean
   readonly finished: boolean
   readonly createdAt: number
   // A retry set's Retry Ladder steps; none for any other Session.
   readonly retry: ReadonlyArray<RetryItem>
+  // For a Mock's Section, its Mock.
+  readonly mockId: string | null
 }
 
 // A Study Day as a date.
@@ -101,6 +103,44 @@ interface Facts {
   readonly timeZone: string
   // Today's Study Day, in the Profile's time zone and rollover hour.
   readonly today: number
+  readonly dayOf: (at: number) => number
+  readonly targetMs: (questionId: string) => number
+  // Each timed Session's served rows.
+  readonly served: ReadonlyMap<string, ReadonlyArray<ServedRow>>
+}
+
+// What the analytics read of a Profile's history (docs/design.md,
+// "Analytics"): its Sessions with whether each shows how it went, every
+// Response, every miss with its Mistake Types as the Error Log shows them,
+// and the Questions answered.
+export interface LearningHistory {
+  readonly sessions: ReadonlyMap<string, ShownSession>
+  readonly responses: ReadonlyArray<ResponseFact>
+  readonly misses: ReadonlyArray<{
+    readonly miss: Miss
+    // Each wrong Part's Mistake Type, the Learner's where set.
+    readonly mistakeTypes: ReadonlyArray<string | null>
+  }>
+  readonly summaries: ReadonlyMap<string, QuestionSummary>
+  readonly resolve: (questionId: string) => string
+  readonly timeZone: string
+  readonly today: number
+  readonly dayOf: (at: number) => number
+  readonly targetMs: (questionId: string) => number
+  // Each timed Session's served rows, with each Question's place.
+  readonly served: ReadonlyMap<string, ReadonlyArray<ServedRow>>
+}
+
+// A served row as the Error Log keeps it: the Question's place in its
+// Session, and the Session's clock when it was served.
+export type ServedRow = ServedFact & { readonly position: number }
+
+// Any Session's served row, as the analytics read when each Question was
+// first Seen: rowid is the order rows were written in.
+export interface Serving extends ServedRow {
+  readonly servedAt: number
+  readonly timed: boolean
+  readonly rowid: number
 }
 
 // A moment's day and minute in a time zone.
@@ -194,6 +234,9 @@ export class ErrorLog extends Context.Service<ErrorLog, {
     change: { readonly responseId: string; readonly part: number; readonly mistakeType: string }
   ): Effect.Effect<ErrorLogEntry, ErrorLogEntryNotFound | MistakeTypeInvalid>
   retryState(profileId: string): Effect.Effect<RetryState>
+  // Every served row of the Profile's Sessions, kept between reads.
+  servings(profileId: string): Effect.Effect<ReadonlyArray<Serving>>
+  history(profileId: string): Effect.Effect<LearningHistory>
 }>()("gmat-prep/server/ErrorLog") {
   static readonly layer = Layer.effect(
     ErrorLog,
@@ -235,6 +278,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             finished: row.status === "finished",
             createdAt: row.createdAt,
             retry: row.kind === "practice" ? retryListOf(row.retry) : [],
+            mockId: row.mockId,
             limitMs: row.timed ? row.timeLimitMs : null,
             shown: row.kind === "practice"
               ? !row.timed || row.status === "finished"
@@ -256,6 +300,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
       const servedColumns = {
         sessionId: servedQuestions.sessionId,
         questionId: servedQuestions.questionId,
+        position: servedQuestions.position,
         servedElapsedMs: servedQuestions.servedElapsedMs
       }
 
@@ -265,7 +310,8 @@ export class ErrorLog extends Context.Service<ErrorLog, {
         profileId: string,
         found: ReadonlyMap<string, ShownSession>,
         responseFacts: ReadonlyArray<ResponseFact>,
-        served: ReadonlyArray<ServedFact> | ReadonlyMap<string, ReadonlyArray<ServedFact>>,
+        // Each timed Session's served rows.
+        served: ReadonlyMap<string, ReadonlyArray<ServedRow>>,
         resolve: (questionId: string) => string,
         skipsWhere: SQL
       ) =>
@@ -289,7 +335,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
               .where(eq(profiles.id, profileId))
           )
           const timeZone = profile?.timeZone ?? "UTC"
-          const dayOf = (at: number) => studyDayOf(at, timeZone, profile?.rolloverHour ?? 4)
+          const dayOf = studyDays(timeZone, profile?.rolloverHour ?? 4)
           const skips = yield* run(db.select().from(retrySkips).where(and(eq(retrySkips.profileId, profileId), skipsWhere)))
           const ladders = laddersOf({
             misses,
@@ -313,84 +359,111 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             labels,
             ladders,
             timeZone,
-            today: dayOf(yield* Clock.currentTimeMillis)
+            today: dayOf(yield* Clock.currentTimeMillis),
+            dayOf,
+            targetMs: (questionId: string) => questionFacts.get(questionId)?.targetMs ?? 0,
+            served
           } satisfies Facts
         })
 
-      // Each Profile's Responses, with the served rows of its timed Sessions,
-      // kept between reads for the few Profiles read last. Neither is changed
-      // once written, so a read takes only the Responses written since, and
-      // the served rows of their Sessions again: a Question is served before
-      // any Response to it is written. What is kept is checked
-      // first: when fewer rows now reach the last Response kept, or another
-      // row has taken its place, as after a deletion or a restore, it is all
-      // read again.
-      type Kept = {
-        readonly answers: ReadonlyArray<ResponseFact>
-        // Only a timed Session's clock says when a Question was served.
-        readonly served: ReadonlyMap<string, ReadonlyArray<ServedFact>>
-        // The last Response kept.
-        readonly last: { readonly rowid: number; readonly id: string } | undefined
-      }
-      const kept = new Map<string, Kept>()
+      // Each Profile's Responses and served rows, kept between reads for the
+      // few Profiles read last: neither changes once written, so a read
+      // takes only the rows written since (kept.ts).
       const KeptProfiles = 4
-      const rowid = sql<number>`${responses}.rowid`
-      const stillKept = (profileId: string, before: Kept) =>
-        Effect.gen(function*() {
-          if (before.last === undefined) return true
-          const [check] = yield* run(
+      const newestOf = <Row extends { readonly rowid: number }>(rows: ReadonlyArray<Row>, identity: (row: Row) => string) => {
+        let newest: Row | undefined
+        for (const row of rows) if (newest === undefined || row.rowid > newest.rowid) newest = row
+        return newest === undefined ? undefined : { rowid: newest.rowid, identity: identity(newest) }
+      }
+      const responseRowid = sql<number>`${responses}.rowid`
+      const keptResponses = keptRows<ResponseFact>({
+        // The Profile's rows are read in the table's order, which is faster
+        // than by its index, which sorts them by Question.
+        since: (profileId, after) =>
+          run(
+            db.select({ ...responseColumns, rowid: responseRowid }).from(responses)
+              .where(and(sql`+${responses.profileId} = ${profileId}`, sql`${responses}.rowid > ${after}`))
+          ).pipe(Effect.map((rows) => ({ items: rows.map(responseFact), newest: newestOf(rows, (row) => row.id) }))),
+        check: (profileId, upTo) =>
+          run(
             db.select({
               count: sql<number>`count(*)`,
-              last: sql<string | null>`(select ${responses.id} from ${responses} where rowid = ${before.last.rowid})`
-            }).from(responses).where(and(eq(responses.profileId, profileId), sql`${responses}.rowid <= ${before.last.rowid}`))
-          )
-          return Number(check?.count ?? 0) === before.answers.length && check?.last === before.last.id
-        })
-      const servedOf = (where: SQL) =>
-        run(
-          db.select(servedColumns).from(servedQuestions).innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
-            .where(and(where, eq(sessions.timed, true)))
-        )
+              identity: sql<string | null>`(select ${responses.id} from ${responses} where rowid = ${upTo})`
+            }).from(responses).where(and(eq(responses.profileId, profileId), sql`${responses}.rowid <= ${upTo}`))
+          ).pipe(Effect.map(([row]) => ({ count: Number(row?.count ?? 0), identity: row?.identity ?? null }))),
+        profiles: KeptProfiles
+      })
+      const servedRowid = sql<number>`${servedQuestions}.rowid`
+      const servedIdentity = sql<string | null>`${servedQuestions.sessionId} || ':' || ${servedQuestions.position}`
+      const keptServings = keptRows<Serving>({
+        // Read from the newest served rows back, as the join is led by the
+        // served table.
+        since: (profileId, after) =>
+          run(
+            db.select({
+              sessionId: servedQuestions.sessionId,
+              questionId: servedQuestions.questionId,
+              position: servedQuestions.position,
+              servedAt: servedQuestions.servedAt,
+              servedElapsedMs: servedQuestions.servedElapsedMs,
+              timed: sessions.timed,
+              rowid: servedRowid
+            }).from(servedQuestions).crossJoin(sessions)
+              .where(and(eq(sessions.id, servedQuestions.sessionId), sql`${servedQuestions}.rowid > ${after}`, eq(sessions.profileId, profileId)))
+          ).pipe(Effect.map((rows) => ({ items: rows, newest: newestOf(rows, (row) => `${row.sessionId}:${row.position}`) }))),
+        check: (profileId, upTo) =>
+          run(
+            db.select({
+              count: sql<number>`count(*)`,
+              identity: sql<string | null>`(select ${servedIdentity} from ${servedQuestions} where rowid = ${upTo})`
+            }).from(servedQuestions).innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
+              .where(and(eq(sessions.profileId, profileId), sql`${servedQuestions}.rowid <= ${upTo}`))
+          ).pipe(Effect.map(([row]) => ({ count: Number(row?.count ?? 0), identity: row?.identity ?? null }))),
+        profiles: KeptProfiles
+      })
+      // Only a timed Session's clock says when a Question was served; worked
+      // out again only when the served rows change.
+      const timedServed = new WeakMap<ReadonlyArray<Serving>, ReadonlyMap<string, ReadonlyArray<ServedRow>>>()
       const historyOf = (profileId: string) =>
         Effect.gen(function*() {
-          const found = kept.get(profileId)
-          const before = found !== undefined && (yield* stillKept(profileId, found)) ? found : undefined
-          // The Profile's rows are read in the table's order, which is faster
-          // than by its index, which sorts them by Question.
-          const since = yield* run(
-            db.select({ ...responseColumns, rowid }).from(responses)
-              .where(and(sql`+${responses.profileId} = ${profileId}`, sql`${responses}.rowid > ${before?.last?.rowid ?? 0}`))
-          )
-          const sessionIds = [...new Set(since.map((row) => row.sessionId))]
-          const servedRows = before === undefined
-            ? yield* servedOf(eq(sessions.profileId, profileId))
-            : sessionIds.length === 0
-            ? []
-            : yield* run(inChunks(sessionIds, (chunk) => servedOf(inArray(servedQuestions.sessionId, chunk))))
-          const served = new Map(before?.served ?? [])
-          for (const [sessionId, rows] of Map.groupBy(servedRows, (row) => row.sessionId)) served.set(sessionId, rows)
-          const newest = since.reduce<(typeof since)[number] | undefined>(
-            (most, row) => (most === undefined || row.rowid > most.rowid ? row : most),
-            undefined
-          )
-          const answers = since.map(responseFact)
-          const next: Kept = {
-            answers: before === undefined ? answers : answers.length === 0 ? before.answers : [...before.answers, ...answers],
-            served,
-            last: newest === undefined ? before?.last : { rowid: newest.rowid, id: newest.id }
+          const answers = (yield* keptResponses(profileId)).items
+          const servings = (yield* keptServings(profileId)).items
+          let served = timedServed.get(servings)
+          if (served === undefined) {
+            served = Map.groupBy(servings.filter((row) => row.timed), (row) => row.sessionId)
+            timedServed.set(servings, served)
           }
-          kept.delete(profileId)
-          kept.set(profileId, next)
-          for (const oldest of [...kept.keys()].slice(0, Math.max(0, kept.size - KeptProfiles))) kept.delete(oldest)
-          return next
+          return { answers, served }
         })
 
       // Every fact of the Profile's history.
+      // The database as it stands: any write, from this process or another,
+      // changes one of the two.
+      const databaseVersion = (profileId: string) =>
+        run(
+          db.select({ changes: sql<number>`total_changes()`, version: sql<number>`(select data_version from pragma_data_version)` })
+            .from(profiles).where(eq(profiles.id, profileId))
+        ).pipe(Effect.map(([row]) => `${row?.changes}:${row?.version}`))
+
+      // The whole history's facts, kept for the few Profiles read last until
+      // the database changes, so the analytics views read one after another
+      // share them; only today is worked out again. The version is read
+      // first, so a write made meanwhile is read next time.
+      const factsKept = new Map<string, { readonly version: string; readonly facts: Facts }>()
       const profileFacts = (profileId: string) =>
         Effect.gen(function*() {
+          const version = yield* databaseVersion(profileId)
+          const kept = factsKept.get(profileId)
+          if (kept !== undefined && kept.version === version) {
+            return { ...kept.facts, today: kept.facts.dayOf(yield* Clock.currentTimeMillis) } satisfies Facts
+          }
           const found = yield* readSessions(and(eq(sessions.profileId, profileId), inArray(sessions.kind, Kinds)))
           const history = yield* historyOf(profileId)
-          return yield* factsFrom(profileId, found, history.answers, history.served, yield* run(mergeTargets), sql`1 = 1`)
+          const facts = yield* factsFrom(profileId, found, history.answers, history.served, yield* run(mergeTargets), sql`1 = 1`)
+          factsKept.delete(profileId)
+          factsKept.set(profileId, { version, facts })
+          for (const oldest of [...factsKept.keys()].slice(0, Math.max(0, factsKept.size - KeptProfiles))) factsKept.delete(oldest)
+          return facts
         })
 
       // The facts of one entry: every Session that answered its Question, or
@@ -421,7 +494,8 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           const found = yield* readSessions(and(inArray(sessions.id, sessionIds), inArray(sessions.kind, Kinds)))
           const answers = yield* run(db.select(responseColumns).from(responses).where(inArray(responses.sessionId, sessionIds)))
           const served = yield* run(db.select(servedColumns).from(servedQuestions).where(inArray(servedQuestions.sessionId, sessionIds)))
-          return yield* factsFrom(profileId, found, answers.map(responseFact), served, resolve, skipsWhere)
+          const timed = served.filter((row) => found.get(row.sessionId)?.timed === true)
+          return yield* factsFrom(profileId, found, answers.map(responseFact), Map.groupBy(timed, (row) => row.sessionId), resolve, skipsWhere)
         })
 
       const entriesOf = (facts: Facts): ReadonlyArray<Entry> =>
@@ -685,6 +759,25 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           } satisfies RetryState
         })
 
+      const history = (profileId: string) =>
+        profileFacts(profileId).pipe(Effect.map((facts): LearningHistory => ({
+          sessions: facts.sessions,
+          responses: facts.responses,
+          misses: facts.misses.map((miss) => ({
+            miss,
+            mistakeTypes: miss.parts.map((part) => facts.labels.get(`${miss.responseId}:${part.part}`) ?? part.mistakeType)
+          })),
+          summaries: facts.summaries,
+          resolve: facts.resolve,
+          timeZone: facts.timeZone,
+          today: facts.today,
+          dayOf: facts.dayOf,
+          targetMs: facts.targetMs,
+          served: facts.served
+        })))
+
+      const servings = (profileId: string) => keptServings(profileId).pipe(Effect.map((read) => read.items))
+
       // When the app starts, the Profiles that practised last have their
       // history read in the background, so their first Error Log opens as
       // quickly as the ones after it.
@@ -698,7 +791,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
         }).pipe(Effect.catchCause((cause) => Effect.logWarning(`The Error Log could not be read ahead: ${Cause.pretty(cause)}`)))
       )
 
-      return ErrorLog.of({ list, get, setMistakeType, retryState })
+      return ErrorLog.of({ list, get, setMistakeType, retryState, history, servings })
     })
   )
 }

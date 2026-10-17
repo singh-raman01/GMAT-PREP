@@ -3,10 +3,15 @@ import {
   type OfficialScoreKind,
   OfficialScoreKindNames,
   type OfficialScoreView,
-  type ScoreEstimates
+  type ScoreEstimates,
+  type ScoreTrendView
 } from "../../../src/api/Scores.ts"
 import { call } from "../api.ts"
+import { Figure, Legend, LineChart, type LineSeries, type Tone } from "../charts/charts.tsx"
+import { DaySteps } from "../charts/ticks.ts"
+import { calendarDay } from "../format.ts"
 import { useFocusOnMount } from "../focus.ts"
+import { dayNumber, dayOfNumber, shortDay } from "../progress/reading.ts"
 
 // Scores: the Profile's Score Estimates with the Total, and the Official
 // Scores that calibrate them.
@@ -61,6 +66,7 @@ export const ScoresPage = ({ onSessionLost, onStopped }: Props) => {
   const ids = { date: useId(), total: useId(), quant: useId(), verbal: useId(), di: useId() }
   const [estimates, setEstimates] = useState<ScoreEstimates>()
   const [official, setOfficial] = useState<ReadonlyArray<OfficialScoreView>>()
+  const [trend, setTrend] = useState<ScoreTrendView>()
   const [form, setForm] = useState<Form>(() => blankForm())
   const [problems, setProblems] = useState<ReadonlyArray<string>>([])
   const [saved, setSaved] = useState<string>()
@@ -72,14 +78,17 @@ export const ScoresPage = ({ onSessionLost, onStopped }: Props) => {
   )
 
   const load = useCallback(async () => {
-    const [read, listed] = await Promise.all([
+    const [read, listed, drawn] = await Promise.all([
       call((client) => client.scores.estimates()),
-      call((client) => client.scores.official())
+      call((client) => client.scores.official()),
+      call((client) => client.scores.trend())
     ])
     if (read._tag === "Failure") return handle(read.failure)
     if (listed._tag === "Failure") return handle(listed.failure)
+    if (drawn._tag === "Failure") return handle(drawn.failure)
     setEstimates(read.success)
     setOfficial(listed.success)
+    setTrend(drawn.success)
     setForm((current) => (current.takenOn === "" ? { ...current, takenOn: read.success.today } : current))
   }, [handle])
 
@@ -179,6 +188,7 @@ export const ScoresPage = ({ onSessionLost, onStopped }: Props) => {
             </>
           )}
       </section>
+      {trend !== undefined && <Trend trend={trend} />}
       <section className="group" aria-labelledby="official-title">
         <h2 id="official-title">Official Scores</h2>
         <p className="group-about">
@@ -257,5 +267,140 @@ export const ScoresPage = ({ onSessionLost, onStopped }: Props) => {
         {saved !== undefined && <p className="saved" role="status">{saved}</p>}
       </section>
     </>
+  )
+}
+
+const SectionTicks = [60, 65, 70, 75, 80, 85, 90]
+const TotalTicks = [205, 305, 405, 505, 605, 705, 805]
+
+const toneOf = (section: string): Tone => (section === "quant" || section === "verbal" || section === "di" ? section : "ink")
+
+// The Score trend: each Section's estimate at the end of each Study Day, on
+// its current line, with its likely range; the Total once all three have
+// one; and the Official Scores beside it.
+const Trend = ({ trend }: { readonly trend: ScoreTrendView }) => {
+  const days = [...new Set([...trend.sections.flatMap((each) => each.points.map((point) => point.day)), ...trend.total.map((point) => point.day)])]
+    .toSorted()
+  if (days.length === 0) return null
+  const domain = [dayNumber(days[0]!), Math.max(dayNumber(days.at(-1)!), dayNumber(days[0]!) + 1)] as const
+  const label = (x: number) => shortDay(dayOfNumber(x))
+  const sections: ReadonlyArray<LineSeries> = trend.sections.map((each) => ({
+    id: each.section.id,
+    label: each.section.name,
+    tone: toneOf(each.section.id),
+    points: each.points.map((point) => ({ x: dayNumber(point.day), y: point.score })),
+    band: each.points.map((point) => ({ x: dayNumber(point.day), low: point.low, high: point.high }))
+  }))
+  const total: LineSeries = {
+    id: "total",
+    label: "Total",
+    tone: "ink",
+    points: trend.total.map((point) => ({ x: dayNumber(point.day), y: point.score })),
+    band: trend.total.map((point) => ({ x: dayNumber(point.day), low: point.low, high: point.high }))
+  }
+  const latest = (points: ReadonlyArray<{ readonly day: string; readonly score: number }>) => points.at(-1)
+  const sectionWords = trend.sections.map((each) => {
+    const last = latest(each.points)
+    return last === undefined ? "" : `${each.section.name} ${last.score}`
+  }).filter((text) => text !== "").join(", ")
+  const official = trend.official.filter((score) => dayNumber(score.takenOn) >= domain[0] && dayNumber(score.takenOn) <= domain[1])
+  return (
+    <section className="group" aria-labelledby="trend-title">
+      <h2 id="trend-title">Score trend</h2>
+      <p className="group-about">
+        Each Section's estimate at the end of each Study Day you had one, on its scale as it stands now, with its likely
+        range shaded.
+      </p>
+      {days.length < 2
+        ? <p className="quiet">The trend draws once you have estimates on two Study Days.</p>
+        : (
+          <>
+            <Figure
+              title="Sections, 60 to 90"
+              chart={
+                <LineChart
+                  description={`Section Score Estimates from ${calendarDay(days[0]!)} to ${calendarDay(days.at(-1)!)}; latest ${sectionWords}.`}
+                  series={sections}
+                  xDomain={domain}
+                  xSteps={DaySteps}
+                  yDomain={[60, 90]}
+                  xLabel={label}
+                  yTicks={SectionTicks}
+                />
+              }
+              legend={<Legend series={sections} />}
+              numbers={
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Study Day</th>
+                      {trend.sections.map((each) => <th key={each.section.id} scope="col" className="number">{each.section.name}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {days.map((day) => (
+                      <tr key={day}>
+                        <th scope="row">{calendarDay(day)}</th>
+                        {trend.sections.map((each) => {
+                          const point = each.points.find((found) => found.day === day)
+                          return (
+                            <td key={each.section.id} className="number">
+                              {point === undefined ? "" : `${point.score} (${point.low} to ${point.high})`}
+                            </td>
+                          )
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              }
+            />
+            {trend.total.length > 0 && (
+              <Figure
+                title="Total, 205 to 805"
+                chart={
+                  <LineChart
+                    description={`Total Score Estimates; latest ${latest(trend.total)?.score}.${
+                      official.length === 0 ? "" : ` Official Scores: ${official.map((score) => `${score.total} on ${calendarDay(score.takenOn)}`).join(", ")}.`
+                    }`}
+                    series={[total]}
+                    markers={official.map((score) => ({
+                      x: dayNumber(score.takenOn),
+                      y: score.total,
+                      label: `${OfficialScoreKindNames[score.kind]}: ${score.total} on ${calendarDay(score.takenOn)}`
+                    }))}
+                    xDomain={domain}
+                    xSteps={DaySteps}
+                    yDomain={[205, 805]}
+                    xLabel={label}
+                    yTicks={TotalTicks}
+                  />
+                }
+                legend={official.length === 0 ? undefined : <p className="hint">Ringed in yellow: your Official Scores.</p>}
+                numbers={
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">Study Day</th>
+                        <th scope="col" className="number">Total</th>
+                        <th scope="col" className="number">Likely range</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {trend.total.map((point) => (
+                        <tr key={point.day}>
+                          <th scope="row">{calendarDay(point.day)}</th>
+                          <td className="number">{point.score}</td>
+                          <td className="number">{point.low} to {point.high}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                }
+              />
+            )}
+          </>
+        )}
+    </section>
   )
 }
