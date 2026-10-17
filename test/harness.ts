@@ -79,7 +79,7 @@ export class CopierFaults extends Context.Service<CopierFaults, {
   onCopy(to: RegExp, effect: Effect.Effect<void>): Effect.Effect<void>
 }>()("gmat-prep/test/CopierFaults") {}
 
-const SnapshotCopierTest = Layer.unwrap(
+export const SnapshotCopierTest = Layer.unwrap(
   Effect.gen(function*() {
     const faults = yield* Ref.make<ReadonlyArray<string>>([])
     const checkFaults = yield* Ref.make<ReadonlyArray<string>>([])

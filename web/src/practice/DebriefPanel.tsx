@@ -150,7 +150,11 @@ export const DebriefPanel = (
           </>
         )}
       <LessonLink skill={debrief.skill} />
-      {questionId !== undefined && <TutorPanel questionId={questionId} onFailure={onFailure} />}
+      {
+        // A Question served but never answered, as when a Sectional ends with
+        // it on screen, has nothing of the Learner's to discuss.
+        questionId !== undefined && response !== null && <TutorPanel questionId={questionId} onFailure={onFailure} />
+      }
     </section>
   )
 }

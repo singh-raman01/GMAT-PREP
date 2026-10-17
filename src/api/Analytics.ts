@@ -1,6 +1,7 @@
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
 import { Day } from "./day.ts"
+import { LessonPart } from "./Lessons.ts"
 import { Named, PracticeChoice, SessionId } from "./Practice.ts"
 import { ProfileSession } from "./Profiles.ts"
 
@@ -40,7 +41,11 @@ export class WeakAreaView extends Schema.Class<WeakAreaView>("gmat-prep/api/Weak
   // Its misses' Mistake Types, Slow and Guessed among them, the most first.
   mix: Schema.Array(Counted),
   // The Practice Set its button starts.
-  remedy: Schema.Struct({ timed: Schema.Boolean, choice: PracticeChoice })
+  remedy: Schema.Struct({ timed: Schema.Boolean, choice: PracticeChoice }),
+  // The part of its Lesson to read beside the set, from its most common
+  // Mistake Type: the whole Lesson for a Concept gap, the methods for a Wrong
+  // approach, else none. The page links it once the Lesson is approved.
+  lesson: Schema.NullOr(LessonPart)
 }) {}
 
 export class WeakAreasView extends Schema.Class<WeakAreasView>("gmat-prep/api/WeakAreasView")({

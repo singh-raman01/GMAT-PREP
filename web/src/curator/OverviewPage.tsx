@@ -88,6 +88,16 @@ const Overview = ({ overview }: { readonly overview: CuratorOverview }) => {
           <a {...linkProps("/curator/review")}>{plural(overview.reviewQueue, "item waits", "items wait")} in the Review Queue</a>
         </li>
         <li>
+          {overview.problemReports === 0 ? "No Problem Report from a Learner waits for a decision" : (
+            <>
+              <a {...linkProps("/curator/review")}>
+                {plural(overview.problemReports, "Problem Report from a Learner", "Problem Reports from Learners")}
+              </a>, on {plural(overview.reportedQuestions, "Question", "Questions")},{" "}
+              {overview.problemReports === 1 ? "waits" : "wait"} for a decision
+            </>
+          )}
+        </li>
+        <li>
           <a {...linkProps("/curator/siblings")}>{plural(overview.siblings, "Skill is", "Skills are")} running out of Siblings</a>,
           by Question Type
         </li>

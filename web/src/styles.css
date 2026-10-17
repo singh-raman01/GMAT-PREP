@@ -3562,6 +3562,14 @@ input[type="date"] {
   margin-top: 1rem;
 }
 
+/* Grid items keep their content's width unless told otherwise, so a long
+   link or formula would push the page sideways on a phone. */
+.tutor-chat > *,
+.tutor-form > *,
+.tutor-exchanges > li {
+  min-width: 0;
+}
+
 .tutor-exchanges {
   display: grid;
   gap: 1.25rem;
@@ -3579,11 +3587,19 @@ input[type="date"] {
   background: var(--hover);
   font-weight: 700;
   width: fit-content;
+  overflow-wrap: anywhere;
 }
 
 .tutor-reply {
   padding-left: 1rem;
   border-left: 4px solid var(--rule);
+  overflow-wrap: anywhere;
+}
+
+.tutor-note {
+  margin: 0.5rem 0 0;
+  color: var(--pencil);
+  font-size: var(--step--1);
 }
 
 .tutor-form label {
@@ -3615,8 +3631,17 @@ input[type="date"] {
   max-width: 30rem;
 }
 
+.tutor-refused {
+  max-width: 62ch;
+  margin: -0.75rem 0 1.75rem;
+}
+
 .my-reports {
   margin-top: 3.5rem;
+}
+
+.my-reports .error-stem {
+  flex: 1 1 100%;
 }
 
 /* Skipping the Diagnostic asks first, in the panel. */

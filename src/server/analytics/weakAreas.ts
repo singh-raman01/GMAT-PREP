@@ -89,6 +89,12 @@ export const topMistakeOf = (mix: ReadonlyMap<string, number>) =>
 export const topTrapOf = (traps: ReadonlyMap<string, number>) =>
   [...traps].toSorted((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))[0]?.[0] ?? null
 
+// The part of a Weak Area's Lesson its most common Mistake Type calls for
+// (decision 101): the whole Lesson for a Concept gap, its methods for a Wrong
+// approach.
+export const lessonPartFor = (topMistake: string | null): "whole" | "methods" | null =>
+  topMistake === "concept-gap" ? "whole" : topMistake === "wrong-approach" ? "methods" : null
+
 // Timed when the Skill is slow or its most common Mistake Type is one that
 // practice on the clock remedies.
 export const remedyOf = (slow: boolean, mix: ReadonlyMap<string, number>): Remedy => {

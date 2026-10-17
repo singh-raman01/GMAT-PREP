@@ -52,7 +52,8 @@ import {
   reviewItems,
   solverRuns,
   sources,
-  stimuli
+  stimuli,
+  tutorMessages
 } from "../db/schema.ts"
 import { SolverRuns } from "../books/enrichment.ts"
 import { JobStore } from "../jobs/JobStore.ts"
@@ -62,6 +63,7 @@ import { answered } from "../snapshots/rescores.ts"
 import { Snapshots } from "../snapshots/Snapshots.ts"
 import { runGate } from "./gate.ts"
 import { QuestionRefresh, RefreshCap } from "./refreshJob.ts"
+import { carryReports } from "./reportItems.ts"
 import { assignUndecided, releaseUnfitting } from "./reserve.ts"
 import { drafts } from "./stranded.ts"
 import { stimulusViews } from "../stimuli/stimuli.ts"
@@ -95,8 +97,9 @@ const readReasons = (json: string): ReadonlyArray<ReviewReason> => {
 
 type ItemRow = typeof reviewItems.$inferSelect
 
-// An item a Learner's report opened.
-const isReport = (row: ItemRow) => readReasons(row.reasons).some((reason) => reason.code === "problem-report")
+// The item gathering Learners' reports on a Question, which only the
+// Curator decides (decision 107).
+const isReport = (row: ItemRow) => row.kind === "report"
 
 // Reasons enrichment may settle when tried again after an unusable reply.
 const RetryCodes: ReadonlySet<string> = new Set(["tags", "approach-misses-key", "option-notes", "teaching-text", "not-enriched"])
@@ -297,12 +300,14 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
                 bookTitle: titles.find((book) => book.id === row.bookId)?.title ?? "",
                 number: row.page
               },
+              kind: isReport(row) ? "report" : "check",
               reasons,
               related: row.relatedQuestionId === null ? null : views.get(row.relatedQuestionId) ?? null,
               status: row.status as "open" | "decided",
               decision: row.decision as ReviewItemView["decision"],
-              // Text in doubt is not enriched at all, so trying again cannot help it.
-              checkable: row.status === "open" && question !== undefined &&
+              // Text in doubt is not enriched at all, so trying again cannot
+              // help it; a report waits for the Curator, not a check.
+              checkable: row.status === "open" && question !== undefined && !isReport(row) &&
                 !reasons.some((reason) => UnsureCodes.has(reason.code)) &&
                 (reasons.some((reason) => RetryCodes.has(reason.code)) || question.solverAnswers.length < SolverRuns),
               createdAt: row.createdAt
@@ -370,6 +375,20 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
           return updated!
         })
 
+      // The Question's other open items, of the given kind or any.
+      const decideOthers = (row: ItemRow, decision: string, kind?: "check" | "report") =>
+        Effect.gen(function*() {
+          const now = yield* Clock.currentTimeMillis
+          yield* db.update(reviewItems).set({ status: "decided", decision, decidedAt: now })
+            .where(and(
+              eq(reviewItems.questionId, row.questionId!),
+              eq(reviewItems.status, "open"),
+              ne(reviewItems.id, row.id),
+              kind === undefined ? undefined : eq(reviewItems.kind, kind)
+            ))
+            .pipe(Effect.orDie)
+        })
+
       const setQuestionStatus = (questionId: string, status: QuestionStatus) =>
         Effect.gen(function*() {
           const now = yield* Clock.currentTimeMillis
@@ -407,11 +426,14 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
           return yield* decide(row, "published")
         })).pipe(Effect.flatMap(viewOf), oneAtATime)
 
+      // Its other open items, a check's or Learners' reports, are decided
+      // with it, as nothing more can be done about a withdrawn Question.
       const withdraw = (id: ReviewItemId) =>
         inTransaction(Effect.gen(function*() {
           const row = yield* openItem(id, isQuestion)
           yield* setQuestionStatus(row.questionId!, "withdrawn")
           yield* releaseShrunk
+          yield* decideOthers(row, "withdrawn")
           return yield* decide(row, "withdrawn")
         })).pipe(Effect.flatMap(viewOf), oneAtATime)
 
@@ -485,9 +507,11 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
       // withdrawn, marked as merged into it, so a Learner's history with it
       // counts for the related one and its facts stay (ADR 0005). Items and
       // Questions that pointed at it point at the related one now, and so do
-      // Bookmarks; the related one is checked again if its Sources now
-      // disagree. A Key Override goes with the Sources it settled; a
-      // golden-set approval, which is of the Question's own item, goes.
+      // Bookmarks, Tutor Chat messages and Problem Reports; reports still
+      // waiting wait on the related one. The related one is checked again if
+      // its Sources now disagree. A Key Override goes with the Sources it
+      // settled; a golden-set approval, which is of the Question's own item,
+      // goes.
       const partsOf = (questionId: string) =>
         db.select({ id: parts.id, position: parts.position, key: parts.key, keyBasis: parts.keyBasis }).from(parts)
           .where(eq(parts.questionId, questionId)).orderBy(asc(parts.position)).pipe(Effect.orDie)
@@ -555,6 +579,10 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
             )).pipe(Effect.orDie)
             yield* db.update(bookmarks).set({ questionId: target }).where(eq(bookmarks.questionId, row.questionId!))
               .pipe(Effect.orDie)
+            yield* db.update(tutorMessages).set({ questionId: target }).where(eq(tutorMessages.questionId, row.questionId!))
+              .pipe(Effect.orDie)
+            yield* carryReports(row.questionId!, target).pipe(Effect.provideService(Db, db), Effect.orDie)
+            yield* decideOthers(row, "merged", "check")
             const now = yield* Clock.currentTimeMillis
             yield* db.update(questions).set({ status: "withdrawn", mergedInto: target, updatedAt: now })
               .where(eq(questions.id, row.questionId!)).pipe(Effect.orDie)
@@ -592,7 +620,8 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
       // Reasons about the key are settled; a changed key owes the Question new
       // Approaches and wrong-option notes, and its tags, Difficulty estimate
       // and solver runs are kept. Either way it goes back through the
-      // Publish Gate, in a job.
+      // Publish Gate, in a job. Changed through a report item, it decides
+      // that item.
       const overrideKey = (id: ReviewItemId, position: number, key: string, reason: string) =>
         Effect.gen(function*() {
           // A new key judges every past Response to the Question again, so a
@@ -640,6 +669,9 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
               updatedAt: now
             }).where(eq(questions.id, questionId)).pipe(Effect.orDie)
             yield* refresh([questionId], "Checking a Question after a Key Override")
+            // Changing the key is the Curator's decision on Learners' reports;
+            // a check's item waits for the Publish Gate.
+            if (isReport(row)) yield* decide(row, "key-changed")
             return row
           }))
           return yield* viewOf((yield* db.select().from(reviewItems).where(eq(reviewItems.id, row.id)).pipe(Effect.orDie))[0]!)
@@ -647,11 +679,12 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
 
       // Tries again what an unusable reply left out or got wrong: tags held
       // for are asked for again, Approaches and notes are written again, and
-      // missing solves are asked for, all in a job.
+      // missing solves are asked for, all in a job. A report item is not
+      // checked: the Question stays as it is until the Curator decides.
       const checkAgain = (id: ReviewItemId) =>
         Effect.gen(function*() {
           const row = yield* inTransaction(Effect.gen(function*() {
-            const row = yield* openItem(id, isQuestion)
+            const row = yield* openItem(id, (item) => isQuestion(item) && !isReport(item))
             const item = yield* viewOf(row)
             if (!item.checkable) return yield* new ReviewItemNotOpen({ item })
             const questionId = row.questionId!
