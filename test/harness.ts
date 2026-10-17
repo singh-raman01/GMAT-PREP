@@ -1,6 +1,6 @@
 import { BunHttpServer } from "@effect/platform-bun"
 import { Context, type Duration, Effect, type Fiber, Layer, Option, Ref } from "effect"
-import { Cookies, HttpClient, HttpClientRequest, HttpRouter, type HttpServer } from "effect/http"
+import { Cookies, HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/http"
 import { HttpApiClient } from "effect/http-api"
 import { TestClock } from "effect/testing"
 import { mkdtempSync } from "node:fs"
@@ -24,6 +24,7 @@ import type { Settings } from "../src/server/settings/Settings.ts"
 import { workerServices } from "../src/server/worker/services.ts"
 import { WorkerSupervisor } from "../src/server/worker/WorkerSupervisor.ts"
 import { FigureFiles } from "../src/server/books/FigureFiles.ts"
+import { lanListeners } from "../src/server/http/listeners.ts"
 import { ErrorLog } from "../src/server/learning/ErrorLog.ts"
 
 export const tempDataDir = () => mkdtempSync(join(tmpdir(), "gmat-prep-test-"))
@@ -163,8 +164,27 @@ export type WorkerTestServices =
 const clockStartsAt = (millis: number | undefined) =>
   millis === undefined ? Layer.empty : Layer.effectDiscard(TestClock.setTime(millis))
 
-export const appWithWorkersLayer = (dataDir: string, kinds: ReadonlyArray<AnyJobKind>, startAt?: number) => {
-  const server = HttpRouter.serve(AppRoutes, { disableListenLog: true, disableLogger: true }).pipe(
+// The app on 127.0.0.1 only, as tests mostly need it.
+const ServedOnLoopback = HttpRouter.serve(AppRoutes, { disableListenLog: true, disableLogger: true })
+
+// The app as main.ts serves it: also, in LAN mode, on each network address
+// the test gives, at the same port.
+const ServedWithLanListeners = Layer.effectDiscard(
+  Effect.gen(function*() {
+    const app = yield* HttpRouter.toHttpEffect(AppRoutes)
+    const server = yield* HttpServer.HttpServer
+    yield* server.serve(app)
+    const port = server.address._tag === "UnixPathAddress" ? 0 : server.address.port
+    yield* lanListeners(app, { port, maxRequestBodySize: 64 * 1024 * 1024 })
+  })
+)
+
+const appLayerServed = (served: typeof ServedOnLoopback | typeof ServedWithLanListeners) => (
+  dataDir: string,
+  kinds: ReadonlyArray<AnyJobKind>,
+  startAt?: number
+) => {
+  const server = served.pipe(
     Layer.provideMerge(makeAppServices(JobKinds.layer(kinds))),
     Layer.provide(WorkerSupervisor.layerIdle),
     Layer.provideMerge(SnapshotCopierTest),
@@ -177,6 +197,8 @@ export const appWithWorkersLayer = (dataDir: string, kinds: ReadonlyArray<AnyJob
   return testWorkersLayer(kinds).pipe(Layer.provideMerge(server), Layer.provideMerge(LlmTransportFake))
 }
 
+export const appWithWorkersLayer = appLayerServed(ServedOnLoopback)
+
 // The app with no worker running; the test starts workers when it wants them.
 // startAt sets the fake clock before the app starts.
 export const runWithWorkers = <A, E>(
@@ -185,6 +207,11 @@ export const runWithWorkers = <A, E>(
   dataDir: string = tempDataDir(),
   startAt?: number
 ): Promise<A> => Effect.runPromise(effect.pipe(Effect.provide(appWithWorkersLayer(dataDir, kinds, startAt))))
+
+// The app with LAN mode's listeners, which another device reaches at the
+// network addresses the test gives, with no worker running.
+export const runWithLanListeners = <A, E>(effect: Effect.Effect<A, E, WorkerTestServices>, dataDir: string = tempDataDir()): Promise<A> =>
+  Effect.runPromise(effect.pipe(Effect.provide(appLayerServed(ServedWithLanListeners)(dataDir, [ConnectionTest]))))
 
 // The app with one worker already running.
 export const runWithWorker = <A, E>(

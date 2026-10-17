@@ -1,19 +1,30 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, identity, Ref } from "effect"
-import { Cookies, HttpClient, HttpClientRequest } from "effect/http"
+import { Cookies, HttpClient, HttpClientRequest, HttpServer } from "effect/http"
 import { HttpApiClient } from "effect/http-api"
 import { TestClock } from "effect/testing"
-import { writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
+import net from "node:net"
 import { join } from "node:path"
 import { Api } from "../src/api/Api.ts"
+import { EventsPath } from "../src/api/Events.ts"
 import { InstallExportPath } from "../src/api/Exports.ts"
 import { RefusedHeader } from "../src/api/Lan.ts"
+import { AppConfig } from "../src/server/AppConfig.ts"
 import { Db } from "../src/server/db/Database.ts"
 import { curatorUnlocks, devices, lanMode, profileUnlocks } from "../src/server/db/schema.ts"
 import { Snapshots } from "../src/server/snapshots/Snapshots.ts"
 import { readTar } from "../src/server/snapshots/tar.ts"
 import { curatorBrowser, passphrase } from "./bookFlow.ts"
-import { openBrowser, runWithWorkers, tempDataDir, TestNetwork, TestRemoteHeader, type WorkerTestServices } from "./harness.ts"
+import {
+  openBrowser,
+  runWithLanListeners,
+  runWithWorkers,
+  tempDataDir,
+  TestNetwork,
+  TestRemoteHeader,
+  type WorkerTestServices
+} from "./harness.ts"
 
 // LAN mode (decisions 119 to 125): off by default; in LAN mode another
 // device on the network must pair with a 6-digit code shown on this
@@ -238,6 +249,78 @@ describe("LAN mode", () => {
     })))
 })
 
+const appPort = Effect.gen(function*() {
+  const server = yield* HttpServer.HttpServer
+  return server.address._tag === "UnixPathAddress" ? 0 : server.address.port
+})
+
+// A request written on a socket by hand, so that a test can hold back the end
+// of its body or read the reply slowly, and see what the server sends and
+// when it closes the connection.
+const socketTo = (host = "127.0.0.1") => Effect.gen(function*() {
+  const port = yield* appPort
+  return yield* Effect.promise(() =>
+    new Promise<{
+      readonly socket: net.Socket
+      readonly port: number
+      readonly reply: () => string
+      readonly bytes: () => number
+      readonly closed: () => boolean
+    }>((resolve) => {
+      const socket = net.connect({ host, port })
+      let reply = ""
+      let bytes = 0
+      let closed = false
+      socket.on("data", (chunk) => {
+        bytes += chunk.length
+        if (reply.length < 4096) reply += chunk.toString("latin1")
+      })
+      socket.on("error", () => {})
+      socket.on("close", () => (closed = true))
+      socket.on("connect", () => resolve({ socket, port, reply: () => reply, bytes: () => bytes, closed: () => closed }))
+    })
+  )
+})
+
+const sleep = (ms: number) => Effect.promise(() => Bun.sleep(ms))
+
+// This computer's network address, in tests with LAN mode's listeners.
+const LanAddress = "127.0.0.2"
+
+const listensOn = (host: string, port: number) =>
+  Effect.promise(() =>
+    new Promise<boolean>((resolve) => {
+      const socket = net.connect({ host, port })
+      socket.on("connect", () => {
+        socket.destroy()
+        resolve(true)
+      })
+      socket.on("error", () => resolve(false))
+    })
+  )
+
+const waitUntil = (check: Effect.Effect<boolean> | (() => boolean), ms: number) =>
+  Effect.gen(function*() {
+    const holds = Effect.isEffect(check) ? check : Effect.sync(check)
+    for (let waited = 0; waited < ms; waited += 25) {
+      if (yield* holds) return true
+      yield* sleep(25)
+    }
+    return yield* holds
+  })
+
+const headOf = (
+  request: { readonly method: string; readonly path: string; readonly port: number; readonly cookie: string; readonly remote?: string; readonly host?: string }
+) =>
+  `${request.method} ${request.path} HTTP/1.1\r\nHost: ${request.host ?? "127.0.0.1"}:${request.port}\r\nCookie: ${request.cookie}\r\n` +
+  (request.remote === undefined ? "" : `${TestRemoteHeader}: ${request.remote}\r\n`) + "Connection: close\r\n"
+
+// The status line and the refusal's reason, from a reply read off a socket.
+const statusOf = (reply: string) => ({
+  status: reply.split("\r\n")[0],
+  refused: /\r\nx-gp-refused: ([^\r]*)/i.exec(reply)?.[1]
+})
+
 describe("Moving the install", () => {
   test("leaves LAN mode, the paired devices and every unlock out of the archive, so the computer it moves to starts closed", async () => {
     const moved = tempDataDir()
@@ -297,4 +380,107 @@ describe("Moving the install", () => {
       expect(yield* send("/api/profiles", old.tablet, Tablet)).toEqual({ status: 403, refused: "not-paired" })
     }), undefined, moved)
   })
+})
+
+describe("Ending a device's access", () => {
+  test("a write a device began is refused and not carried out once it is revoked or LAN mode goes off", () =>
+    run(Effect.gen(function*() {
+      yield* network
+      const host = yield* curator
+      yield* host.curatorLan.setMode({ payload: { on: true } })
+      const revoke = Effect.gen(function*() {
+        const [paired] = (yield* host.curatorLan.view()).devices
+        yield* host.curatorLan.revoke({ params: { id: paired!.id } })
+      })
+      const lanOff = host.curatorLan.setMode({ payload: { on: false } })
+      for (const [remote, end, reason] of [[Tablet, revoke, "not-paired"], [Phone, lanOff, "lan-off"]] as const) {
+        const other = yield* device(remote)
+        yield* other.api.pairing.pair({ payload: { code: (yield* host.curatorLan.makeCode()).code, name: remote } })
+        const body = Buffer.from(JSON.stringify({ name: `Written from ${remote}`, timeZone: "UTC" }))
+        const write = yield* socketTo()
+        // The request's head and all but the end of its body go first.
+        write.socket.write(
+          headOf({ method: "POST", path: "/api/profiles", port: write.port, cookie: yield* other.cookie, remote }) +
+            `Content-Type: application/json\r\nContent-Length: ${body.length}\r\n\r\n`
+        )
+        write.socket.write(body.subarray(0, body.length - 2))
+        yield* sleep(300)
+        yield* end
+        // The device is refused before the end of the body arrives.
+        expect(yield* waitUntil(() => write.reply() !== "", 2000)).toBe(true)
+        write.socket.write(body.subarray(body.length - 2))
+        yield* waitUntil(write.closed, 2000)
+        expect([remote, statusOf(write.reply())]).toEqual([remote, { status: "HTTP/1.1 403 Forbidden", refused: reason }])
+      }
+      expect(yield* host.profiles.list()).toEqual([])
+    })))
+
+  test("a download a device began over the network stops once it is revoked or LAN mode goes off, and one on this computer goes on", () =>
+    runWithLanListeners(Effect.gen(function*() {
+      // This computer's network address is a loopback one, which the
+      // listeners listen on; the devices say where they are in a header.
+      yield* (yield* TestNetwork).setAddresses([
+        { address: "127.0.0.1", family: "IPv4", internal: true },
+        { address: LanAddress, family: "IPv4", internal: false }
+      ])
+      const host = yield* curatorBrowser
+      yield* host.api.curatorLan.setMode({ payload: { on: true } })
+      const port = yield* appPort
+      expect(yield* waitUntil(listensOn(LanAddress, port), 3000)).toBe(true)
+      // A large Book, so the archive takes a while to read.
+      const { dataDir } = yield* AppConfig
+      yield* Effect.sync(() => {
+        mkdirSync(join(dataDir, "books"), { recursive: true })
+        writeFileSync(join(dataDir, "books", `${"c".repeat(64)}.pdf`), new Uint8Array(48 * 1024 * 1024))
+      })
+      const archive = yield* host.api.curatorData.exportInstall()
+      const revoke = Effect.gen(function*() {
+        const live = (yield* host.api.curatorLan.view()).devices.filter((each) => each.revokedAt === null)
+        yield* host.api.curatorLan.revoke({ params: { id: live[0]!.id } })
+      })
+      const lanOff = host.api.curatorLan.setMode({ payload: { on: false } })
+      for (const [remote, end] of [[Tablet, revoke], [Phone, lanOff]] as const) {
+        const other = yield* device(remote)
+        yield* other.api.pairing.pair({ payload: { code: (yield* host.api.curatorLan.makeCode()).code, name: remote } })
+        yield* other.api.curatorAccess.unlock({ payload: { passphrase } })
+        const fromDevice = yield* socketTo(LanAddress)
+        fromDevice.socket.write(
+          headOf({ method: "GET", path: InstallExportPath, port, cookie: yield* other.cookie, remote, host: LanAddress }) + "\r\n"
+        )
+        const fromHost = yield* socketTo()
+        fromHost.socket.write(headOf({ method: "GET", path: InstallExportPath, port, cookie: host.cookie }) + "\r\n")
+        // Both begin, and read no further for now.
+        yield* waitUntil(() => fromDevice.bytes() > 0 && fromHost.bytes() > 0, 5000)
+        fromDevice.socket.pause()
+        fromHost.socket.pause()
+        expect([statusOf(fromDevice.reply()).status, statusOf(fromHost.reply()).status]).toEqual(["HTTP/1.1 200 OK", "HTTP/1.1 200 OK"])
+        yield* end
+        yield* sleep(200)
+        fromDevice.socket.resume()
+        fromHost.socket.resume()
+        expect(yield* waitUntil(() => fromDevice.closed() && fromHost.closed(), 10_000)).toBe(true)
+        expect([remote, fromDevice.bytes() < archive.size]).toEqual([remote, true])
+        expect([remote, fromHost.bytes() > archive.size]).toEqual([remote, true])
+      }
+    })), 60_000)
+
+  test("a device's event stream ends once LAN mode goes off, and this computer's stays open", () =>
+    run(Effect.gen(function*() {
+      yield* network
+      const host = yield* curatorBrowser
+      yield* host.api.curatorLan.setMode({ payload: { on: true } })
+      const tablet = yield* device(Tablet)
+      yield* tablet.api.pairing.pair({ payload: { code: (yield* host.api.curatorLan.makeCode()).code, name: "Tablet" } })
+      yield* tablet.api.curatorAccess.unlock({ payload: { passphrase } })
+      const fromTablet = yield* socketTo()
+      fromTablet.socket.write(headOf({ method: "GET", path: EventsPath, port: fromTablet.port, cookie: yield* tablet.cookie, remote: Tablet }) + "\r\n")
+      const fromHost = yield* socketTo()
+      fromHost.socket.write(headOf({ method: "GET", path: EventsPath, port: fromHost.port, cookie: host.cookie }) + "\r\n")
+      expect(yield* waitUntil(() => fromTablet.reply().includes("retry: 3000") && fromHost.reply().includes("retry: 3000"), 5000)).toBe(true)
+      yield* host.api.curatorLan.setMode({ payload: { on: false } })
+      expect(yield* waitUntil(fromTablet.closed, 2000)).toBe(true)
+      yield* sleep(500)
+      expect(fromHost.closed()).toBe(false)
+      fromHost.socket.destroy()
+    })))
 })
