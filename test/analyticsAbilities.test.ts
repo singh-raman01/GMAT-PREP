@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { EnoughEvidence, type RatedFact, scopeAbilities, SlowPace } from "../src/server/analytics/abilities.ts"
 import { frequenciesOf } from "../src/server/analytics/frequency.ts"
-import { mixesOf, remedyOf, weakAreasOf } from "../src/server/analytics/weakAreas.ts"
+import { mixesOf, remedyOf, topMistakeOf, topTrapOf, trapsOf, weakAreasOf } from "../src/server/analytics/weakAreas.ts"
 import { fitAbility } from "../src/server/ratings/model.ts"
 
 // Skill and Question Type Abilities, Weak Areas and their remedies
@@ -136,5 +136,23 @@ describe("Weak Areas", () => {
     expect(remedyOf(true, new Map())).toEqual({ timed: true })
     expect(remedyOf(false, new Map([["calculation-slip", 2], ["trap", 1]]))).toEqual({ timed: true })
     expect(remedyOf(false, new Map([["concept-gap", 2], ["wrong-approach", 2]]))).toEqual({ timed: false })
+  })
+})
+
+describe("What a Weak Area's plan remedies", () => {
+  test("its most common Mistake Type and Trap Pattern, ties broken the same way each time", () => {
+    const misses = [
+      { questionType: "quant.ps", primarySkill: "quant.percents", secondarySkills: [], kinds: ["trap", "calculation-slip"], traps: ["trap.extreme"] },
+      { questionType: "quant.ps", primarySkill: "quant.percents", secondarySkills: [], kinds: ["calculation-slip", "slow"], traps: ["trap.quantity"] },
+      { questionType: "quant.ps", primarySkill: "quant.ratios", secondarySkills: ["quant.percents"], kinds: ["trap"], traps: ["trap.quantity"] }
+    ]
+    const mixes = mixesOf(misses)
+    const traps = trapsOf(misses)
+    // trap and calculation-slip tie at 2; trap comes first in the Taxonomy.
+    expect(topMistakeOf(mixes.get("skill:quant.percents")!)).toBe("trap")
+    expect(topTrapOf(traps.get("skill:quant.percents")!)).toBe("trap.quantity")
+    expect(topTrapOf(traps.get("skill:quant.ratios")!)).toBe("trap.quantity")
+    expect(topMistakeOf(new Map([["slow", 4]]))).toBeNull()
+    expect(topTrapOf(new Map([["trap.b", 1], ["trap.a", 1]]))).toBe("trap.a")
   })
 })

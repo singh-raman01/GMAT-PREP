@@ -1,22 +1,21 @@
 import { eq } from "drizzle-orm"
 import { Clock, Effect } from "effect"
 import { Db } from "../db/Database.ts"
-import { difficulty, profiles, scoreEstimates } from "../db/schema.ts"
+import { difficulty, scoreEstimates } from "../db/schema.ts"
+import { dayRulesOf } from "../profiles/days.ts"
 import { ratedCounts, ratedHistory, sectionFit, type StudyClock } from "./history.ts"
 import { nextDifficulty } from "./model.ts"
 import { scoreLinesOf } from "./OfficialScores.ts"
 import { type ScoreLine, sectionEstimateOn, UncalibratedLine } from "./scale.ts"
 
-// The Profile's clock for Study Days: now, in its time zone and rollover
-// hour. Undefined when the Profile is gone.
+// The Profile's clock for Study Days: now, and its day rules. Undefined when
+// the Profile is gone.
 export const studyClockOf = (profileId: string) =>
   Effect.gen(function*() {
-    const db = yield* Db
-    const [profile] = yield* db.select({ timeZone: profiles.timeZone, rolloverHour: profiles.rolloverHour })
-      .from(profiles).where(eq(profiles.id, profileId))
-    if (profile === undefined) return undefined
+    const rules = yield* dayRulesOf(profileId)
+    if (rules === undefined) return undefined
     const now = yield* Clock.currentTimeMillis
-    return { now, timeZone: profile.timeZone, rolloverHour: profile.rolloverHour } satisfies StudyClock
+    return { now, rules } satisfies StudyClock
   })
 
 // A timed Session's Rated Responses, once it ends, each in turn: one moves

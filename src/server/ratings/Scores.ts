@@ -10,9 +10,10 @@ import {
   ScoreTrendView,
   TotalScoreView
 } from "../../api/Scores.ts"
-import { studyDayOf, studyDays } from "../../api/studyDay.ts"
+import { calendarDaysUnder, studyDaysUnder } from "../../api/studyDay.ts"
 import { Db } from "../db/Database.ts"
-import { officialScores, profiles, scoreEstimates } from "../db/schema.ts"
+import { dayRulesOf, DefaultRules } from "../profiles/days.ts"
+import { officialScores, scoreEstimates } from "../db/schema.ts"
 import { trendOf } from "../analytics/views.ts"
 import { namesOf } from "../practice/content.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
@@ -51,9 +52,8 @@ export class Scores extends Context.Service<Scores, {
       const todayOf = (profileId: string) =>
         Effect.gen(function*() {
           const now = yield* Clock.currentTimeMillis
-          const [profile] = yield* db.select({ timeZone: profiles.timeZone }).from(profiles)
-            .where(eq(profiles.id, profileId)).pipe(Effect.orDie)
-          return studyDayOf(now, profile?.timeZone ?? "UTC", 0)
+          const rules = (yield* dayRulesOf(profileId).pipe(Effect.provideService(Db, db))) ?? DefaultRules
+          return calendarDaysUnder(rules)(now)
         })
 
       const estimates = (profileId: string) =>
@@ -107,8 +107,7 @@ export class Scores extends Context.Service<Scores, {
       // current line, and the Official Scores beside them.
       const trend = (profileId: string) =>
         Effect.gen(function*() {
-          const [profile] = yield* db.select({ timeZone: profiles.timeZone, rolloverHour: profiles.rolloverHour }).from(profiles)
-            .where(eq(profiles.id, profileId)).pipe(Effect.orDie)
+          const rules = (yield* dayRulesOf(profileId).pipe(Effect.provideService(Db, db))) ?? DefaultRules
           const kept = yield* db.select({
             section: scoreEstimates.section,
             at: scoreEstimates.at,
@@ -117,7 +116,7 @@ export class Scores extends Context.Service<Scores, {
             order: sql<number>`${scoreEstimates}.rowid`
           }).from(scoreEstimates).where(eq(scoreEstimates.profileId, profileId)).pipe(Effect.orDie)
           const lines = yield* scoreLinesOf(profileId).pipe(Effect.provideService(Db, db), Effect.orDie)
-          const dayOf = studyDays(profile?.timeZone ?? "UTC", profile?.rolloverHour ?? 4)
+          const dayOf = studyDaysUnder(rules)
           const found = trendOf(kept.map((row) => ({ ...row, day: dayOf(row.at) })), lines)
           const day = (number: number) => new Date(number * DayMs).toISOString().slice(0, 10)
           return new ScoreTrendView({

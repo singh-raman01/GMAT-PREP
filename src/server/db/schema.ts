@@ -624,9 +624,12 @@ export const sessions = sqliteTable(
     // finished, or time when the clock ran out
     endedBy: text("ended_by"),
     createdAt: integer("created_at").notNull(),
-    finishedAt: integer("finished_at")
+    finishedAt: integer("finished_at"),
+    // The Plan Item it was started from, if any: the item is done once the
+    // Session ends (decision 90).
+    planItemId: text("plan_item_id")
   },
-  (t) => [index("sessions_profile").on(t.profileId, t.status)]
+  (t) => [index("sessions_profile").on(t.profileId, t.status), index("sessions_plan_item").on(t.planItemId)]
 )
 
 // Each Question a Session served, in order; what made it Seen.
@@ -777,4 +780,92 @@ export const scoreEstimates = sqliteTable(
     ratedResponses: integer("rated_responses").notNull()
   },
   (t) => [index("score_estimates_profile").on(t.profileId, t.section, t.at)]
+)
+
+// A change of a Profile's time zone or rollover hour (decision 92), in effect
+// from the rollover after it was made. The Profile's own row holds the first.
+export const profileDays = sqliteTable(
+  "profile_days",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    timeZone: text("time_zone").notNull(),
+    rolloverHour: integer("rollover_hour").notNull(),
+    // When it takes effect: a rollover under the rule before it.
+    from: integer("from").notNull(),
+    setAt: integer("set_at").notNull()
+  },
+  (t) => [index("profile_days_profile").on(t.profileId, t.from)]
+)
+
+// What a Profile's Study Plan is built from, a row for each change; the
+// latest applies (decision 81).
+export const planSettings = sqliteTable(
+  "plan_settings",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    // The test's date as YYYY-MM-DD, or none.
+    testDate: text("test_date"),
+    targetTotal: integer("target_total"),
+    weeklyMinutes: integer("weekly_minutes").notNull(),
+    // JSON: the weekdays with no study, 0 for Sunday.
+    daysOff: text("days_off").notNull(),
+    diagnosticSkipped: integer("diagnostic_skipped", { mode: "boolean" }).notNull(),
+    setAt: integer("set_at").notNull()
+  },
+  (t) => [index("plan_settings_profile").on(t.profileId, t.setAt)]
+)
+
+// Study Plan versions (decision 90), append-only: each covers its Study Day
+// on, until the next one.
+export const planVersions = sqliteTable(
+  "plan_versions",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    builtAt: integer("built_at").notNull(),
+    // The Study Day it plans from, as YYYY-MM-DD.
+    fromDay: text("from_day").notNull(),
+    // JSON: what decides when to build again.
+    basis: text("basis").notNull(),
+    // JSON: the settings and state it was built from.
+    inputs: text("inputs").notNull(),
+    // JSON: the plan's notes, and each Study Day's planned time and phase.
+    outline: text("outline").notNull()
+  },
+  (t) => [uniqueIndex("plan_versions_profile_version").on(t.profileId, t.version)]
+)
+
+export const planItems = sqliteTable(
+  "plan_items",
+  {
+    id: text("id").primaryKey(),
+    versionId: text("version_id").notNull().references(() => planVersions.id, { onDelete: "cascade" }),
+    day: text("day").notNull(),
+    position: integer("position").notNull(),
+    kind: text("kind").notNull(),
+    // JSON: the item as the builder planned it.
+    item: text("item").notNull(),
+    minutes: integer("minutes").notNull(),
+    // planned or dropped; done is worked out from the Sessions started from it.
+    status: text("status").notNull(),
+    reason: text("reason")
+  },
+  (t) => [index("plan_items_version").on(t.versionId, t.day)]
+)
+
+// The Learner's note on a Study Day (decision 91), append-only; the latest
+// for a day is the one shown.
+export const dailyNotes = sqliteTable(
+  "daily_notes",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    day: text("day").notNull(),
+    note: text("note").notNull(),
+    writtenAt: integer("written_at").notNull()
+  },
+  (t) => [index("daily_notes_profile_day").on(t.profileId, t.day)]
 )

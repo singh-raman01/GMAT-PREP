@@ -14,6 +14,7 @@ import { SectionalsApi } from "./Sectionals.ts"
 import { ProfilesApi, SessionApi } from "./Profiles.ts"
 import { RetriesApi } from "./Retries.ts"
 import { AnalyticsApi } from "./Analytics.ts"
+import { PlanApi } from "./Plan.ts"
 import { ReviewApi } from "./Review.ts"
 import { ScoresApi } from "./Scores.ts"
 import { OverviewApi } from "./Overview.ts"
@@ -52,6 +53,7 @@ export class Api extends HttpApi.make("gmat-prep")
   .add(ErrorLogApi)
   .add(RetriesApi)
   .add(AnalyticsApi)
+  .add(PlanApi)
   .add(CuratorAccessApi)
   .add(CuratorSessionApi)
   .add(SettingsApi)

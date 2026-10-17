@@ -19,6 +19,8 @@ export interface PoolQuestion {
   readonly released: boolean
   // The passage it asks about, shared with the passage's other Questions.
   readonly stimulusId: string | null
+  // The Trap Patterns its options carry, read only when a choice names one.
+  readonly trapPatterns?: ReadonlyArray<string>
 }
 
 // What a Profile has done with Questions.
@@ -58,6 +60,7 @@ export const matchesFilters = (question: PoolQuestion, filters: FilterChoice, hi
   (filters.questionType === undefined || question.questionType === filters.questionType) &&
   (filters.skill === undefined || question.primarySkill === filters.skill ||
     question.secondarySkills.includes(filters.skill)) &&
+  (filters.trapPattern === undefined || (question.trapPatterns ?? []).includes(filters.trapPattern)) &&
   (filters.band === undefined || bandOf(question.difficulty) === filters.band) &&
   statusFits(filters.status, question.id, history)
 
@@ -69,7 +72,8 @@ export interface Picked {
 
 // The Questions the filters match, in hash order, up to the set size. Under
 // any status, unseen Questions come before Seen ones; under a Skill, those
-// whose primary Skill it is come before those that have it as a secondary.
+// whose primary Skill it is come before those that have it as a secondary;
+// pitched at a difficulty, the nearest to it come first.
 // A passage's matching Questions are taken together, in the order the Bank
 // holds them, which is the order the Book prints them, at the place of the
 // best of them, so a set serves them one after another; the set size may
@@ -90,8 +94,13 @@ export const pickByFilters = (
     units.set(key, [...(units.get(key) ?? []), question])
   }
   const best = (members: ReadonlyArray<PoolQuestion>) => Math.min(...members.map(rank))
+  // A passage's distance is its Questions' mean difficulty's.
+  const distance = (members: ReadonlyArray<PoolQuestion>) =>
+    filters.near === undefined
+      ? 0
+      : Math.abs(members.reduce((sum, member) => sum + member.difficulty, 0) / members.length - filters.near)
   const ordered = hashOrder([...units].map(([id, members]) => ({ id, members })), salt)
-    .toSorted((a, b) => best(a.members) - best(b.members))
+    .toSorted((a, b) => best(a.members) - best(b.members) || distance(a.members) - distance(b.members))
   return {
     questionIds: ordered.flatMap((unit) => unit.members).slice(0, filters.size).map((question) => question.id),
     matching: matching.length

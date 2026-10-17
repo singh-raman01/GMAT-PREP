@@ -30,13 +30,18 @@ const ItemNumber = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))
 // Debriefs at the end; an untimed one shows each Debrief straight away.
 const Timed = Schema.optional(Schema.Boolean)
 
+// A Study Plan set (decision 88) also names a Trap Pattern its Questions'
+// options carry, and the difficulty to pitch at: the matching Questions
+// nearest it come first.
 export const FilterChoice = Schema.Struct({
   kind: Schema.Literal("filters"),
   timed: Timed,
   section: Schema.optional(Schema.String),
   questionType: Schema.optional(Schema.String),
   skill: Schema.optional(Schema.String),
+  trapPattern: Schema.optional(Schema.String),
   band: Schema.optional(DifficultyBand),
+  near: Schema.optional(Schema.Number.check(Schema.isBetween({ minimum: -6, maximum: 6 }))),
   status: StatusFilter,
   size: SetSize
 })

@@ -20,8 +20,9 @@ import {
 } from "../../api/ErrorLog.ts"
 import { MistakesView, Named, ResponseView, ServedView, SessionId } from "../../api/Practice.ts"
 import { QuestionId } from "../../api/Review.ts"
-import { studyDayOf, studyDays } from "../../api/studyDay.ts"
+import { calendarDaysUnder, studyDaysUnder } from "../../api/studyDay.ts"
 import { Db } from "../db/Database.ts"
+import { dayRulesOf, DefaultRules } from "../profiles/days.ts"
 import { books, mistakeLabels, profiles, questions, responses, retrySkips, servedQuestions, sessions } from "../db/schema.ts"
 import { debriefOf, namesOf, practiceQuestion, storedQuestions } from "../practice/content.ts"
 import { bookmarkedBy, heldBySections, isCorrect, mergeTargets } from "../practice/history.ts"
@@ -100,10 +101,13 @@ interface Facts {
   readonly resolve: (questionId: string) => string
   readonly labels: ReadonlyMap<string, string>
   readonly ladders: ReadonlyMap<string, EntryLadder>
+  // The time zone in effect now.
   readonly timeZone: string
-  // Today's Study Day, in the Profile's time zone and rollover hour.
+  // Today's Study Day, under the Profile's day rules.
   readonly today: number
   readonly dayOf: (at: number) => number
+  // A moment's calendar date in the time zone in effect then.
+  readonly dateOf: (at: number) => number
   readonly targetMs: (questionId: string) => number
   // Each timed Session's served rows.
   readonly served: ReadonlyMap<string, ReadonlyArray<ServedRow>>
@@ -330,12 +334,10 @@ export class ErrorLog extends Context.Service<ErrorLog, {
               ? eq(mistakeLabels.profileId, profileId)
               : and(eq(mistakeLabels.profileId, profileId), inArray(mistakeLabels.responseId, missed))!
           ))
-          const [profile] = yield* run(
-            db.select({ timeZone: profiles.timeZone, rolloverHour: profiles.rolloverHour }).from(profiles)
-              .where(eq(profiles.id, profileId))
-          )
-          const timeZone = profile?.timeZone ?? "UTC"
-          const dayOf = studyDays(timeZone, profile?.rolloverHour ?? 4)
+          const rules = (yield* dayRulesOf(profileId).pipe(Effect.provideService(Db, db))) ?? DefaultRules
+          const timeZone = rules.at(-1)!.timeZone
+          const dayOf = studyDaysUnder(rules)
+          const dateOf = calendarDaysUnder(rules)
           const skips = yield* run(db.select().from(retrySkips).where(and(eq(retrySkips.profileId, profileId), skipsWhere)))
           const ladders = laddersOf({
             misses,
@@ -361,6 +363,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             timeZone,
             today: dayOf(yield* Clock.currentTimeMillis),
             dayOf,
+            dateOf,
             targetMs: (questionId: string) => questionFacts.get(questionId)?.targetMs ?? 0,
             served
           } satisfies Facts
@@ -549,8 +552,8 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           ladder: ladderView(entry.ladder)
         })
 
-      const matches = (entry: Entry, filters: ErrorLogFilters, timeZone: string) => {
-        const day = () => studyDayOf(entry.latest.at, timeZone, 0)
+      const matches = (entry: Entry, filters: ErrorLogFilters, dateOf: (at: number) => number) => {
+        const day = () => dateOf(entry.latest.at)
         const question = entry.question
         return (filters.section === undefined || question.section === filters.section) &&
           (filters.skill === undefined || question.primarySkill === filters.skill || question.secondarySkills.includes(filters.skill)) &&
@@ -619,7 +622,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           const held = yield* run(heldBySections(profileId))
           const all = entriesOf(facts)
           const shown = all.filter((entry) => !held.has(entry.questionId))
-          const matched = shown.filter((entry) => matches(entry, filters, facts.timeZone))
+          const matched = shown.filter((entry) => matches(entry, filters, facts.dateOf))
           const titles = yield* bookNames(facts.timeZone)
           // The page starts after the entry the last one ended on, wherever
           // that entry is now: a label change can take it out of the filter.

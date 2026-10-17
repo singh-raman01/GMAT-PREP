@@ -67,6 +67,7 @@ export interface WeakAreaState {
 export interface RetryDue {
   // The Study Day it falls due.
   readonly day: string
+  readonly timed: boolean
   readonly minutes: number
   // The Priority of the Weak Area of its primary Skill, 0 for none.
   readonly priority: number
@@ -119,7 +120,9 @@ export interface PlannedItem {
   readonly day: string
   readonly kind: "mock" | "sectional" | "retries" | "practice"
   readonly diagnostic: boolean
+  readonly timed: boolean
   readonly section: SectionId | null
+  // How many Retries.
   readonly count: number | null
   readonly practice: PracticeParams | null
   readonly weakArea: { readonly kind: "skill" | "questionType"; readonly id: string; readonly name: string; readonly priority: number } | null
@@ -172,6 +175,7 @@ const fittingSize = (room: number, paceMs: number) => {
 const item = (day: number, fields: Partial<PlannedItem> & Pick<PlannedItem, "kind" | "minutes">): PlannedItem => ({
   day: dayOfNumber(day),
   diagnostic: false,
+  timed: fields.kind !== "practice" && fields.kind !== "retries" ? true : fields.practice?.timed ?? false,
   section: null,
   count: null,
   practice: null,
@@ -398,14 +402,18 @@ export const buildPlan = ({ settings, state }: PlanInputs): Plan => {
       used += retry.minutes
     }
     carried = due.slice(taken.length)
+    // One Retries item for each timing, as each is a set of its own.
     const chosen: Array<PlannedItem> = []
-    if (taken.length > 0) {
+    const retryPriority = new Map<boolean, number>()
+    for (const timed of [false, true]) {
+      const group = taken.filter((retry) => retry.timed === timed)
+      if (group.length === 0) continue
+      retryPriority.set(timed, Math.max(...group.map((retry) => retry.priority)))
       chosen.push(item(day, {
         kind: "retries",
-        count: taken.length,
-        minutes: used,
-        weakArea: null,
-        remedy: null
+        timed,
+        count: group.length,
+        minutes: group.reduce((sum, retry) => sum + retry.minutes, 0)
       }))
     }
     room -= used
@@ -456,7 +464,7 @@ export const buildPlan = ({ settings, state }: PlanInputs): Plan => {
 
     // A Retries item takes the Priority of its highest Retry.
     const priorityOf = (each: PlannedItem) =>
-      each.kind === "retries" ? Math.max(...taken.map((retry) => retry.priority)) : each.weakArea?.priority ?? -1
+      each.kind === "retries" ? retryPriority.get(each.timed)! : each.weakArea?.priority ?? -1
     const ordered = chosen.map((each, index) => ({ each, index }))
       .toSorted((a, b) => priorityOf(b.each) - priorityOf(a.each) || a.index - b.index)
       .map(({ each }) => each)

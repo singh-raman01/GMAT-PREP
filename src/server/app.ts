@@ -7,6 +7,7 @@ import { DatabaseLive } from "./db/Database.ts"
 import { Generation } from "./generation/Generation.ts"
 import { JobFeed } from "./events/JobFeed.ts"
 import { ErrorLog } from "./learning/ErrorLog.ts"
+import { Plans } from "./plans/Plans.ts"
 import { Retries } from "./learning/Retries.ts"
 import { Analytics } from "./analytics/Analytics.ts"
 import { SiblingsReport } from "./learning/SiblingsReport.ts"
@@ -45,22 +46,25 @@ const RemoveUploadLeftovers = Layer.effectDiscard(
 
 // Domain services over the opened, migrated database, for the given job
 // kinds. Requires AppConfig.
-export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Layer.mergeAll(
-  Profiles.layer,
-  Curator.layer,
-  JobFeed.layer,
-  Books.layer,
-  ReviewQueue.layer,
-  Golden.layer,
-  Overview.layer,
-  Generation.layer,
-  Mocks.layer,
-  Retries.layer,
-  Analytics.layer,
-  Scores.layer,
-  PaperMarks.layer,
-  RemoveUploadLeftovers
-).pipe(
+export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Plans.layer.pipe(
+  // The Study Plan, over what it starts and reads.
+  Layer.provideMerge(Layer.mergeAll(
+    Profiles.layer,
+    Curator.layer,
+    JobFeed.layer,
+    Books.layer,
+    ReviewQueue.layer,
+    Golden.layer,
+    Overview.layer,
+    Generation.layer,
+    Mocks.layer,
+    Retries.layer,
+    Scores.layer,
+    PaperMarks.layer,
+    RemoveUploadLeftovers
+  )),
+  // The analytics, which Retries order their steps by.
+  Layer.provideMerge(Analytics.layer),
   // One of each, shared: the Sectional engine Mocks run their Sections on,
   // the Practice and Error Log services Retries build on, and the Bank and
   // Siblings counts the Curator's Overview reads.

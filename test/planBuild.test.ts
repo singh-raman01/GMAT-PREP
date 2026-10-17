@@ -135,12 +135,21 @@ describe("Mocks", () => {
 
 describe("Each day's items", () => {
   test("due Retries take at most a fifth of the day, and the rest wait for the next day", () => {
-    const retries = Array.from({ length: 12 }, (_, index) => ({ day: Monday, minutes: 3, priority: index % 2 === 0 ? 0.3 : 0 }))
+    const retries = Array.from({ length: 12 }, (_, index) => ({ day: Monday, timed: false, minutes: 3, priority: index % 2 === 0 ? 0.3 : 0 }))
     const plan = buildPlan(inputs({}, { retries }))
     const monday = itemsOn(plan, Monday).find((item) => item.kind === "retries")!
     // 100 minutes: at most 20 for Retries, 6 of them.
-    expect(monday).toMatchObject({ count: 6, minutes: 18 })
+    expect(monday).toMatchObject({ count: 6, minutes: 18, timed: false })
     expect(itemsOn(plan, plus(Monday, 1)).find((item) => item.kind === "retries")).toMatchObject({ count: 6 })
+  })
+
+  test("untimed and timed Retries are two items, each a set of its own", () => {
+    const retries = [
+      { day: Monday, timed: false, minutes: 3, priority: 0 },
+      { day: Monday, timed: true, minutes: 4, priority: 0.5 }
+    ]
+    const monday = itemsOn(buildPlan(inputs({}, { retries })), Monday).filter((item) => item.kind === "retries")
+    expect(monday.map((item) => [item.timed, item.count, item.minutes])).toEqual([[true, 1, 4], [false, 1, 3]])
   })
 
   test("items follow their Weak Area's Priority and items for none come last", () => {
@@ -214,7 +223,7 @@ describe("Study Plan properties", () => {
       diagnostic: state.diagnostic,
       diagnosticSections: state.diagnostic === "pending" ? ["quant", "verbal", "di"] : [],
       allowed: { quant: state.allowed, verbal: state.allowed, di: state.allowed },
-      retries: state.retries.map((retry) => ({ day: plus(Monday, retry.offset), minutes: retry.minutes, priority: retry.priority })),
+      retries: state.retries.map((retry) => ({ day: plus(Monday, retry.offset), timed: retry.offset % 2 === 0, minutes: retry.minutes, priority: retry.priority })),
       doneToday: state.doneToday
     })
 
