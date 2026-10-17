@@ -456,11 +456,16 @@ export class Practice extends Context.Service<Practice, {
         }
       ) =>
         Effect.gen(function*() {
-          const stored = (yield* run(storedQuestions([row.questionId]))).get(row.questionId)
+          // A Question since merged shows as served, judged by the one it
+          // became, as the Error Log judges it.
+          const target = context.resolve(row.questionId)
+          const read = yield* run(storedQuestions([...new Set([row.questionId, target])]))
+          const stored = read.get(row.questionId)
           if (stored === undefined) return yield* Effect.die(new Error(`Served Question ${row.questionId} is missing`))
+          const judged = read.get(target) ?? stored
           const response = finalFor(context.answers, row.questionId)
           const selection = response === undefined ? [] : readSelection(response.selection)
-          const keys = stored.parts.map((part) => ({ position: part.position, key: part.key }))
+          const keys = judged.parts.map((part) => ({ position: part.position, key: part.key }))
           // A timed set keeps its Debriefs, and whether answers were right,
           // for the end.
           const over = session.status === "finished"
@@ -487,7 +492,7 @@ export class Practice extends Context.Service<Practice, {
               rated: context.rated.has(response.id),
               timedOut: response.kind === "time-out"
             }),
-            debrief: shown ? debriefOf(stored, selection, names) : null,
+            debrief: shown ? debriefOf(judged, selection, names) : null,
             mistakes
           })
         })

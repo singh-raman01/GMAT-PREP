@@ -506,12 +506,17 @@ export class Sectionals extends Context.Service<Sectionals, {
         final: ResponseRow | undefined
       ) =>
         Effect.gen(function*() {
-          const stored = (yield* run(storedQuestions([row.questionId]))).get(row.questionId)
+          // A Question since merged shows as served, judged by the one it
+          // became, as the Error Log judges it.
+          const target = context.resolve(row.questionId)
+          const read = yield* run(storedQuestions([...new Set([row.questionId, target])]))
+          const stored = read.get(row.questionId)
           if (stored === undefined) return yield* Effect.die(new Error(`Served Question ${row.questionId} is missing`))
+          const judged = read.get(target) ?? stored
           const over = context.revealed
           const question = practiceQuestion(stored, names, null)
           const selection = final === undefined ? [] : readSelection(final.selection)
-          const keys = stored.parts.map((part) => ({ position: part.position, key: part.key }))
+          const keys = judged.parts.map((part) => ({ position: part.position, key: part.key }))
           const rated = over && final !== undefined
             ? (yield* run(ratedAmong(session.profileId, [row.questionId]))).has(final.id)
             : false
@@ -536,7 +541,7 @@ export class Sectionals extends Context.Service<Sectionals, {
               rated,
               timedOut: final.kind === "time-out"
             }),
-            debrief: over ? debriefOf(stored, selection, names) : null,
+            debrief: over ? debriefOf(judged, selection, names) : null,
             mistakes
           })
         })

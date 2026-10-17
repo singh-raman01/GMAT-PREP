@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react"
-import type { ErrorLogDetail, ErrorLogEntry, ErrorLogFilters, ErrorLogView } from "../../../src/api/ErrorLog.ts"
+import {
+  cursorOf,
+  type ErrorLogDetail,
+  type ErrorLogEntry,
+  type ErrorLogFilters,
+  ErrorLogPageSize,
+  type ErrorLogView
+} from "../../../src/api/ErrorLog.ts"
 import { bandNames } from "../../../src/api/difficulty.ts"
 import type { PracticeQuestion } from "../../../src/api/Practice.ts"
 import { call } from "../api.ts"
@@ -81,7 +88,13 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
   const ids = { from: useId(), to: useId(), base: useId() }
   const [filters, setFilters] = useState<Filters>({})
   const [log, setLog] = useState<ErrorLogView>()
-  const [entries, setEntries] = useState<ReadonlyArray<ErrorLogEntry>>([])
+  const [entries, setEntriesState] = useState<ReadonlyArray<ErrorLogEntry>>([])
+  // The entries shown, for the requests that follow the last of them.
+  const shown = useRef<ReadonlyArray<ErrorLogEntry>>([])
+  const setEntries = useCallback((next: (current: ReadonlyArray<ErrorLogEntry>) => ReadonlyArray<ErrorLogEntry>) => {
+    shown.current = next(shown.current)
+    setEntriesState(shown.current)
+  }, [])
   const [open, setOpen] = useState<string>()
   const [more, setMore] = useState(false)
   // The filters start open on a wide screen, folded on a narrow one.
@@ -100,15 +113,22 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
       if (mine !== request.current) return
       if (result._tag === "Failure") return handle(result.failure)
       setLog(result.success)
-      setEntries(result.success.entries)
+      setEntries(() => result.success.entries)
     })
-  }, [filters, handle])
+  }, [filters, handle, setEntries])
+
+  // The next page follows the last entry shown, wherever a label change has
+  // since put it.
+  const after = () => {
+    const last = shown.current.at(-1)
+    return last === undefined ? {} : { after: cursorOf(last) }
+  }
 
   const showMore = async () => {
     if (more) return
     setMore(true)
     const mine = request.current
-    const result = await call((client) => client.errorLog.list({ query: { ...filters, offset: entries.length } }))
+    const result = await call((client) => client.errorLog.list({ query: { ...filters, ...after() } }))
     setMore(false)
     if (mine !== request.current) return
     if (result._tag === "Failure") return handle(result.failure)
@@ -117,15 +137,18 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
   }
 
   // A label changed in an open entry: the entry shows it at once, and the
-  // counts follow without moving the list.
+  // counts follow without moving the list, even when the entry no longer
+  // matches the filters.
   const changed = useCallback((entry: ErrorLogEntry) => {
     setEntries((current) => current.map((each) => (each.questionId === entry.questionId ? entry : each)))
     const mine = request.current
-    void call((client) => client.errorLog.list({ query: { ...filters, limit: 1 } })).then((result) => {
+    const last = shown.current.at(-1)
+    const query = { ...filters, ...(last === undefined ? {} : { after: cursorOf(last) }), limit: 0 }
+    void call((client) => client.errorLog.list({ query })).then((result) => {
       if (mine !== request.current || result._tag === "Failure") return
       setLog((current) => (current === undefined ? current : { ...current, ...result.success, entries: current.entries }))
     })
-  }, [filters])
+  }, [filters, setEntries])
 
   const set = (key: keyof Filters, value: string) =>
     setFilters((current) => {
@@ -151,11 +174,15 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
       </p>
       {log !== undefined && log.held > 0 && (
         <p className="hint">
-          {plural(log.held, "entry is", "entries are")} in your Sectional or Mock, and come back once it ends.
+          {log.held === 1
+            ? "1 entry waits while its Question is in your Sectional or Mock. It comes back once that ends."
+            : `${log.held} entries wait while their Questions are in your Sectional or Mock. They come back once that ends.`}
         </p>
       )}
       {log === undefined ? <p className="quiet" aria-busy="true">Reading your Error Log</p> : log.total === 0
-        ? <p className="empty">Nothing yet. Questions you miss in Practice Sets, Sectionals and Mocks come here.</p>
+        ? log.held > 0
+          ? null
+          : <p className="empty">Nothing yet. Questions you miss in Practice Sets, Sectionals and Mocks come here.</p>
         : (
           <>
             <details className="error-filters" open={filtersOpen} onToggle={(event) => setFiltersOpen(event.currentTarget.open)}>
@@ -181,11 +208,11 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
                     </div>
                   )
                 })}
-                <div className="field">
+                <div className="field field-date">
                   <label htmlFor={ids.from}>Missed from</label>
                   <input id={ids.from} type="date" value={filters.from ?? ""} onChange={(event) => set("from", event.target.value)} />
                 </div>
-                <div className="field">
+                <div className="field field-date">
                   <label htmlFor={ids.to}>Missed to</label>
                   <input id={ids.to} type="date" value={filters.to ?? ""} onChange={(event) => set("to", event.target.value)} />
                 </div>
@@ -210,10 +237,10 @@ export const ErrorLogPage = ({ onSessionLost, onStopped }: Props) => {
                 />
               ))}
             </ol>
-            {entries.length < log.matching && (
+            {log.more > 0 && (
               <div className="actions">
                 <button type="button" className="button button-quiet" onClick={() => void showMore()} disabled={more}>
-                  Show {Math.min(log.matching - entries.length, 50)} more
+                  Show {Math.min(log.more, ErrorLogPageSize)} more
                 </button>
               </div>
             )}

@@ -191,6 +191,10 @@ mark {
   background: var(--hover);
 }
 
+.unsaved p {
+  margin: 0 0 0.5rem;
+}
+
 .topbar {
   display: flex;
   flex-wrap: wrap;
@@ -2750,9 +2754,17 @@ input[type="date"] {
   margin-top: 0.5rem;
 }
 
-.filter-grid select,
-.filter-grid input[type="date"] {
+.filter-grid select {
   width: 100%;
+}
+
+/* A date field needs more room than a column gives it. */
+.filter-grid .field-date {
+  grid-column: span 2;
+}
+
+.filter-grid input[type="date"] {
+  max-width: 100%;
 }
 
 .filter-count {
