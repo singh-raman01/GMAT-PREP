@@ -1,4 +1,4 @@
-import { useCallback, useId, useRef, useState } from "react"
+import { useCallback, useEffect, useId, useRef, useState } from "react"
 import type { DailyLogDay } from "../../../src/api/Plan.ts"
 import { call } from "../api.ts"
 import { hoursAndMinutes, longDay } from "../format.ts"
@@ -26,6 +26,16 @@ const Note = ({ day, onSaved }: { readonly day: DailyLogDay; readonly onSaved: (
   const [text, setText] = useState(day.note ?? "")
   const [problem, setProblem] = useState<string>()
   const busy = useRef(false)
+  const field = useRef<HTMLTextAreaElement>(null)
+  const opener = useRef<HTMLButtonElement>(null)
+  // Focus follows the editor: into it when it opens, back to its button
+  // when it closes.
+  const opened = useRef(false)
+  useEffect(() => {
+    if (editing) field.current?.focus()
+    else if (opened.current) opener.current?.focus()
+    opened.current = editing
+  }, [editing])
   const save = async () => {
     if (busy.current) return
     busy.current = true
@@ -33,14 +43,21 @@ const Note = ({ day, onSaved }: { readonly day: DailyLogDay; readonly onSaved: (
     busy.current = false
     if (result._tag === "Failure") return setProblem("The note was not saved. Try again.")
     setProblem(undefined)
+    setText(result.success.note ?? "")
     setEditing(false)
     onSaved(result.success)
+  }
+  // Cancel puts back the note as saved.
+  const cancel = () => {
+    setText(day.note ?? "")
+    setProblem(undefined)
+    setEditing(false)
   }
   if (!editing) {
     return (
       <div className="log-note">
         {day.note === null ? null : <p className="log-note-text">{day.note}</p>}
-        <button type="button" className="link-button" onClick={() => setEditing(true)}>
+        <button ref={opener} type="button" className="link-button" onClick={() => setEditing(true)}>
           {day.note === null ? "Add a note" : "Change the note"}
           <span className="visually-hidden"> for {longDay(day.day)}</span>
         </button>
@@ -50,10 +67,10 @@ const Note = ({ day, onSaved }: { readonly day: DailyLogDay; readonly onSaved: (
   return (
     <div className="log-note">
       <label htmlFor={id}>A note on {longDay(day.day)}</label>
-      <textarea id={id} rows={3} maxLength={2000} value={text} onChange={(event) => setText(event.target.value)} />
+      <textarea ref={field} id={id} rows={3} maxLength={2000} value={text} onChange={(event) => setText(event.target.value)} />
       <div className="actions">
         <button type="button" className="button" onClick={() => void save()}>Save the note</button>
-        <button type="button" className="button button-quiet" onClick={() => setEditing(false)}>Cancel</button>
+        <button type="button" className="button button-quiet" onClick={cancel}>Cancel</button>
       </div>
       {problem !== undefined && <p className="problem" role="alert">{problem}</p>}
     </div>

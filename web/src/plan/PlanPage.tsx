@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react"
+import { type RefObject, useCallback, useEffect, useId, useRef, useState } from "react"
 import type { PlanDayView, PlanItemView, PlanView } from "../../../src/api/Plan.ts"
 import { call } from "../api.ts"
 import { useFocusOnMount } from "../focus.ts"
@@ -32,16 +32,27 @@ const phaseNames: Record<PlanDayView["phase"], string> = {
   "mocks": "a Mock week"
 }
 
-// A Weak Area day with no Weak Area to work on yet is mixed practice.
+// The plan is read again when the page comes back into view, and every few
+// minutes while it is shown, so a page left open sees a new Study Day.
+const RereadMs = 5 * 60_000
+
+// The weekly time a Mock needs, in minutes.
+const MockMinutes = 145
+
+// A Weak Area day with no Weak Area to work on yet is mixed practice; a day
+// whose sets are not planned yet says so.
 const dayAbout = (day: PlanDayView) => {
   if (day.off) return "A day off."
+  if (!day.setsPlanned) return `${hoursAndMinutes(day.minutes)} planned, for ${phaseNames[day.phase]}. Its sets are planned nearer the day.`
   const phase = day.phase === "weak-areas" && !day.items.some((item) => item.weakArea !== null) ? "mixed" : day.phase
   return `${hoursAndMinutes(day.minutes)} planned, for ${phaseNames[phase]}.`
 }
 
 export const PlanPage = ({ path, onSessionLost, onStopped }: Props) => {
   const heading = useFocusOnMount<HTMLHeadingElement>()
+  const todayHeading = useRef<HTMLHeadingElement>(null)
   const [plan, setPlan] = useState<PlanView>()
+  const [made, setMade] = useState(false)
   const view = views.find((each) => each.path === path) ?? views[0]
   const handle = useCallback(
     (failure: { readonly _tag: string }) => (failure._tag === "NotUnlocked" ? onSessionLost() : onStopped(failure)),
@@ -55,22 +66,29 @@ export const PlanPage = ({ path, onSessionLost, onStopped }: Props) => {
   useEffect(() => {
     void load()
   }, [load])
+  useEffect(() => {
+    const reread = () => {
+      if (document.visibilityState === "visible") void load()
+    }
+    document.addEventListener("visibilitychange", reread)
+    const timer = window.setInterval(reread, RereadMs)
+    return () => {
+      document.removeEventListener("visibilitychange", reread)
+      window.clearInterval(timer)
+    }
+  }, [load])
+  // Once the first plan is made, focus moves to its day.
+  useEffect(() => {
+    if (!made) return
+    todayHeading.current?.focus()
+    setMade(false)
+  }, [made])
 
   return (
     <>
       <h1 ref={heading} tabIndex={-1}>Study Plan</h1>
       {plan === undefined
         ? <p className="quiet" aria-busy="true">Making your plan</p>
-        : plan.settings === null
-        ? (
-          <>
-            <p className="lede">
-              Say when your test is and how much time you have, and the plan sets out each Study Day: a Diagnostic first,
-              then your Weak Areas, mixed practice, due Retries and, near the test, a Mock a week.
-            </p>
-            <PlanSettingsForm plan={plan} onSaved={setPlan} onFailure={handle} />
-          </>
-        )
         : (
           <>
             <nav className="viewnav" aria-label="Plan views">
@@ -80,13 +98,31 @@ export const PlanPage = ({ path, onSessionLost, onStopped }: Props) => {
                 </a>
               ))}
             </nav>
-            {view.id === "today"
-              ? <Today plan={plan} onPlan={setPlan} onReload={load} onFailure={handle} />
-              : view.id === "ahead"
-              ? <DaysAhead plan={plan} />
-              : view.id === "log"
+            {view.id === "log"
               ? <DailyLog onFailure={handle} />
-              : <PlanSettingsForm plan={plan} onSaved={setPlan} onFailure={handle} />}
+              : view.id === "settings"
+              ? <PlanSettingsForm plan={plan} onSaved={setPlan} onFailure={handle} />
+              : plan.settings === null
+              ? (
+                <>
+                  <p className="lede">
+                    Say when your test is and how much time you have, and the plan sets out each Study Day: a Diagnostic
+                    first, then your Weak Areas, mixed practice, due Retries and, near the test, a Mock a week.
+                  </p>
+                  <PlanSettingsForm
+                    plan={plan}
+                    onSaved={(saved) => {
+                      setPlan(saved)
+                      if (view.id === "ahead") navigate("/plan")
+                      setMade(true)
+                    }}
+                    onFailure={handle}
+                  />
+                </>
+              )
+              : view.id === "today"
+              ? <Today plan={plan} heading={todayHeading} onPlan={setPlan} onReload={load} onFailure={handle} />
+              : <DaysAhead plan={plan} />}
           </>
         )}
     </>
@@ -113,18 +149,22 @@ const forText = (item: PlanItemView, today: boolean) => {
   const area = item.weakArea.scope.name
   const section = item.section?.name ?? "its Section"
   if (item.remedy?.id === "trap") {
-    return `For ${area}, a Weak Area whose misses are most often traps: Questions in ${section} that set the same trap.`
+    return item.trapPattern === null
+      ? `For ${area}, a Weak Area whose misses are most often traps.`
+      : `For ${area}, a Weak Area whose misses are most often traps: Questions in ${section} that set the same trap.`
   }
   if (item.remedy?.id === "slow") return `For ${area}, a Weak Area where right answers come slowly.`
   return `For ${area}, a Weak Area.${item.remedy === null ? "" : ` Most often: ${item.remedy.name.toLowerCase()}.`}`
 }
 
 const ItemRow = (
-  { item, today, onPlan, onReload, onFailure }: {
+  { item, today, onPlan, onReload, onNotice, onFailure }: {
     readonly item: PlanItemView
     readonly today: boolean
     readonly onPlan: (plan: PlanView) => void
     readonly onReload: () => Promise<void>
+    // A message for the day as a whole, for when this row may be gone.
+    readonly onNotice: (notice: string) => void
     readonly onFailure: (failure: { readonly _tag: string }) => void
   }
 ) => {
@@ -149,12 +189,12 @@ const ItemRow = (
     switch (failure._tag) {
       case "PlanItemNotOpen":
         onPlan(failure.plan)
-        return setProblem("Your plan changed while this page was open. Here it is as it stands.")
+        return onNotice("Your plan changed while this page was open, so nothing started. Here is the plan as it stands.")
       case "NoQuestionsMatch":
         return setProblem("No Question is left for this set. Practise something else today, or add a Book with more.")
       case "NoRetriesDue":
         void onReload()
-        return setProblem("No Retries are due now: they were taken, or are waiting for a running Sectional or Mock.")
+        return onNotice("No Retries are due now: they were taken, or are waiting for a running Sectional or Mock.")
       case "RetriesRunning":
         return navigate(`/practice/${failure.id}`)
       case "SectionalRunning":
@@ -212,44 +252,111 @@ const ItemRow = (
   )
 }
 
-const Today = (
-  { plan, onPlan, onReload, onFailure }: {
+// Where the Diagnostic stands in the plan: today, a later day, or dropped
+// with the reason.
+const diagnosticWhere = (plan: PlanView) => {
+  const next = plan.plan.flatMap((day) => day.items).find((item) => item.diagnostic && item.status === "planned")
+  if (next !== undefined) return next.day === plan.today ? "It is on today's plan." : `It is planned for ${longDay(next.day)}.`
+  const dropped = plan.dropped.find((item) => item.diagnostic)
+  return dropped === undefined ? "" : `It could not be planned: ${dropped.reason}`
+}
+
+const DiagnosticPanel = (
+  { plan, onSkipped, onFailure }: {
     readonly plan: PlanView
+    readonly onSkipped: (plan: PlanView) => void
+    readonly onFailure: (failure: { readonly _tag: string }) => void
+  }
+) => {
+  const [asking, setAsking] = useState(false)
+  const [problem, setProblem] = useState<string>()
+  const skipButton = useRef<HTMLButtonElement>(null)
+  const keepButton = useRef<HTMLButtonElement>(null)
+  const busy = useRef(false)
+  useEffect(() => {
+    if (asking) keepButton.current?.focus()
+  }, [asking])
+  const skip = async () => {
+    if (busy.current) return
+    busy.current = true
+    const result = await call((client) => client.plan.skipDiagnostic())
+    busy.current = false
+    if (result._tag === "Failure") {
+      if (result.failure._tag === "NotUnlocked") return onFailure(result.failure)
+      return setProblem("The Diagnostic was not skipped. Try again.")
+    }
+    onSkipped(result.success)
+  }
+  const keep = () => {
+    setAsking(false)
+    window.requestAnimationFrame(() => skipButton.current?.focus())
+  }
+  const left = plan.diagnostic.sectionsLeft.map((section) => section.name).join(", ")
+  const where = diagnosticWhere(plan)
+  return (
+    <section className="group plan-diagnostic" aria-labelledby="diagnostic-title">
+      <h2 id="diagnostic-title">The Diagnostic</h2>
+      <p className="group-about">
+        {plan.diagnostic.form === "mock"
+          ? "A full Mock shows where each Section starts, so your practice is pitched where about two in three come out right."
+          : (plan.settings?.weeklyMinutes ?? 0) < MockMinutes
+          ? `Your weekly time is under a Mock, so the Diagnostic is the three Sectionals, one a day: ${left} still to take.`
+          : `You began the Diagnostic as Sectionals, so it goes on one a day: ${left} still to take.`}
+        {where === "" ? "" : ` ${where}`} Skip it and each Section starts at Medium until it has 20 Rated Responses.
+      </p>
+      {asking
+        ? (
+          <div className="plan-confirm" role="group" aria-labelledby="skip-question">
+            <p id="skip-question">Skip the Diagnostic for good? The plan will not offer it again.</p>
+            <div className="actions">
+              <button type="button" className="button" onClick={() => void skip()}>Skip it</button>
+              <button ref={keepButton} type="button" className="button button-quiet" onClick={keep}>Keep it</button>
+            </div>
+          </div>
+        )
+        : (
+          <div className="actions">
+            <button ref={skipButton} type="button" className="button button-quiet" onClick={() => setAsking(true)}>
+              Skip the Diagnostic
+            </button>
+          </div>
+        )}
+      {problem !== undefined && <p className="problem" role="alert">{problem}</p>}
+    </section>
+  )
+}
+
+const Today = (
+  { plan, heading, onPlan, onReload, onFailure }: {
+    readonly plan: PlanView
+    readonly heading: RefObject<HTMLHeadingElement | null>
     readonly onPlan: (plan: PlanView) => void
     readonly onReload: () => Promise<void>
     readonly onFailure: (failure: { readonly _tag: string }) => void
   }
 ) => {
   const day = plan.plan.find((each) => each.day === plan.today)
-  const [skipProblem, setSkipProblem] = useState<string>()
-  const skip = async () => {
-    const result = await call((client) => client.plan.skipDiagnostic())
-    if (result._tag === "Failure") return onFailure(result.failure)
-    setSkipProblem(undefined)
-    onPlan(result.success)
-  }
+  const [notice, setNotice] = useState<string>()
   const done = day?.items.filter((item) => item.status === "done").length ?? 0
+  const noticed = (text: string) => {
+    setNotice(text)
+    heading.current?.focus()
+  }
   return (
     <>
       {plan.diagnostic.state === "pending" && (
-        <section className="group plan-diagnostic" aria-labelledby="diagnostic-title">
-          <h2 id="diagnostic-title">The Diagnostic</h2>
-          <p className="group-about">
-            {plan.diagnostic.form === "mock"
-              ? "A full Mock shows where each Section starts, so your practice is pitched where about two in three come out right. It is on today's plan."
-              : `Your weekly time is under a Mock, so the Diagnostic is the three Sectionals, one a day: ${
-                plan.diagnostic.sectionsLeft.map((section) => section.name).join(", ")
-              } still to take.`}{" "}
-            Skip it and each Section starts at Medium until it has 20 Rated Responses.
-          </p>
-          <div className="actions">
-            <button type="button" className="button button-quiet" onClick={() => void skip()}>Skip the Diagnostic</button>
-          </div>
-          {skipProblem !== undefined && <p className="problem" role="alert">{skipProblem}</p>}
-        </section>
+        <DiagnosticPanel
+          plan={plan}
+          onSkipped={(skipped) => {
+            onPlan(skipped)
+            heading.current?.focus()
+          }}
+          onFailure={onFailure}
+        />
       )}
       <section className="group" aria-labelledby="today-title">
-        <h2 id="today-title">Today, {longDay(plan.today)}</h2>
+        <h2 id="today-title" ref={heading} tabIndex={-1}>Today, {longDay(plan.today)}</h2>
+        <div role="status">{notice !== undefined && <p className="problem">{notice}</p>}</div>
         {day === undefined
           ? <p className="empty">Nothing is planned for today.</p>
           : (
@@ -263,7 +370,15 @@ const Today = (
                 : (
                   <ol className="set-list plan-items">
                     {day.items.map((item) => (
-                      <ItemRow key={item.id} item={item} today onPlan={onPlan} onReload={onReload} onFailure={onFailure} />
+                      <ItemRow
+                        key={item.id}
+                        item={item}
+                        today
+                        onPlan={onPlan}
+                        onReload={onReload}
+                        onNotice={noticed}
+                        onFailure={onFailure}
+                      />
                     ))}
                   </ol>
                 )}
@@ -317,7 +432,7 @@ const DaysAhead = ({ plan }: { readonly plan: PlanView }) => {
         ? <p className="empty">No days are planned after today.</p>
         : shown.map((day) => (
           <section key={day.day} className="group plan-day" aria-labelledby={`day-${day.day}`}>
-            <h2 id={`day-${day.day}`}>{longDay(day.day)}</h2>
+            <h2 id={`day-${day.day}`} tabIndex={-1}>{longDay(day.day)}</h2>
             <p className="group-about">{dayAbout(day)}</p>
             {day.items.length > 0 && (
               <ol className="set-list plan-items">
@@ -333,7 +448,16 @@ const DaysAhead = ({ plan }: { readonly plan: PlanView }) => {
         ))}
       {shown.length < ahead.length && (
         <div className="actions plan-more">
-          <button type="button" className="button button-quiet" onClick={() => setAll(true)}>
+          <button
+            type="button"
+            className="button button-quiet"
+            onClick={() => {
+              setAll(true)
+              // Focus moves to the first day shown now, as the button goes.
+              const first = ahead[FirstDays]
+              window.requestAnimationFrame(() => document.getElementById(`day-${first?.day}`)?.focus())
+            }}
+          >
             Show the other {ahead.length - shown.length} days
           </button>
         </div>

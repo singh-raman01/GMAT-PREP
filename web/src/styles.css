@@ -3611,3 +3611,14 @@ input[type="date"] {
 .my-reports {
   margin-top: 3.5rem;
 }
+
+/* Skipping the Diagnostic asks first, in the panel. */
+.plan-confirm {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.plan-confirm p {
+  margin: 0;
+  font-weight: 700;
+}
