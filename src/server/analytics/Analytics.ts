@@ -18,7 +18,7 @@ import { targetSecondsFor } from "../../api/targetTimes.ts"
 import { type Blueprint, sectionCount } from "../../api/blueprint.ts"
 import { sectionOf } from "../../api/taxonomyRules.ts"
 import { Db } from "../db/Database.ts"
-import { approaches, books, questions, sessions, sources } from "../db/schema.ts"
+import { approaches, bankVersion, books, questions, sessions, sources } from "../db/schema.ts"
 import { ErrorLog, type LearningHistory, type ShownSession } from "../learning/ErrorLog.ts"
 import { type QuestionSummary, questionSummaries } from "../learning/facts.ts"
 import { namesOf } from "../practice/content.ts"
@@ -87,12 +87,13 @@ export class Analytics extends Context.Service<Analytics, {
       // Skill and Question Type Abilities from the Rated Responses of the
       // Sessions that have ended, as Score Estimates count them.
       // known: Questions already read, as the Error Log's history has them.
-      // Kept for the few Profiles read last, under the database's version and
+      // Kept for the few Profiles read last, under the facts' version, which
+      // a Mistake Type change leaves as it was, as no Ability reads one, and
       // the Study Day, as recency counts in Study Days.
       const abilitiesKept = new Map<string, { readonly key: string; readonly found: Effect.Success<ReturnType<typeof fitAbilities>> }>()
       const abilitiesFor = (profileId: string, known: ReadonlyMap<string, QuestionSummary> = new Map()) =>
         Effect.gen(function*() {
-          const version = yield* errorLog.version(profileId)
+          const version = yield* errorLog.factsVersion(profileId)
           const clock = yield* run(studyClockOf(profileId))
           const key = clock === undefined ? `${version}|none` : `${version}|${studyDaysUnder(clock.rules)(clock.now)}`
           const kept = abilitiesKept.get(profileId)
@@ -198,12 +199,24 @@ export class Analytics extends Context.Service<Analytics, {
           )
         )
 
+      // How often each Skill and Question Type appears, from the Bank: kept
+      // until the Bank's version moves (decision 127).
+      let frequenciesKept: { readonly version: number; readonly frequencies: ReturnType<typeof frequenciesOf> } | undefined
+      const frequenciesNow = Effect.gen(function*() {
+        const [row] = yield* run(db.select({ version: bankVersion.version }).from(bankVersion).where(eq(bankVersion.id, 1)))
+        const version = row?.version ?? -1
+        if (frequenciesKept !== undefined && frequenciesKept.version === version) return frequenciesKept.frequencies
+        const frequencies = frequenciesOf(yield* bank)
+        if (frequenciesKept === undefined || version >= frequenciesKept.version) frequenciesKept = { version, frequencies }
+        return frequencies
+      })
+
       // The Weak Areas, ranked, with what went wrong in their misses.
       const rankedFor = (profileId: string) =>
         Effect.gen(function*() {
           const history = yield* errorLog.history(profileId)
           const found = yield* abilitiesFor(profileId, history.summaries)
-          const frequencies = frequenciesOf(yield* bank)
+          const frequencies = yield* frequenciesNow
           // Each Question's misses gathered into one fact, its kinds and
           // Trap Patterns listed once a miss, so counting reads each Question
           // once however often it was missed.
@@ -494,10 +507,12 @@ export class Analytics extends Context.Service<Analytics, {
       // Each view as last worked out for the few Profiles read last, under the
       // database's version and the Study Day: reading a view again, or the
       // view after the one before, costs nothing until something is written.
+      // A view that shows no Mistake Type is kept under the facts' version,
+      // which a Mistake Type change leaves as it was.
       const viewsKept = new Map<string, { readonly key: string; readonly value: unknown }>()
-      const keptView = <A>(name: string, read: (profileId: string) => Effect.Effect<A>) => (profileId: string) =>
+      const keptView = <A>(name: string, read: (profileId: string) => Effect.Effect<A>, readsLabels: boolean) => (profileId: string) =>
         Effect.gen(function*() {
-          const version = yield* errorLog.version(profileId)
+          const version = yield* (readsLabels ? errorLog.version(profileId) : errorLog.factsVersion(profileId))
           const clock = yield* run(studyClockOf(profileId))
           const key = clock === undefined ? `${version}|none` : `${version}|${studyDaysUnder(clock.rules)(clock.now)}`
           const slot = `${name}|${profileId}`
@@ -515,12 +530,12 @@ export class Analytics extends Context.Service<Analytics, {
         })
 
       return Analytics.of({
-        weakAreas: keptView("weakAreas", weakAreas),
-        planAnalytics: keptView("planAnalytics", planAnalytics),
-        skillMap: keptView("skillMap", skillMap),
-        timing: keptView("timing", timing),
-        mistakes: keptView("mistakes", mistakes),
-        study: keptView("study", study)
+        weakAreas: keptView("weakAreas", weakAreas, true),
+        planAnalytics: keptView("planAnalytics", planAnalytics, true),
+        skillMap: keptView("skillMap", skillMap, false),
+        timing: keptView("timing", timing, false),
+        mistakes: keptView("mistakes", mistakes, true),
+        study: keptView("study", study, false)
       })
     })
   )

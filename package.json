@@ -10,7 +10,9 @@
     "build:all": "bun scripts/build.ts --all",
     "db:generate": "drizzle-kit generate && bun scripts/gen-migrations-index.ts",
     "typecheck": "tsc -p . && tsc -p web",
-    "test": "bun test"
+    "test": "bun test",
+    "test:speed": "bun run build && PERF=1 bun test test/speed.test.ts",
+    "test:e2e": "bun run build:web && E2E=1 bun test test/mockEndToEnd.test.ts"
   },
   "dependencies": {
     "@effect/platform-bun": "4.0.5",
@@ -35,6 +37,7 @@
     "drizzle-kit": "1.0.0-rc.5-5935859",
     "fast-check": "4.10.2",
     "pdf-lib": "1.17.1",
+    "playwright": "1.56.0",
     "typescript": "7.0.2",
     "vite": "8.3.4"
   }

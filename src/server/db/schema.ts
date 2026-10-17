@@ -1035,3 +1035,14 @@ export const devices = sqliteTable(
   },
   (t) => [uniqueIndex("devices_token").on(t.tokenHash)]
 )
+
+// A count the database moves on every write to the tables a Question's
+// summary is read from (questions, parts, options, option notes, sources and
+// books), by triggers the migration adds, so the Question summaries the
+// Error Log and analytics read can be kept until the Question Bank changes
+// (decision 127). One row; kept when a snapshot is restored, so it never
+// goes back.
+export const bankVersion = sqliteTable("bank_version", {
+  id: integer("id").primaryKey(),
+  version: integer("version").notNull()
+})

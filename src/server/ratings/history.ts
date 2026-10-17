@@ -3,7 +3,8 @@ import { Effect } from "effect"
 import { type DayRule, studyDaysUnder } from "../../api/studyDay.ts"
 import { Db } from "../db/Database.ts"
 import { difficulty, questions, responses, servedQuestions, sessions } from "../db/schema.ts"
-import { currentDifficulty, isCorrect, keysOf, mergeTargets, seenWithoutSessionsBy, readSelection } from "../practice/history.ts"
+import type { Selection } from "../../api/Practice.ts"
+import { currentDifficulty, isCorrect, keysOf, mergeTargets, seenWithoutSessionsBy } from "../practice/history.ts"
 import { type AbilityFit, fitAbility, recencyWeight } from "./model.ts"
 import { firstSeenOf, unservedEvents, ratedResponses, type SeenEvent } from "./rated.ts"
 
@@ -132,7 +133,9 @@ export const ratedHistory = (profileId: string, known?: ReadonlyArray<ServingFac
         questionId: fact.questionId,
         section: question.section,
         difficulty: Number(question.difficulty),
-        correct: isCorrect(readSelection(fact.selection), keys.get(fact.questionId) ?? []),
+        // Checked when it was written; a long history reads it without the
+        // Schema's cost, as the Error Log does.
+        correct: isCorrect(JSON.parse(fact.selection) as Selection, keys.get(fact.questionId) ?? []),
         at: fact.createdAt,
         timeSpentMs: firstTime.get(`${fact.sessionId}|${fact.questionId}`)?.timeSpentMs ?? fact.timeSpentMs
       }]

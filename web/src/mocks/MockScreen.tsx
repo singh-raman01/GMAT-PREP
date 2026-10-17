@@ -49,6 +49,9 @@ export const MockScreen = ({ id, onSessionLost, onStopped }: Props) => {
     void refresh()
   }, [refresh])
 
+  // A Section that closes hands back here once, not on every render.
+  const onClosed = useCallback(() => void refresh(), [refresh])
+
   const onBreak = view?.stage === "break"
   useEffect(() => {
     if (!onBreak) return
@@ -103,7 +106,7 @@ export const MockScreen = ({ id, onSessionLost, onStopped }: Props) => {
         id={current.sessionId}
         onSessionLost={onSessionLost}
         onStopped={onStopped}
-        onClosed={() => void refresh()}
+        onClosed={onClosed}
       />
     )
   }

@@ -27,8 +27,15 @@ import { WorkerSupervisor } from "../src/server/worker/WorkerSupervisor.ts"
 import { FigureFiles } from "../src/server/books/FigureFiles.ts"
 import { lanListeners } from "../src/server/http/listeners.ts"
 import { ErrorLog } from "../src/server/learning/ErrorLog.ts"
+import { removeAtEnd } from "./cleanup.ts"
 
-export const tempDataDir = () => mkdtempSync(join(tmpdir(), "gmat-prep-test-"))
+// A test's data folder, with the config folder AppConfig puts beside it,
+// both removed when the run ends.
+export const tempDataDir = () => {
+  const dir = mkdtempSync(join(tmpdir(), "gmat-prep-test-"))
+  removeAtEnd(dir, `${dir}-config`)
+  return dir
+}
 
 // One browser: a typed API client with its own cookie jar.
 export const openBrowser = Effect.gen(function*() {
