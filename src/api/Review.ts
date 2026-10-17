@@ -273,7 +273,7 @@ export class ReviewApi extends HttpApiGroup.make("review")
     // approval. Its Key Override goes with its Sources.
     HttpApiEndpoint.post("merge", "/review/:id/merge", {
       ...decided,
-      error: [ReviewItemNotFound, ReviewItemNotOpen, KeysDiffer, MergeTargetChecking]
+      error: [ReviewItemNotFound, ReviewItemNotOpen, KeysDiffer, MergeTargetChecking, SnapshotFailed]
     }),
     // Tries again the enrichment an unusable reply left missing or wrong:
     // tagging, solving, or the Approaches and notes. The Question leaves the

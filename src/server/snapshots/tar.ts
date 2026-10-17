@@ -1,4 +1,4 @@
-import { open } from "node:fs/promises"
+import { type FileHandle, open } from "node:fs/promises"
 
 // A tar archive in the POSIX ustar format, written a piece at a time, so a
 // large install never sits in memory. Names are relative paths of at most
@@ -39,23 +39,46 @@ export const tarHeader = (entry: Pick<TarEntry, "name" | "size" | "modified">) =
   return block
 }
 
-// Writes the entries to a new archive file; each file is read in pieces.
+// The size of the archive of these entries: each a header and its content
+// padded to whole blocks, then two empty blocks.
+export const tarSize = (entries: ReadonlyArray<Pick<TarEntry, "size">>) =>
+  entries.reduce((total, entry) => total + Block + Math.ceil(entry.size / Block) * Block, 2 * Block)
+
+// A write may take only part of a chunk; the rest follows. Taking none means
+// there is no room left.
+const writeAll = async (file: FileHandle, chunk: Uint8Array) => {
+  let offset = 0
+  while (offset < chunk.length) {
+    const { bytesWritten } = await file.write(chunk, offset, chunk.length - offset)
+    if (bytesWritten === 0) throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" })
+    offset += bytesWritten
+  }
+}
+
+// Writes the entries to a new archive file, each file read in pieces, and
+// writes it to the disk. An archive that does not come out at the size its
+// entries make is an error.
 export const writeTar = async (target: string, entries: ReadonlyArray<TarEntry>) => {
   const out = await open(target, "wx", 0o600)
   try {
     for (const entry of entries) {
-      await out.write(tarHeader(entry))
+      await writeAll(out, tarHeader(entry))
       let written = 0
       for await (const piece of Bun.file(entry.path).stream()) {
-        await out.write(piece)
         written += piece.length
+        if (written > entry.size) break
+        await writeAll(out, piece)
       }
       if (written !== entry.size) throw new Error(`${entry.name} changed while it was being archived.`)
       const padding = (Block - (written % Block)) % Block
-      if (padding > 0) await out.write(new Uint8Array(padding))
+      if (padding > 0) await writeAll(out, new Uint8Array(padding))
     }
     // Two empty blocks end the archive.
-    await out.write(new Uint8Array(2 * Block))
+    await writeAll(out, new Uint8Array(2 * Block))
+    await out.sync()
+    const { size } = await out.stat()
+    const expected = tarSize(entries)
+    if (size !== expected) throw new Error(`The archive came out at ${size} bytes instead of ${expected}.`)
   } finally {
     await out.close()
   }

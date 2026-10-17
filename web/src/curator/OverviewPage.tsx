@@ -48,14 +48,20 @@ export const OverviewPage = ({ onLocked, onStopped }: Props) => {
     }
   }, [handle])
 
-  // A snapshot that failed, or damage the weekly check found, comes first.
+  // A snapshot that failed, damage the full check found, or a check that
+  // could not run, comes first.
+  const integrity = snapshots?.integrity ?? null
   const troubles = snapshots === undefined
     ? []
     : [
       ...snapshots.failures.map((failure) => `A snapshot failed on ${dayAndTime(failure.at)}: ${failure.error}`),
-      ...(snapshots.integrity !== null && !snapshots.integrity.ok
-        ? [`The weekly check on ${dayAndTime(snapshots.integrity.at)} found damage in the database.`]
-        : [])
+      ...(integrity === null || integrity.outcome === "ok"
+        ? []
+        : integrity.outcome === "not-run"
+        ? [`The full check of the database could not run on ${dayAndTime(integrity.at)}; it is tried again within the hour.`]
+        : integrity.afterRestore
+        ? [`The check after the restore on ${dayAndTime(integrity.at)} found damage that a restore cannot repair.`]
+        : [`The weekly check on ${dayAndTime(integrity.at)} found damage in the database.`])
     ]
 
   return (

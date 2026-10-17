@@ -963,8 +963,9 @@ export const problemReports = sqliteTable(
   (t) => [index("problem_reports_question").on(t.questionId), index("problem_reports_profile").on(t.profileId, t.createdAt)]
 )
 
-// Each snapshot of the database taken or tried (decision 109): the kept ones
-// can be restored; a failed one is shown until one of its kind succeeds.
+// Each snapshot of the database taken or tried, and each file found in the
+// snapshots folder (decision 109): the kept ones can be restored; a failed
+// one is shown until a later snapshot succeeds.
 export const snapshots = sqliteTable(
   "snapshots",
   {
@@ -979,10 +980,15 @@ export const snapshots = sqliteTable(
     day: text("day").notNull(),
     size: integer("size"),
     sha256: text("sha256"),
-    // ok, failed, or removed once retention deleted its file
+    // ok; failed, an attempt or a found file that is no snapshot; removed
+    // once retention deleted its file; or missing, its file gone from the
+    // folder
     status: text("status").notNull(),
     error: text("error"),
-    removedAt: integer("removed_at")
+    removedAt: integer("removed_at"),
+    // Found in the folder, not taken by this app, so retention never
+    // deletes it.
+    found: integer("found", { mode: "boolean" }).notNull().default(false)
   },
   (t) => [index("snapshots_taken").on(t.takenAt), uniqueIndex("snapshots_file").on(t.file)]
 )

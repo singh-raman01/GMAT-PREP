@@ -262,7 +262,7 @@ const SetScreen = (
       <p className="visually-hidden" role="status">{announcement}</p>
       {view.clock?.interrupted === true && (
         <p className="clock-note">
-          The clock did not count time while the app was stopped or the computer slept.
+          The clock did not count time while the app was stopped, the computer slept or the data was restored.
         </p>
       )}
       {!view.heldHere && (

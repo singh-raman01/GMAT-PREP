@@ -91,7 +91,7 @@ const causeMessages = (error: unknown): ReadonlyArray<string> => {
 }
 
 // Plain-language reasons for the startup failures a Learner can meet.
-const explainStartupFailure = (error: unknown): string | undefined => {
+export const explainStartupFailure = (error: unknown): string | undefined => {
   const tagged = error as { readonly _tag?: string; readonly message?: string }
   switch (tagged._tag) {
     case "AlreadyRunning": {
@@ -105,6 +105,12 @@ const explainStartupFailure = (error: unknown): string | undefined => {
     case "ConfigInsideData": {
       const { configDir, dataDir } = error as { configDir: string; dataDir: string }
       return `The config folder ${configDir} is inside the data folder ${dataDir}, so secrets would reach snapshots. Set GMAT_PREP_CONFIG_DIR to a folder outside it.`
+    }
+    case "SnapshotBeforeUpdateFailed": {
+      const { detail, diskFull } = error as { detail: string; diskFull: boolean }
+      return diskFull
+        ? "There is not enough space on the disk for the snapshot taken before updating the database, so nothing was changed. Free some space, then start GMAT prep again."
+        : `The snapshot taken before updating the database could not be written, so nothing was changed: ${detail}`
     }
     case "NewerDatabase":
       return "This data folder was written by a newer version of GMAT prep. Install that version, or restore a snapshot."
@@ -149,6 +155,7 @@ export const main = () => {
     // Work on a database file in a process of its own (decision 111).
     case "snapshot-copy":
     case "snapshot-check":
+    case "snapshot-inspect":
     case "snapshot-migrate":
     case "snapshot-hash":
       return void fileCommand(process.argv.slice(process.argv.indexOf(command)))

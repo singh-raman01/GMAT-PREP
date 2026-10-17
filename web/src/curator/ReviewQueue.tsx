@@ -13,6 +13,7 @@ import {
   type ReviewItemView,
   type ReviewReason
 } from "../../../src/api/Review.ts"
+import type { SnapshotFailed } from "../../../src/api/Snapshots.ts"
 import type { TaxonomyView } from "../../../src/api/Taxonomy.ts"
 import { bandOf } from "../../../src/api/difficulty.ts"
 import { call, type Client } from "../api.ts"
@@ -82,6 +83,7 @@ const send = (client: Client, action: Action, id: ReviewItemView["id"]): Effect.
 
 const isCannotPublish = (failure: { readonly _tag: string }): failure is CannotPublish => failure._tag === "CannotPublish"
 const isKeysDiffer = (failure: { readonly _tag: string }): failure is KeysDiffer => failure._tag === "KeysDiffer"
+const isSnapshotFailed = (failure: { readonly _tag: string }): failure is SnapshotFailed => failure._tag === "SnapshotFailed"
 
 // Taxonomy names by id, for Skills, Strategies, Mistake Types and Trap
 // Patterns; an id the Taxonomy does not hold shows as itself.
@@ -230,6 +232,7 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
       void load()
       return "The other Question is still waiting for its checks. Merge into it once it is published or held."
     }
+    if (isSnapshotFailed(failure)) return `Nothing was merged, as the snapshot taken first failed: ${failure.detail}`
     if (failure._tag === "ReviewItemNotOpen" || failure._tag === "ReviewItemNotFound") {
       void load()
       return "This item changed in the meantime; the queue was read again."
@@ -264,6 +267,8 @@ export const ReviewQueue = ({ onLocked, onStopped }: Props) => {
     switch (result.failure._tag) {
       case "KeyNotAnOption":
         return `Choose one of its answer choices: ${result.failure.options.join(", ")}.`
+      case "SnapshotFailed":
+        return `The key was not changed, as the snapshot taken first failed: ${result.failure.detail}`
       case "ReviewItemNotOpen":
       case "ReviewItemNotFound":
         void load()

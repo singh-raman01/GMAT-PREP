@@ -109,8 +109,9 @@ const Delete = (
     <section className="group" aria-labelledby="delete-title">
       <h2 id="delete-title">Delete this profile</h2>
       <p className="group-about">
-        Deleting removes everything it holds from this computer. A snapshot of the database is taken first, which only
-        the Curator can restore.
+        Deleting removes everything it holds from the app. A snapshot of the database is taken first, which only the
+        Curator can restore. Copies stay in the snapshots until the app deletes them, the daily ones within about five
+        weeks, and in the install's last archive, if the Curator made one.
       </p>
       {asking
         ? (
@@ -126,10 +127,15 @@ const Delete = (
             {profile.hasPin && (
               <>
                 <label htmlFor={pinId}>Your PIN</label>
-                <PinField id={pinId} value={pin} invalid={problem !== undefined} onChange={setPin} />
+                <PinField
+                  id={pinId}
+                  value={pin}
+                  problem={problem === undefined ? undefined : `${pinId}-problem`}
+                  onChange={setPin}
+                />
               </>
             )}
-            {problem !== undefined && <p className="field-error" role="alert">{problem}</p>}
+            {problem !== undefined && <p id={`${pinId}-problem`} className="field-error" role="alert">{problem}</p>}
             <div className="actions">
               <button type="submit" className="button">Delete it</button>
               <KeepButton onKeep={keep} focus={!profile.hasPin} />
@@ -147,11 +153,12 @@ const Delete = (
   )
 }
 
+// problem: the id of the message that says what is wrong with it, if any.
 const PinField = (
-  { id, value, invalid, onChange }: {
+  { id, value, problem, onChange }: {
     readonly id: string
     readonly value: string
-    readonly invalid: boolean
+    readonly problem: string | undefined
     readonly onChange: (value: string) => void
   }
 ) => {
@@ -165,7 +172,8 @@ const PinField = (
       inputMode="numeric"
       autoComplete="off"
       value={value}
-      aria-invalid={invalid}
+      aria-invalid={problem !== undefined}
+      aria-describedby={problem}
       onChange={(event) => onChange(event.target.value)}
     />
   )

@@ -2,6 +2,7 @@ import { Effect, Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
 import { CuratorSession } from "./Curator.ts"
 import { JobView, LlmNotConfigured, SpendCap } from "./Jobs.ts"
+import { SnapshotFailed } from "./Snapshots.ts"
 
 // Books the Curator adds, and the Book Map that says where in each Book its
 // questions, answer keys, explanations and difficulty labels are.
@@ -308,7 +309,7 @@ export class BooksApi extends HttpApiGroup.make("books")
         spendCap: Schema.optional(SpendCap)
       }),
       success: BookDetail,
-      error: [BookNotFound, BookNotReady, BookMapInvalid, RunCapNeeded]
+      error: [BookNotFound, BookNotReady, BookMapInvalid, RunCapNeeded, SnapshotFailed]
     })
   )
   .middleware(CuratorSession)
