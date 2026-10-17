@@ -678,7 +678,7 @@ const Report = ({ view, onFailure }: { readonly view: SectionalView; readonly on
       }`
       : undefined,
     report.rescored
-      ? "An answer key changed after the Section closed, so these results and the score follow the new key."
+      ? "An answer key changed after the Section closed, so these results and the score follow the current keys."
       : undefined
   ].filter((note) => note !== undefined)
   return (
