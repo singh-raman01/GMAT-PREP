@@ -3661,3 +3661,46 @@ input[type="date"] {
   margin: 0 0 1rem;
   padding-left: 1.25rem;
 }
+
+/* LAN mode: where other devices open the app, the pairing code shown on
+   this computer, and the code entered on another device. The code is the
+   one thing read from across a room, so it is large and spaced. */
+.lan-urls {
+  margin: 0 0 1rem;
+  padding-left: 1.25rem;
+  overflow-wrap: anywhere;
+}
+
+.lan-urls code {
+  font-size: var(--step-1);
+}
+
+.lan-pairing {
+  display: grid;
+  gap: 0.5rem;
+  justify-items: start;
+  margin: 1rem 0 1.5rem;
+}
+
+.lan-code {
+  margin: 0;
+  font-size: var(--step-4);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.3em;
+  line-height: 1.1;
+}
+
+.pairing {
+  display: grid;
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+
+input[type="text"].pairing-code {
+  /* Six digits, spaced, with the field's padding. */
+  width: 11ch;
+  font-size: var(--step-3);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.2em;
+}

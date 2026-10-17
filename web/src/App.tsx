@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import type { ProfileSummary } from "../../src/api/Profiles.ts"
-import { announceUnlockChanged, call, onUnlockChanged, showProfile, type Trouble, troubleOf } from "./api.ts"
+import {
+  announceUnlockChanged,
+  call,
+  onRefused,
+  onUnlockChanged,
+  type Refusal,
+  refusalOf,
+  showProfile,
+  type Trouble,
+  troubleOf
+} from "./api.ts"
 import { CuratorArea } from "./curator/CuratorArea.tsx"
 import { useFocusOnMount } from "./focus.ts"
 import { PracticeHome } from "./practice/PracticeHome.tsx"
@@ -11,6 +21,7 @@ import { MocksHome } from "./mocks/MocksHome.tsx"
 import { ScoresPage } from "./scores/ScoresPage.tsx"
 import { SectionalScreen } from "./sectionals/SectionalScreen.tsx"
 import { SectionalsHome } from "./sectionals/SectionalsHome.tsx"
+import { PairingPage } from "./PairingPage.tsx"
 import { ProfilePicker } from "./ProfilePicker.tsx"
 import { PlanPage } from "./plan/PlanPage.tsx"
 import { ProfilePage } from "./profile/ProfilePage.tsx"
@@ -26,6 +37,8 @@ type Screen =
   | { readonly _tag: "Stopped"; readonly trouble: Trouble }
   | { readonly _tag: "Picking"; readonly notice: string | undefined }
   | { readonly _tag: "Studying"; readonly profile: ProfileSummary }
+  // Another device on the network, not let in yet (decision 121).
+  | { readonly _tag: "Pairing"; readonly refusal: Refusal }
 
 export const App = () => {
   const path = usePath()
@@ -55,6 +68,8 @@ export const App = () => {
       } else {
         show({ _tag: "Studying", profile: result.success })
       }
+    } else if (refusalOf(result.failure) !== undefined) {
+      show({ _tag: "Pairing", refusal: refusalOf(result.failure)! })
     } else if (result.failure._tag === "NotUnlocked") {
       if (shown.current !== undefined || notice !== undefined) {
         show({ _tag: "Picking", notice })
@@ -73,11 +88,14 @@ export const App = () => {
     }
     document.addEventListener("visibilitychange", onVisible)
     const stopListening = onUnlockChanged(() => void recheck())
+    // Any page refused for this device, as when it is revoked, shows pairing.
+    const stopRefusals = onRefused((refusal) => show({ _tag: "Pairing", refusal }))
     return () => {
       document.removeEventListener("visibilitychange", onVisible)
       stopListening()
+      stopRefusals()
     }
-  }, [recheck])
+  }, [recheck, show])
 
   const unlocked = useCallback((profile: ProfileSummary) => {
     show({ _tag: "Studying", profile })
@@ -104,6 +122,9 @@ export const App = () => {
 
   if (screen._tag === "Stopped") {
     return <Stopped trouble={screen.trouble} onRetry={() => void recheck()} />
+  }
+  if (screen._tag === "Pairing") {
+    return <PairingPage refusal={screen.refusal} onPaired={() => void recheck()} onStopped={stop} />
   }
   if (path === "/curator" || path.startsWith("/curator/")) {
     return <CuratorArea path={path} onStopped={stop} />
