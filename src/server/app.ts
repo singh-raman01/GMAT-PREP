@@ -27,6 +27,7 @@ import { Profiles } from "./profiles/Profiles.ts"
 import { Scores } from "./ratings/Scores.ts"
 import { Bank } from "./review/Bank.ts"
 import { Golden } from "./review/Golden.ts"
+import { Overview } from "./review/Overview.ts"
 import { ReviewQueue } from "./review/ReviewQueue.ts"
 import { ApiKeyStore } from "./settings/ApiKeyStore.ts"
 import { Settings } from "./settings/Settings.ts"
@@ -51,19 +52,19 @@ export const makeAppServices = (kinds: Layer.Layer<JobKinds>) => Layer.mergeAll(
   Books.layer,
   ReviewQueue.layer,
   Golden.layer,
-  Bank.layer,
+  Overview.layer,
   Generation.layer,
   Mocks.layer,
   Retries.layer,
   Analytics.layer,
   Scores.layer,
   PaperMarks.layer,
-  SiblingsReport.layer,
   RemoveUploadLeftovers
 ).pipe(
   // One of each, shared: the Sectional engine Mocks run their Sections on,
-  // and the Practice and Error Log services Retries build on.
-  Layer.provideMerge(Layer.mergeAll(Sectionals.layer, Practice.layer, ErrorLog.layer)),
+  // the Practice and Error Log services Retries build on, and the Bank and
+  // Siblings counts the Curator's Overview reads.
+  Layer.provideMerge(Layer.mergeAll(Sectionals.layer, Practice.layer, ErrorLog.layer, Bank.layer, SiblingsReport.layer)),
   Layer.provideMerge(Layer.mergeAll(Settings.layer, ApiKeyStore.layer, BookFiles.layer, FigureFiles.layer, Taxonomy.layer)),
   Layer.provideMerge(JobStore.layer),
   Layer.provideMerge(kinds),

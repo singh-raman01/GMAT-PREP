@@ -13,13 +13,13 @@ import {
 import { joinedKey } from "../../api/keys.ts"
 import { Named, SessionId } from "../../api/Practice.ts"
 import { SectionMinutes } from "../../api/Sectionals.ts"
-import { studyDayOf } from "../../api/studyDay.ts"
+import { studyDays } from "../../api/studyDay.ts"
 import { targetSecondsFor } from "../../api/targetTimes.ts"
 import { sectionOf } from "../../api/taxonomyRules.ts"
 import { Db } from "../db/Database.ts"
-import { approaches, books, questions, servedQuestions, sessions, sources } from "../db/schema.ts"
-import { ErrorLog, type LearningHistory } from "../learning/ErrorLog.ts"
-import { inChunks, questionSummaries } from "../learning/facts.ts"
+import { approaches, books, questions, sessions, sources } from "../db/schema.ts"
+import { ErrorLog, type LearningHistory, type ShownSession } from "../learning/ErrorLog.ts"
+import { inChunks, type QuestionSummary, questionSummaries } from "../learning/facts.ts"
 import { namesOf } from "../practice/content.ts"
 import { isCorrect } from "../practice/history.ts"
 import { ratedHistory, sectionFit } from "../ratings/history.ts"
@@ -28,7 +28,7 @@ import { studyClockOf } from "../ratings/rateSession.ts"
 import { Settings } from "../settings/Settings.ts"
 import { Taxonomy } from "../taxonomy/Taxonomy.ts"
 import { type RatedFact, type ScopeAbility, scopeAbilities, scopeKey } from "./abilities.ts"
-import { answeredOf } from "./answers.ts"
+import { type Answered, answeredOf } from "./answers.ts"
 import { frequenciesOf } from "./frequency.ts"
 import { endingOf, mistakeWeeksOf, pacesOf, pacingOf, studyDaysOf, type TimedAnswer } from "./views.ts"
 import { mixesOf, weakAreasOf } from "./weakAreas.ts"
@@ -66,16 +66,25 @@ export class Analytics extends Context.Service<Analytics, {
 
       // Skill and Question Type Abilities from the Rated Responses of the
       // Sessions that have ended, as Score Estimates count them.
-      const abilitiesFor = (profileId: string) =>
+      // known: Questions already read, as the Error Log's history has them.
+      const abilitiesFor = (profileId: string, known: ReadonlyMap<string, QuestionSummary> = new Map()) =>
         Effect.gen(function*() {
           const clock = yield* run(studyClockOf(profileId))
-          const history = clock === undefined ? [] : (yield* run(ratedHistory(profileId))).filter((answer) => answer.ended)
+          const servings = clock === undefined ? [] : yield* errorLog.servings(profileId)
+          const history = clock === undefined
+            ? []
+            : (yield* run(ratedHistory(
+              profileId,
+              servings.map((row) => ({ questionId: row.questionId, sessionId: row.sessionId, timed: row.timed, at: row.servedAt, order: row.rowid }))
+            ))).filter((answer) => answer.ended)
           if (clock === undefined || history.length === 0) {
             return { abilities: [] as ReadonlyArray<ScopeAbility>, sectionAbility: new Map<string, number>(), rated: 0 }
           }
-          const summaries = yield* run(questionSummaries(history.map((answer) => answer.questionId)))
+          const missing = [...new Set(history.map((answer) => answer.questionId))].filter((id) => !known.has(id))
+          const read = missing.length === 0 ? new Map<string, QuestionSummary>() : yield* run(questionSummaries(missing))
+          const summaries = { get: (id: string) => known.get(id) ?? read.get(id) }
           const overrides = yield* settings.targetTimes
-          const dayOf = (at: number) => studyDayOf(at, clock.timeZone, clock.rolloverHour)
+          const dayOf = studyDays(clock.timeZone, clock.rolloverHour)
           const today = dayOf(clock.now)
           const sectionAbility = new Map(
             [...new Set(history.map((answer) => answer.section))].map((section) => [section, sectionFit(history, section, clock).ability] as const)
@@ -139,9 +148,9 @@ export class Analytics extends Context.Service<Analytics, {
 
       const weakAreas = (profileId: string) =>
         Effect.gen(function*() {
-          const { abilities, rated } = yield* abilitiesFor(profileId)
-          const frequencies = frequenciesOf(yield* bank)
           const history = yield* errorLog.history(profileId)
+          const { abilities, rated } = yield* abilitiesFor(profileId, history.summaries)
+          const frequencies = frequenciesOf(yield* bank)
           const mixes = mixesOf(history.misses.flatMap(({ miss, mistakeTypes }) => {
             const question = history.summaries.get(miss.questionId)
             if (question === undefined) return []
@@ -206,35 +215,34 @@ export class Analytics extends Context.Service<Analytics, {
 
       // Each answered Question of the Sessions that show how they went, and
       // whether its final answer is right against the current key.
-      const shownAnswers = (history: LearningHistory) =>
-        answeredOf(history.responses, history.resolve).flatMap((answered) => {
+      const shownAnswers = (history: LearningHistory) => {
+        const shown: Array<
+          Answered & { readonly session: ShownSession; readonly question: QuestionSummary; readonly correct: boolean | null }
+        > = []
+        for (const answered of answeredOf(history.responses, history.resolve)) {
           const session = history.sessions.get(answered.sessionId)
           const question = history.summaries.get(answered.questionId)
-          if (session === undefined || question === undefined) return []
-          return [{
-            ...answered,
+          if (session === undefined || question === undefined) continue
+          shown.push({
+            sessionId: answered.sessionId,
+            questionId: answered.questionId,
+            servedId: answered.servedId,
+            first: answered.first,
+            final: answered.final,
             session,
             question,
             correct: session.shown ? answered.final.kind !== "time-out" && isCorrect(answered.final.selection, question.parts) : null
-          }]
-        })
+          })
+        }
+        return shown
+      }
 
       const timing = (profileId: string) =>
         Effect.gen(function*() {
           const history = yield* errorLog.history(profileId)
           const timed = shownAnswers(history).filter((answer) => answer.session.shown && answer.session.limitMs !== null)
-          const served = timed.length === 0 ? [] : yield* run(
-            db.select({
-              sessionId: servedQuestions.sessionId,
-              questionId: servedQuestions.questionId,
-              position: servedQuestions.position,
-              servedElapsedMs: servedQuestions.servedElapsedMs
-            }).from(servedQuestions).innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
-              .where(and(eq(sessions.profileId, profileId), eq(sessions.timed, true)))
-          )
-          const servedAt = new Map(served.map((row) => [`${row.sessionId}|${row.questionId}`, row] as const))
-          const servedCount = new Map<string, number>()
-          for (const row of served) servedCount.set(row.sessionId, (servedCount.get(row.sessionId) ?? 0) + 1)
+          const servedRow = (sessionId: string, questionId: string) =>
+            history.served.get(sessionId)?.find((row) => row.questionId === questionId)
           // The Strategy of each Question's fastest Approach that reaches its key.
           const ids = [...new Set(timed.map((answer) => answer.questionId))]
           const routes = yield* run(inChunks(ids, (chunk) =>
@@ -250,7 +258,7 @@ export class Analytics extends Context.Service<Analytics, {
             if (found === undefined || route.seconds < found.seconds) fastest.set(route.questionId, { strategy: route.strategy, seconds: route.seconds })
           }
           const answers = timed.map((answer): TimedAnswer => {
-            const row = servedAt.get(`${answer.sessionId}|${answer.servedId}`)
+            const row = servedRow(answer.sessionId, answer.servedId)
             return {
               sessionId: answer.sessionId,
               kind: answer.session.kind,
@@ -291,8 +299,8 @@ export class Analytics extends Context.Service<Analytics, {
               sections: sectionRows.filter((row) => row.mockId === mock.id).toSorted((a, b) => a.place - b.place).map((row) => ({
                 section: named(row.section),
                 limitMs: LimitMs,
-                questions: servedCount.get(row.id) ?? 0,
-                points: pacingOf(bySession.get(row.id) ?? [], LimitMs, servedCount.get(row.id) ?? 0).map((point) =>
+                questions: history.served.get(row.id)?.length ?? 0,
+                points: pacingOf(bySession.get(row.id) ?? [], LimitMs, history.served.get(row.id)?.length ?? 0).map((point) =>
                   new PacingPointView(point)
                 )
               }))

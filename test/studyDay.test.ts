@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { studyDayOf, studyDayStart } from "../src/api/studyDay.ts"
+import { studyDayOf, studyDays, studyDayStart } from "../src/api/studyDay.ts"
 
 const DayMs = 24 * 60 * 60 * 1000
 const day = (text: string) => Date.parse(`${text}T00:00:00Z`) / DayMs
@@ -20,5 +20,17 @@ describe("A Study Day's start", () => {
     expect(start).toBe(Date.UTC(2026, 10, 2, 12))
     expect(studyDayOf(start, "America/Los_Angeles", 4)).toBe(day("2026-11-02"))
     expect(studyDayOf(start - 1, "America/Los_Angeles", 4)).toBe(day("2026-11-01"))
+  })
+})
+
+describe("Many Study Days at once", () => {
+  test("agree with one at a time, in zones a quarter or half hour off and across daylight saving", () => {
+    for (const [zone, rollover] of [["Asia/Kathmandu", 4], ["Asia/Kolkata", 0], ["America/Los_Angeles", 4], ["Australia/Lord_Howe", 3]] as const) {
+      const days = studyDays(zone, rollover)
+      // Every 7 minutes over two months that hold a daylight saving change.
+      for (let at = Date.UTC(2026, 9, 1); at < Date.UTC(2026, 11, 1); at += 7 * 60 * 1000) {
+        expect(days(at)).toBe(studyDayOf(at, zone, rollover))
+      }
+    }
   })
 })

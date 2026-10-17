@@ -10,7 +10,7 @@ import {
   ScoreTrendView,
   TotalScoreView
 } from "../../api/Scores.ts"
-import { studyDayOf } from "../../api/studyDay.ts"
+import { studyDayOf, studyDays } from "../../api/studyDay.ts"
 import { Db } from "../db/Database.ts"
 import { officialScores, profiles, scoreEstimates } from "../db/schema.ts"
 import { trendOf } from "../analytics/views.ts"
@@ -117,7 +117,7 @@ export class Scores extends Context.Service<Scores, {
             order: sql<number>`${scoreEstimates}.rowid`
           }).from(scoreEstimates).where(eq(scoreEstimates.profileId, profileId)).pipe(Effect.orDie)
           const lines = yield* scoreLinesOf(profileId).pipe(Effect.provideService(Db, db), Effect.orDie)
-          const dayOf = (at: number) => studyDayOf(at, profile?.timeZone ?? "UTC", profile?.rolloverHour ?? 4)
+          const dayOf = studyDays(profile?.timeZone ?? "UTC", profile?.rolloverHour ?? 4)
           const found = trendOf(kept.map((row) => ({ ...row, day: dayOf(row.at) })), lines)
           const day = (number: number) => new Date(number * DayMs).toISOString().slice(0, 10)
           return new ScoreTrendView({

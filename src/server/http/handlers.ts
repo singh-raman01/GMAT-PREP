@@ -11,6 +11,7 @@ import {
   BooksHandlers,
   GenerationHandlers,
   GoldenHandlers,
+  OverviewHandlers,
   ReviewHandlers,
   SiblingsHandlers
 } from "./books.ts"
@@ -142,7 +143,8 @@ export const ApiRoutes = HttpApiBuilder.layer(Api).pipe(
     GoldenHandlers,
     BankHandlers,
     GenerationHandlers,
-    SiblingsHandlers
+    SiblingsHandlers,
+    OverviewHandlers
   ]),
   Layer.provide([ProfileSessionLive, CuratorSessionLive])
 )

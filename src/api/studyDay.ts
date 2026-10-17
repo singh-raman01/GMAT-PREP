@@ -32,6 +32,22 @@ export const studyDayOf = (millis: number, timeZone: string, rolloverHour: numbe
   return part("hour") < rolloverHour ? local - 1 : local
 }
 
+// The Study Day of many moments, each quarter hour worked out once: in every
+// time zone in use the local date and hour change only on a quarter hour.
+const QuarterHourMs = 15 * 60 * 1000
+export const studyDays = (timeZone: string, rolloverHour: number) => {
+  const known = new Map<number, number>()
+  return (millis: number) => {
+    const quarter = Math.floor(millis / QuarterHourMs)
+    let day = known.get(quarter)
+    if (day === undefined) {
+      day = studyDayOf(millis, timeZone, rolloverHour)
+      known.set(quarter, day)
+    }
+    return day
+  }
+}
+
 // When a Study Day begins: the first millisecond whose Study Day it is. The
 // local start moves with the zone's offset and daylight saving, so it is
 // found by halving a window that holds it in every zone.

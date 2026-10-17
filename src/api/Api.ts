@@ -16,6 +16,7 @@ import { RetriesApi } from "./Retries.ts"
 import { AnalyticsApi } from "./Analytics.ts"
 import { ReviewApi } from "./Review.ts"
 import { ScoresApi } from "./Scores.ts"
+import { OverviewApi } from "./Overview.ts"
 import { SiblingsApi } from "./Siblings.ts"
 import { SettingsApi } from "./Settings.ts"
 import { TaxonomyApi } from "./Taxonomy.ts"
@@ -61,4 +62,5 @@ export class Api extends HttpApi.make("gmat-prep")
   .add(BankApi)
   .add(GenerationApi)
   .add(SiblingsApi)
+  .add(OverviewApi)
 {}

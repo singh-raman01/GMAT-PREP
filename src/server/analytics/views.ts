@@ -44,13 +44,15 @@ export const trendOf = (kept: ReadonlyArray<KeptEstimate>, lines: Readonly<Recor
   for (const estimate of ordered) {
     const line = lines[estimate.section]
     if (line === undefined) continue
-    const shown = sectionEstimateOn(line, estimate)
-    sections.set(estimate.section, [...(sections.get(estimate.section) ?? []), { day: estimate.day, ...shown }])
+    const point = { day: estimate.day, ...sectionEstimateOn(line, estimate) }
+    const found = sections.get(estimate.section)
+    if (found === undefined) sections.set(estimate.section, [point])
+    else found.push(point)
   }
   const total: Array<TrendPoint> = []
   const latest = new Map<string, KeptEstimate>()
-  for (const day of [...new Set(ordered.map((estimate) => estimate.day))]) {
-    for (const estimate of ordered.filter((each) => each.day === day)) latest.set(estimate.section, estimate)
+  for (const [day, ofDay] of Map.groupBy(ordered, (estimate) => estimate.day)) {
+    for (const estimate of ofDay) latest.set(estimate.section, estimate)
     const parts = TotalOrder.map((section) => latest.get(section))
     if (parts.some((part) => part === undefined || lines[part.section] === undefined)) continue
     const estimate = totalEstimate(parts.map((part) => {
@@ -91,7 +93,9 @@ const pacesBy = (answers: ReadonlyArray<TimedAnswer>, keyOf: (answer: TimedAnswe
   for (const answer of answers) {
     const key = keyOf(answer)
     if (key === null || answer.timedOut || answer.targetMs <= 0) continue
-    groups.set(key, [...(groups.get(key) ?? []), answer.timeSpentMs / answer.targetMs])
+    const found = groups.get(key)
+    if (found === undefined) groups.set(key, [answer.timeSpentMs / answer.targetMs])
+    else found.push(answer.timeSpentMs / answer.targetMs)
   }
   return new Map([...groups].map(([key, paces]) => [key, { median: median(paces)!, answers: paces.length }] as const))
 }

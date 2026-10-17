@@ -18,21 +18,26 @@ export const answeredOf = (
   responses: ReadonlyArray<ResponseFact>,
   resolve: (questionId: string) => string
 ): ReadonlyArray<Answered> => {
-  const found = new Map<string, { first: ResponseFact; final: ResponseFact }>()
-  for (const response of responses) {
-    const key = `${response.sessionId}|${resolve(response.questionId)}`
-    const kept = found.get(key)
-    if (kept === undefined) found.set(key, { first: response, final: response })
-    else {
-      if (response.seq < kept.first.seq) kept.first = response
+  const answered: Array<{ sessionId: string; questionId: string; servedId: string; first: ResponseFact; final: ResponseFact }> = []
+  // A whole history runs through here, so each Session's Questions are kept
+  // in a small map of their own.
+  for (const given of Map.groupBy(responses, (response) => response.sessionId).values()) {
+    const found = new Map<string, (typeof answered)[number]>()
+    for (const response of given) {
+      const questionId = resolve(response.questionId)
+      const kept = found.get(questionId)
+      if (kept === undefined) {
+        const entry = { sessionId: response.sessionId, questionId, servedId: response.questionId, first: response, final: response }
+        found.set(questionId, entry)
+        answered.push(entry)
+        continue
+      }
+      if (response.seq < kept.first.seq) {
+        kept.first = response
+        kept.servedId = response.questionId
+      }
       if (response.seq > kept.final.seq) kept.final = response
     }
   }
-  return [...found].map(([key, { first, final }]) => ({
-    sessionId: first.sessionId,
-    questionId: key.slice(key.indexOf("|") + 1),
-    servedId: first.questionId,
-    first,
-    final
-  }))
+  return answered
 }

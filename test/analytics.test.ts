@@ -7,6 +7,9 @@ import { Api } from "../src/api/Api.ts"
 import type { PracticeChoice, PracticeView } from "../src/api/Practice.ts"
 import { numbered, OtherPsSkill, PsSkill, seedBook } from "./fixtures/bank.ts"
 import { seedExamBank, SmallBlueprint } from "./fixtures/examBank.ts"
+import { Db } from "../src/server/db/Database.ts"
+import { ErrorLog } from "../src/server/learning/ErrorLog.ts"
+import { ratedHistory } from "../src/server/ratings/history.ts"
 import { openBrowser, runWithWorkers, tempDataDir, type WorkerTestServices } from "./harness.ts"
 
 // The Learner's analytics through the API (docs/design.md, "Analytics").
@@ -151,4 +154,27 @@ describe("Timing after a Mock", () => {
       const answered = timing.ending.last.answered + timing.ending.rest.answered
       expect(answered).toBe(timing.mocks[0]!.sections.reduce((sum, section) => sum + section.questions, 0))
     })), 60_000)
+})
+
+describe("Kept served rows", () => {
+  test("give the rated history the database gives, as sets are added", () =>
+    run(Effect.gen(function*() {
+      yield* seedBook("Quant Review", numbered(9))
+      const asha = yield* learner("Asha")
+      const profileId = (yield* asha.session.me()).id
+      const errorLog = yield* ErrorLog
+      const db = yield* Db
+      const compare = Effect.gen(function*() {
+        const servings = yield* errorLog.servings(profileId)
+        const kept = servings.map((row) => ({ questionId: row.questionId, sessionId: row.sessionId, timed: row.timed, at: row.servedAt, order: row.rowid }))
+        const [fromKept, fromDatabase] = yield* Effect.all([ratedHistory(profileId, kept), ratedHistory(profileId)]).pipe(Effect.provideService(Db, db))
+        expect(fromKept).toEqual(fromDatabase)
+        return fromKept.length
+      })
+      expect(yield* compare).toBe(0)
+      yield* timedSet(asha, { kind: "filters", status: "unseen", size: 3, timed: true }, "C")
+      expect(yield* compare).toBe(3)
+      yield* timedSet(asha, { kind: "filters", status: "any", size: 9, timed: true }, "A")
+      expect(yield* compare).toBe(9)
+    })), 30_000)
 })
