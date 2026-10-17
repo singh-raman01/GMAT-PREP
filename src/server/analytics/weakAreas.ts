@@ -46,17 +46,28 @@ export interface MissFact {
 type Counts = ReadonlyMap<string, ReadonlyMap<string, number>>
 
 // Each Skill's and Question Type's misses, counted by what pick gives,
-// keyed as scopes are.
+// keyed as scopes are. Misses that carry the same scopes are counted
+// together first, so a long history costs one pass over its misses.
 const countedBy = (misses: ReadonlyArray<MissFact>, pick: (miss: MissFact) => ReadonlyArray<string>): Counts => {
-  const counts = new Map<string, Map<string, number>>()
+  const byScopes = new Map<string, { readonly miss: MissFact; readonly counts: Map<string, number> }>()
   for (const miss of misses) {
+    const signature = `${miss.questionType}|${miss.primarySkill ?? ""}|${miss.secondarySkills.join(",")}`
+    let found = byScopes.get(signature)
+    if (found === undefined) {
+      found = { miss, counts: new Map() }
+      byScopes.set(signature, found)
+    }
+    for (const kind of pick(miss)) found.counts.set(kind, (found.counts.get(kind) ?? 0) + 1)
+  }
+  const counts = new Map<string, Map<string, number>>()
+  for (const { miss, counts: own } of byScopes.values()) {
     const scopes = new Set([
       scopeKey("questionType", miss.questionType),
       ...[miss.primarySkill, ...miss.secondarySkills].flatMap((skill) => (skill === null ? [] : [scopeKey("skill", skill)]))
     ])
     for (const key of scopes) {
       const count = counts.get(key) ?? new Map<string, number>()
-      for (const kind of pick(miss)) count.set(kind, (count.get(kind) ?? 0) + 1)
+      for (const [kind, n] of own) count.set(kind, (count.get(kind) ?? 0) + n)
       counts.set(key, count)
     }
   }

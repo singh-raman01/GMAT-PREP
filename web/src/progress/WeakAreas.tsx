@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useState } from "react"
 import type { WeakAreaView } from "../../../src/api/Analytics.ts"
 import { call } from "../api.ts"
 import { navigate } from "../router.ts"
@@ -11,18 +11,28 @@ import { levelText, paceText, plural, useReading } from "./reading.ts"
 const mixText = (area: WeakAreaView) =>
   area.mix.length === 0 ? "" : ` What went wrong: ${area.mix.map((each) => `${each.kind.name} ${each.count}`).join(", ")}.`
 
+// Exam frequency counts a secondary Skill at half, so it is a share of the
+// exam's weight rather than of its Questions.
+const shareText = (frequency: number) =>
+  frequency <= 0
+    ? "None of the exam's Questions carry it yet."
+    : frequency < 0.005
+    ? "It carries under 1% of the exam's weight."
+    : `It carries about ${Math.round(frequency * 100)}% of the exam's weight, a secondary Skill counting half.`
+
 export const WeakAreas = ({ onFailure }: { readonly onFailure: (failure: { readonly _tag: string }) => void }) => {
   const read = useCallback(() => call((client) => client.analytics.weakAreas()), [])
   const view = useReading(read, onFailure)
   const [problem, setProblem] = useState<{ readonly id: string; readonly text: string }>()
-  const busy = useRef(false)
+  // The Weak Area whose set is starting.
+  const [starting, setStarting] = useState<string>()
 
   const practise = async (area: WeakAreaView) => {
-    if (busy.current) return
-    busy.current = true
+    if (starting !== undefined) return
+    setStarting(area.ability.scope.id)
     setProblem(undefined)
     const result = await call((client) => client.practice.start({ payload: { choice: area.remedy.choice } }))
-    busy.current = false
+    setStarting(undefined)
     if (result._tag === "Success") return navigate(`/practice/${result.success.id}`)
     if (result.failure._tag === "NoQuestionsMatch") {
       return setProblem({
@@ -65,13 +75,18 @@ export const WeakAreas = ({ onFailure }: { readonly onFailure: (failure: { reado
                 <span className="set-name">{area.ability.scope.name}</span>
                 <span className="set-facts">
                   {area.ability.kind === "skill" ? "Skill" : "Question Type"}. {levelText(area.ability.gap, area.ability.section.name)},
-                  from {plural(area.ability.evidence, "Rated Response", "Rated Responses")}. It is in{" "}
-                  {Math.max(1, Math.round(area.frequency * 100))}% of the exam's Questions.
+                  from {plural(area.ability.evidence, "Rated Response", "Rated Responses")}. {shareText(area.frequency)}
                   {area.ability.slow && area.ability.pace !== null ? ` Slow: your right answers take ${paceText(area.ability.pace)}.` : ""}
                   {mixText(area)}
                 </span>
-                <button type="button" className="button button-quiet" onClick={() => void practise(area)}>
-                  Practise 10{area.remedy.timed ? ", timed" : ""}
+                <button
+                  type="button"
+                  className="button button-quiet"
+                  aria-disabled={starting !== undefined}
+                  aria-busy={starting === area.ability.scope.id}
+                  onClick={() => void practise(area)}
+                >
+                  {starting === area.ability.scope.id ? "Starting" : `Practise 10${area.remedy.timed ? ", timed" : ""}`}
                   <span className="visually-hidden"> on {area.ability.scope.name}</span>
                 </button>
                 {problem?.id === area.ability.scope.id && <p className="problem" role="alert">{problem.text}</p>}

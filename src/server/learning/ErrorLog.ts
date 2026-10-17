@@ -241,6 +241,9 @@ export class ErrorLog extends Context.Service<ErrorLog, {
   // Every served row of the Profile's Sessions, kept between reads.
   servings(profileId: string): Effect.Effect<ReadonlyArray<Serving>>
   history(profileId: string): Effect.Effect<LearningHistory>
+  // What the database holds now, as a key: it changes with every write, so
+  // anything worked out from a Profile's facts can be kept under it.
+  version(profileId: string): Effect.Effect<string>
 }>()("gmat-prep/server/ErrorLog") {
   static readonly layer = Layer.effect(
     ErrorLog,
@@ -339,7 +342,10 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           const dayOf = studyDaysUnder(rules)
           const dateOf = calendarDaysUnder(rules)
           const skips = yield* run(db.select().from(retrySkips).where(and(eq(retrySkips.profileId, profileId), skipsWhere)))
-          const ladders = laddersOf({
+          // The ladders are worked out when first read, as the analytics never
+          // read them.
+          let ladders: ReadonlyMap<string, EntryLadder> | undefined
+          const laddersNow = () => (ladders ??= laddersOf({
             misses,
             sessions: [...found.values()].flatMap((session) =>
               session.retry.length === 0
@@ -351,7 +357,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             skips: skips.map((row) => ({ questionId: row.questionId, step: row.step as Step, at: row.createdAt, note: row.note })),
             resolve,
             dayOf
-          })
+          }))
           return {
             sessions: found,
             responses: responseFacts,
@@ -359,7 +365,9 @@ export class ErrorLog extends Context.Service<ErrorLog, {
             summaries,
             resolve,
             labels,
-            ladders,
+            get ladders() {
+              return laddersNow()
+            },
             timeZone,
             today: dayOf(yield* Clock.currentTimeMillis),
             dayOf,
@@ -458,7 +466,11 @@ export class ErrorLog extends Context.Service<ErrorLog, {
           const version = yield* databaseVersion(profileId)
           const kept = factsKept.get(profileId)
           if (kept !== undefined && kept.version === version) {
-            return { ...kept.facts, today: kept.facts.dayOf(yield* Clock.currentTimeMillis) } satisfies Facts
+            // The latest read moves to the end, so the least recent goes first.
+            factsKept.delete(profileId)
+            factsKept.set(profileId, kept)
+            // A copy with today worked out again, which keeps the ladders lazy.
+            return Object.create(kept.facts, { today: { value: kept.facts.dayOf(yield* Clock.currentTimeMillis), enumerable: true } }) as Facts
           }
           const found = yield* readSessions(and(eq(sessions.profileId, profileId), inArray(sessions.kind, Kinds)))
           const history = yield* historyOf(profileId)
@@ -794,7 +806,7 @@ export class ErrorLog extends Context.Service<ErrorLog, {
         }).pipe(Effect.catchCause((cause) => Effect.logWarning(`The Error Log could not be read ahead: ${Cause.pretty(cause)}`)))
       )
 
-      return ErrorLog.of({ list, get, setMistakeType, retryState, history, servings })
+      return ErrorLog.of({ list, get, setMistakeType, retryState, history, servings, version: databaseVersion })
     })
   )
 }

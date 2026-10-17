@@ -282,7 +282,9 @@ const Trend = ({ trend }: { readonly trend: ScoreTrendView }) => {
   const days = [...new Set([...trend.sections.flatMap((each) => each.points.map((point) => point.day)), ...trend.total.map((point) => point.day)])]
     .toSorted()
   if (days.length === 0) return null
-  const domain = [dayNumber(days[0]!), Math.max(dayNumber(days.at(-1)!), dayNumber(days[0]!) + 1)] as const
+  // The days span the estimates and every Official Score, so each is marked.
+  const spanned = [...days, ...trend.official.map((score) => score.takenOn)].toSorted()
+  const domain = [dayNumber(spanned[0]!), Math.max(dayNumber(spanned.at(-1)!), dayNumber(spanned[0]!) + 1)] as const
   const label = (x: number) => shortDay(dayOfNumber(x))
   const sections: ReadonlyArray<LineSeries> = trend.sections.map((each) => ({
     id: each.section.id,
@@ -303,7 +305,7 @@ const Trend = ({ trend }: { readonly trend: ScoreTrendView }) => {
     const last = latest(each.points)
     return last === undefined ? "" : `${each.section.name} ${last.score}`
   }).filter((text) => text !== "").join(", ")
-  const official = trend.official.filter((score) => dayNumber(score.takenOn) >= domain[0] && dayNumber(score.takenOn) <= domain[1])
+  const official = trend.official
   return (
     <section className="group" aria-labelledby="trend-title">
       <h2 id="trend-title">Score trend</h2>
@@ -365,6 +367,7 @@ const Trend = ({ trend }: { readonly trend: ScoreTrendView }) => {
                     }`}
                     series={[total]}
                     markers={official.map((score) => ({
+                      id: score.id,
                       x: dayNumber(score.takenOn),
                       y: score.total,
                       label: `${OfficialScoreKindNames[score.kind]}: ${score.total} on ${calendarDay(score.takenOn)}`
@@ -376,7 +379,7 @@ const Trend = ({ trend }: { readonly trend: ScoreTrendView }) => {
                     yTicks={TotalTicks}
                   />
                 }
-                legend={official.length === 0 ? undefined : <p className="hint">Ringed in yellow: your Official Scores.</p>}
+                legend={official.length === 0 ? undefined : <p className="hint">Marked in yellow: your Official Scores.</p>}
                 numbers={
                   <table className="data-table">
                     <thead>

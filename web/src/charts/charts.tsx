@@ -20,6 +20,7 @@ export interface LineSeries {
 }
 
 export interface Marker {
+  readonly id: string
   readonly x: number
   readonly y: number
   readonly label: string
@@ -109,7 +110,7 @@ export const LineChart = (
         </g>
       ))}
       {markers.map((marker) => (
-        <g key={`${marker.x}-${marker.y}`} className="chart-marker">
+        <g key={marker.id} className="chart-marker">
           <circle cx={x(marker.x)} cy={clampY(marker.y)} r={6} />
           <title>{marker.label}</title>
         </g>

@@ -76,11 +76,14 @@ export class PacingPointView extends Schema.Class<PacingPointView>("gmat-prep/ap
 }) {}
 
 export class TimingView extends Schema.Class<TimingView>("gmat-prep/api/TimingView")({
+  // The Profile's time zone, for the Mocks' times.
+  timeZone: Schema.String,
   // Time over Target Time on first answers in timed Sessions.
   questionTypes: Schema.Array(Schema.Struct({ questionType: Named, pace: Pace })),
   // The same, by the Strategy of each Question's fastest Approach.
   strategies: Schema.Array(Schema.Struct({ strategy: Named, pace: Pace })),
-  // Sectionals and Mock Sections: the last 5 Questions against the rest.
+  // Sectionals and Mock Sections: the first answers on the last 5 Questions
+  // served against the rest, time-outs left out.
   ending: Schema.Struct({ last: Accuracy, rest: Accuracy }),
   // Each finished Mock's pacing, Section by Section, the latest first.
   mocks: Schema.Array(Schema.Struct({
