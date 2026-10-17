@@ -45,7 +45,10 @@ export const ReasonCode = Schema.Literals([
   // The same, but its solves do not all agree with its key.
   "inference-unconfirmed",
   // A page, not a Question.
-  "unread-page"
+  "unread-page",
+  // A Learner's report that something is wrong with a published Question,
+  // with their words (decision 107).
+  "problem-report"
 ])
 export type ReasonCode = typeof ReasonCode.Type
 

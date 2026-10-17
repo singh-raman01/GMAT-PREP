@@ -16,6 +16,7 @@ import { RetriesApi } from "./Retries.ts"
 import { AnalyticsApi } from "./Analytics.ts"
 import { PlanApi } from "./Plan.ts"
 import { CuratorLessonsApi, LessonsApi } from "./Lessons.ts"
+import { CuratorTutorApi, TutorApi } from "./Tutor.ts"
 import { ReviewApi } from "./Review.ts"
 import { ScoresApi } from "./Scores.ts"
 import { OverviewApi } from "./Overview.ts"
@@ -56,6 +57,7 @@ export class Api extends HttpApi.make("gmat-prep")
   .add(AnalyticsApi)
   .add(PlanApi)
   .add(LessonsApi)
+  .add(TutorApi)
   .add(CuratorAccessApi)
   .add(CuratorSessionApi)
   .add(SettingsApi)
@@ -68,4 +70,5 @@ export class Api extends HttpApi.make("gmat-prep")
   .add(SiblingsApi)
   .add(OverviewApi)
   .add(CuratorLessonsApi)
+  .add(CuratorTutorApi)
 {}

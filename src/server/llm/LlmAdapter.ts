@@ -47,6 +47,9 @@ export interface LlmRequest<A> {
   readonly output: Schema.Codec<A, unknown>
   // The job the call is made for; its spend counts against the job's cap.
   readonly jobId?: string
+  // How many times to send it while the API is down or rate limited; a
+  // Learner waiting on a reply, as in Tutor Chat, is given fewer.
+  readonly attempts?: number
 }
 
 // A checked reply and where it came from. Every stored output keeps the
@@ -251,7 +254,7 @@ export class LlmAdapter extends Context.Service<LlmAdapter, {
                   return yield* new LlmRefused({ status: failure.status ?? 0, message })
                 }
                 const waitFor = failure.retryAfterMs ?? 0
-                if (attempt >= MaxAttempts || waitFor > MaxInlineWaitMs) {
+                if (attempt >= (request.attempts ?? MaxAttempts) || waitFor > MaxInlineWaitMs) {
                   return yield* new LlmUnavailable({
                     status: failure.status,
                     message,

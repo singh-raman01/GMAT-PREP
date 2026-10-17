@@ -923,3 +923,42 @@ export const lessonViews = sqliteTable(
   },
   (t) => [index("lesson_views_profile").on(t.profileId, t.viewedAt)]
 )
+
+// A Learner's Tutor Chat message about a Question and its reply (decision
+// 104). Read only for the Profile that wrote it.
+export const tutorMessages = sqliteTable(
+  "tutor_messages",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    questionId: text("question_id").notNull().references(() => questions.id, { onDelete: "cascade" }),
+    message: text("message").notNull(),
+    // The message as compared for reuse: trimmed, spaces folded, lower case.
+    messageKey: text("message_key").notNull(),
+    reply: text("reply").notNull(),
+    // The stored message whose reply this one reused, with no call made.
+    reusedFrom: text("reused_from"),
+    model: text("model").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    tokensIn: integer("tokens_in").notNull(),
+    tokensOut: integer("tokens_out").notNull(),
+    cost: real("cost").notNull(),
+    createdAt: integer("created_at").notNull()
+  },
+  (t) => [index("tutor_messages_profile_question").on(t.profileId, t.questionId, t.createdAt)]
+)
+
+// A Learner's report that a Question is wrong (decision 107). It joins the
+// Question's open Review Queue item for problem reports.
+export const problemReports = sqliteTable(
+  "problem_reports",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    questionId: text("question_id").notNull().references(() => questions.id, { onDelete: "cascade" }),
+    text: text("text").notNull(),
+    reviewItemId: text("review_item_id").references(() => reviewItems.id, { onDelete: "set null" }),
+    createdAt: integer("created_at").notNull()
+  },
+  (t) => [index("problem_reports_question").on(t.questionId), index("problem_reports_profile").on(t.profileId, t.createdAt)]
+)

@@ -47,7 +47,8 @@ const ReasonLabels: Record<ReasonCode, string> = {
   "not-enriched": "Not enriched",
   "predicate-disagreement": "Predicates disagree",
   "inference": "Inference to confirm",
-  "inference-unconfirmed": "Inference unconfirmed"
+  "inference-unconfirmed": "Inference unconfirmed",
+  "problem-report": "A Learner's report"
 }
 
 const RepeatCodes: ReadonlySet<ReasonCode> = new Set(["near-match", "same-text-other-key"])
@@ -586,6 +587,7 @@ const ReviewItem = (
   const otherPassage = repeats && question.stimulus?.kind === "passage" && item.related?.stimulus?.kind === "passage" &&
     item.related.stimulus.body !== question.stimulus.body
   const override = question.keyOverrides.at(-1)
+  const reported = item.reasons.some((reason) => reason.code === "problem-report") && question.status === "published"
   return (
     <li className="review-item">
       {title}
@@ -671,10 +673,21 @@ const ReviewItem = (
             Change the key
           </button>
         )}
+        {reported && (
+          <button type="button" className="button button-quiet" {...about} onClick={() => void run("dismiss")}>
+            Keep it as it is
+          </button>
+        )}
         <button type="button" className="button button-quiet" {...about} onClick={() => void run("withdraw")}>
           Withdraw
         </button>
       </div>
+      {reported && (
+        <p className="hint">
+          A Learner reported this published Question. It stays published until you decide: keep it as it is, change its
+          key, which checks it again, or withdraw it.
+        </p>
+      )}
       {otherPassage && (
         <p className="hint">
           Use the other passage when the two passages are the same one printed twice: this Question keeps its words, asks

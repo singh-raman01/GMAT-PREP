@@ -63,8 +63,9 @@ import { assignUndecided, releaseUnfitting } from "./reserve.ts"
 import { drafts } from "./stranded.ts"
 import { stimulusViews } from "../stimuli/stimuli.ts"
 
-// The Curator's decisions on held Questions and unread pages. A Question the
-// Publish Gate is still checking (a draft) is not in the queue.
+// The Curator's decisions on held Questions, unread pages and Learners'
+// reports on published Questions. A Question the Publish Gate is still
+// checking (a draft) is not in the queue.
 
 const decodeReason = Schema.decodeUnknownOption(ReviewReason)
 
@@ -90,6 +91,9 @@ const readReasons = (json: string): ReadonlyArray<ReviewReason> => {
 }
 
 type ItemRow = typeof reviewItems.$inferSelect
+
+// An item a Learner's report opened.
+const isReport = (row: ItemRow) => readReasons(row.reasons).some((reason) => reason.code === "problem-report")
 
 // Reasons enrichment may settle when tried again after an unusable reply.
 const RetryCodes: ReadonlySet<string> = new Set(["tags", "approach-misses-key", "option-notes", "teaching-text", "not-enriched"])
@@ -333,7 +337,10 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
       const openItem = (id: ReviewItemId, fits: (row: ItemRow) => boolean) =>
         Effect.gen(function*() {
           const row = yield* rowOf(id)
-          const checking = row.questionId !== null && (yield* statusOf(row.questionId)) !== "held"
+          const status = row.questionId === null ? undefined : yield* statusOf(row.questionId)
+          // A Learner's report is about a published Question, which stays
+          // published until the Curator decides (decision 107).
+          const checking = row.questionId !== null && status !== "held" && !(isReport(row) && status === "published")
           if (row.status !== "open" || checking || !fits(row)) {
             return yield* new ReviewItemNotOpen({ item: yield* viewOf(row) })
           }
@@ -542,9 +549,10 @@ export class ReviewQueue extends Context.Service<ReviewQueue, {
           return yield* viewOf(decided)
         }).pipe(oneAtATime)
 
+      // An unread page, or a Learner's report on a Question kept as it is.
       const dismiss = (id: ReviewItemId) =>
         inTransaction(Effect.gen(function*() {
-          const row = yield* openItem(id, (item) => item.questionId === null && item.page !== null)
+          const row = yield* openItem(id, (item) => (item.questionId === null && item.page !== null) || isReport(item))
           return yield* decide(row, "dismissed")
         })).pipe(Effect.flatMap(viewOf), oneAtATime)
 
