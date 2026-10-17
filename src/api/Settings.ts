@@ -1,5 +1,6 @@
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
+import { Blueprint } from "./blueprint.ts"
 import { TargetSecondsRange } from "./targetTimes.ts"
 import { CuratorSession } from "./Curator.ts"
 
@@ -134,6 +135,16 @@ export class UnknownQuestionTypes extends Schema.TaggedError<UnknownQuestionType
   { httpApiStatus: 422 }
 ) {}
 
+export class BlueprintView extends Schema.Class<BlueprintView>("gmat-prep/api/BlueprintView")({
+  blueprint: Blueprint,
+  defaults: Blueprint,
+  // After a save: how many passages and sets held for Mocks fit no slot now
+  // and went to Practice Sets, and how many Questions joined the Reserve
+  // because a slot now takes their passage's or set's size.
+  released: Schema.NullOr(Schema.Int),
+  joined: Schema.NullOr(Schema.Int)
+}) {}
+
 export class SettingsApi extends HttpApiGroup.make("settings")
   .add(
     HttpApiEndpoint.get("llm", "/settings/llm", {
@@ -161,6 +172,16 @@ export class SettingsApi extends HttpApiGroup.make("settings")
       }),
       success: Schema.Array(TargetTimeView),
       error: UnknownQuestionTypes
+    }),
+    HttpApiEndpoint.get("blueprint", "/settings/blueprint", {
+      success: BlueprintView
+    }),
+    // Saves the Section Blueprint. Passages and sets held for Mocks that fit
+    // none of its slots are released into Practice Sets, and those kept out
+    // only for their size are decided again.
+    HttpApiEndpoint.put("saveBlueprint", "/settings/blueprint", {
+      payload: Schema.Struct({ blueprint: Blueprint }),
+      success: BlueprintView
     })
   )
   .middleware(CuratorSession)

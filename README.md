@@ -76,6 +76,12 @@ gmat-prep reset-passphrase     # the executable you run
 bun src/server/main.ts reset-passphrase   # from the repo
 ```
 
+## Take a Sectional
+
+Choose Sectionals for one Section on its own, as on the exam: 45 minutes, adaptive, and no going back. Each Question must be answered before the next appears, and the next one is picked from your answers so far, from the Questions held back for Mocks first. A reading passage or a Multi-Source Reasoning set comes as one unit, its Questions one after another. Bookmark any Question as you go. If time is left after the last Question, Review & Edit lists them all and lets you change up to three answers; if time runs out first, the Question on screen counts as timed out and there is no review. The report gives your Section score with its likely range, each Question's Difficulty, result and time, and whether your changes gained or lost points. Difficulty and your Score Estimates move only when the Section closes. While a Sectional runs, Practice Sets leave out the Questions it has chosen, so nothing there shows their answers before the Section ends. If an answer key changes later, the report follows it and says it was rescored.
+
+A Sectional starts only when the Questions held back for Mocks that you have not seen come to at least twice what the Section asks of each group; the page says what is missing otherwise. The Curator sets how many Questions each group gets, and the sizes of reading passages and Multi-Source Reasoning sets, under Settings, Section Blueprint.
+
 ## Check it
 
 ```sh

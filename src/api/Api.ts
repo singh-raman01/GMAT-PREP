@@ -7,6 +7,7 @@ import { GenerationApi } from "./Generation.ts"
 import { GoldenApi } from "./Golden.ts"
 import { JobsApi } from "./Jobs.ts"
 import { PracticeApi } from "./Practice.ts"
+import { SectionalsApi } from "./Sectionals.ts"
 import { ProfilesApi, SessionApi } from "./Profiles.ts"
 import { ReviewApi } from "./Review.ts"
 import { SettingsApi } from "./Settings.ts"
@@ -36,6 +37,7 @@ export class Api extends HttpApi.make("gmat-prep")
   .add(SessionApi)
   .add(TaxonomyApi)
   .add(PracticeApi)
+  .add(SectionalsApi)
   .add(CuratorAccessApi)
   .add(CuratorSessionApi)
   .add(SettingsApi)

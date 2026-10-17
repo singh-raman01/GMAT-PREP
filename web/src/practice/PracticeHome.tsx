@@ -112,13 +112,18 @@ const countText = (preview: PracticePreview, mode: Mode) => {
   const missing = preview.unavailable > 0
     ? ` ${preview.unavailable} ${preview.unavailable === 1 ? "is" : "are"} not in the Question Bank.`
     : ""
-  if (preview.questions === 0) return `No Questions to practise with these choices.${held}${missing}`
+  const running = preview.inSection > 0
+    ? ` ${preview.inSection} ${preview.inSection === 1 ? "is" : "are"} in your Sectional, until it ends.`
+    : ""
+  if (preview.questions === 0) return `No Questions to practise with these choices.${held}${missing}${running}`
   if (mode === "book") {
-    return `${preview.questions} ${preview.questions === 1 ? "Question" : "Questions"} in book order.${held}${missing}`
+    return `${preview.questions} ${preview.questions === 1 ? "Question" : "Questions"} in book order.${held}${missing}${running}`
   }
-  return preview.matching > preview.questions
-    ? `${preview.matching} Questions match; the set takes ${preview.questions}.`
-    : `${preview.questions} ${preview.questions === 1 ? "Question matches" : "Questions match"}.`
+  return `${
+    preview.matching > preview.questions
+      ? `${preview.matching} Questions match; the set takes ${preview.questions}.`
+      : `${preview.questions} ${preview.questions === 1 ? "Question matches" : "Questions match"}.`
+  }${running}`
 }
 
 export const PracticeHome = ({ onSessionLost, onStopped }: Props) => {
@@ -347,7 +352,11 @@ const StartForm = (
     switch (result.failure._tag) {
       case "NoQuestionsMatch":
         return setProblem(
-          chosen.choice.kind === "filters"
+          result.failure.inSection > 0
+            ? `No Questions to practise now: ${result.failure.inSection} ${
+              result.failure.inSection === 1 ? "is" : "are"
+            } in your Sectional, until it ends.`
+            : chosen.choice.kind === "filters"
             ? "No Questions match these choices. Try fewer filters."
             : result.failure.heldForMocks > 0 || result.failure.unavailable > 0
             ? "Every item in that range is held back for Mocks or not in the Question Bank."

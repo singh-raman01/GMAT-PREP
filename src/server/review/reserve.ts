@@ -1,9 +1,10 @@
 import { and, count, eq, inArray, isNotNull, isNull, ne, notInArray, or } from "drizzle-orm"
 import { Clock, Effect } from "effect"
-import { fitsSlot, groupOf } from "../../api/blueprint.ts"
+import { type Blueprint, DefaultBlueprint, fitsSlot, groupOf } from "../../api/blueprint.ts"
 import { bandOf, type DifficultyBand } from "../../api/difficulty.ts"
 import { Db } from "../db/Database.ts"
 import { books, generationBatches, jobs, questions, sources, stimuli } from "../db/schema.ts"
+import { loadBlueprint, storeBlueprint } from "../settings/blueprint.ts"
 
 // The Mock Reserve (ADR 0008): a quarter of each Section's Questions from
 // each Book and each generation batch, held back for Mocks. Membership is decided per unit, so an RC
@@ -64,9 +65,12 @@ const sum = (values: Iterable<number>) => [...values].reduce((total, value) => t
 // The undecided units of one Book's Section, each with its decision. Only
 // what is left of the quarter is shared out, among the strata still short of
 // their share, so units decided before never push the Reserve past it.
-export const reserveDecisions = (units: ReadonlyArray<ReserveUnit>): ReadonlyMap<string, boolean> => {
+export const reserveDecisions = (
+  units: ReadonlyArray<ReserveUnit>,
+  blueprint: Blueprint = DefaultBlueprint
+): ReadonlyMap<string, boolean> => {
   const decisions = new Map<string, boolean>()
-  const fits = (unit: ReserveUnit) => fitsSlot(unit.questionType, unit.whole ?? unit.size)
+  const fits = (unit: ReserveUnit) => fitsSlot(unit.questionType, unit.whole ?? unit.size, blueprint)
   const fitting = units.filter(fits)
   for (const unit of units) {
     if (unit.reserve === null && !fits(unit)) decisions.set(unit.id, false)
@@ -202,8 +206,9 @@ const decideReserve = (origin: ReserveOrigin) =>
       })
       sections.set(first.section, units)
     }
+    const blueprint = yield* loadBlueprint
     for (const units of sections.values()) {
-      for (const [id, reserve] of reserveDecisions(units)) {
+      for (const [id, reserve] of reserveDecisions(units, blueprint)) {
         yield* decide(members.get(id)!.map((row) => row.id), reserve)
       }
     }
@@ -222,10 +227,12 @@ const countsInPassage = (
 
 // Releases each passage in the Reserve whose Questions, from every Book, no
 // longer fit a Blueprint slot, as one that gained Questions from a later
-// Book or lost one the Curator withdrew: no Mock could serve it.
+// Book, lost one the Curator withdrew, or lost its slot size when the
+// Curator changed the Blueprint: no Mock could serve it.
 export const releaseUnfitting = Effect.gen(function*() {
   const db = yield* Db
   const now = yield* Clock.currentTimeMillis
+  const blueprint = yield* loadBlueprint
   const held = db.selectDistinct({ stimulusId: questions.stimulusId }).from(questions)
     .where(and(isNotNull(questions.stimulusId), eq(questions.reserve, true), isNull(questions.releasedAt)))
   const passages = yield* db.select({
@@ -241,7 +248,7 @@ export const releaseUnfitting = Effect.gen(function*() {
       )
     ))
     .groupBy(questions.stimulusId)
-  const unfitting = passages.filter((passage) => !fitsSlot(passage.questionType, passage.size))
+  const unfitting = passages.filter((passage) => !fitsSlot(passage.questionType, passage.size, blueprint))
     .map((passage) => passage.stimulusId!)
   if (unfitting.length > 0) {
     yield* db.update(questions).set({ releasedAt: now })
@@ -249,6 +256,53 @@ export const releaseUnfitting = Effect.gen(function*() {
   }
   return unfitting.length
 })
+
+// Passages and sets kept out of the Reserve because no slot of the old
+// Blueprint took their size, which a slot of the new one takes: their
+// decision is undone, so the next decision can take them in. Returns how
+// many.
+const reopenFitting = (before: Blueprint, after: Blueprint) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const outside = db.selectDistinct({ stimulusId: questions.stimulusId }).from(questions)
+      .where(and(isNotNull(questions.stimulusId), eq(questions.reserve, false)))
+    const passages = yield* db.select({
+      stimulusId: questions.stimulusId,
+      questionType: questions.questionType,
+      size: count()
+    }).from(questions)
+      .where(and(
+        inArray(questions.stimulusId, outside),
+        or(eq(questions.status, "published"), and(ne(questions.status, "withdrawn"), isNotNull(questions.reserve)))
+      ))
+      .groupBy(questions.stimulusId)
+    const reopened = passages.filter((passage) =>
+      !fitsSlot(passage.questionType, passage.size, before) && fitsSlot(passage.questionType, passage.size, after)
+    ).map((passage) => passage.stimulusId!)
+    if (reopened.length > 0) {
+      yield* db.update(questions).set({ reserve: null, reserveDecidedAt: null })
+        .where(and(inArray(questions.stimulusId, reopened), eq(questions.reserve, false)))
+    }
+    return reopened.length
+  })
+
+// Saves the Curator's Blueprint. Passages and sets in the Reserve that fit
+// none of its slots now are released; those kept out only because no slot
+// took their size are decided again. Returns how many were released, and how
+// many Questions joined the Reserve.
+export const changeBlueprint = (blueprint: Blueprint) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const { released, reopened } = yield* db.transaction(() =>
+      Effect.gen(function*() {
+        const before = yield* loadBlueprint
+        yield* storeBlueprint(blueprint)
+        const released = yield* releaseUnfitting
+        return { released, reopened: yield* reopenFitting(before, blueprint) }
+      })
+    )
+    return { released, joined: reopened === 0 ? 0 : yield* assignUndecided }
+  })
 
 // Decides the Reserve for every Book whose run has ended, finished or not,
 // and every generation batch whose job has, with published Questions not

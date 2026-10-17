@@ -113,7 +113,7 @@ const isSelectionInvalid = (failure: { readonly _tag: string }): failure is Sele
 
 // Keys typed into a text field are the field's; a radio button or a
 // checkbox leaves the shortcuts working.
-const isTyping = (target: EventTarget | null) =>
+export const isTyping = (target: EventTarget | null) =>
   target instanceof HTMLElement &&
   (target.isContentEditable || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement ||
     (target instanceof HTMLInputElement && !["radio", "checkbox", "button", "submit"].includes(target.type)))
@@ -520,7 +520,7 @@ const BookmarkButton = (
 
 // A served Question's options as reviewed after the set: the pick marked,
 // and the answer named.
-const AnsweredOptions = ({ served }: { readonly served: ServedView }) => {
+export const AnsweredOptions = ({ served }: { readonly served: ServedView }) => {
   const parts = served.question.parts
   // A single Part of five options reads as a list; other Parts as they were
   // answered, read-only.
@@ -561,7 +561,8 @@ const SkipLabels: Record<ItemRef["reason"], string> = {
   reserve: "Held for Mocks",
   undecided: "Held until the Mock Reserve is decided",
   checking: "Not in the Question Bank yet",
-  withdrawn: "Withdrawn from the Question Bank"
+  withdrawn: "Withdrawn from the Question Bank",
+  "in-section": "In your Sectional, until it ends"
 }
 
 // The book's items the set leaves out, and why.

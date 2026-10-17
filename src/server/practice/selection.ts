@@ -148,9 +148,9 @@ export interface BookItem {
 }
 
 // Why a Book's item is not in a set: its Question is in the Mock Reserve, or
-// waits for that decision; or it is not in the Question Bank, being checked
-// or withdrawn.
-export type SkipReason = "reserve" | "undecided" | "checking" | "withdrawn"
+// waits for that decision; it is not in the Question Bank, being checked or
+// withdrawn; or a Sectional still running chose it.
+export type SkipReason = "reserve" | "undecided" | "checking" | "withdrawn" | "in-section"
 
 export interface SkippedItem {
   readonly set: string
@@ -176,15 +176,21 @@ export interface BookOrder {
   readonly places: ReadonlyArray<Place>
   readonly heldForMocks: ReadonlyArray<SkippedItem>
   readonly unavailable: ReadonlyArray<SkippedItem>
+  readonly inSection: ReadonlyArray<SkippedItem>
 }
 
 // A Book's items in the range, in the order it prints them: by page, and on
 // a page two sets share, the set that started first, then by number. Unseen
 // Mock Reserve Questions, and those whose Reserve decision is to come, are
 // held for Mocks, and items not published are not in the Question Bank;
-// both are skipped. A Question the Book prints twice is served at its first
-// place.
-export const bookOrder = (items: ReadonlyArray<BookItem>, seen: ReadonlySet<string>, range: ItemRange): BookOrder => {
+// both are skipped, as are those a running Sectional chose (held). A
+// Question the Book prints twice is served at its first place.
+export const bookOrder = (
+  items: ReadonlyArray<BookItem>,
+  seen: ReadonlySet<string>,
+  range: ItemRange,
+  held: ReadonlySet<string> = new Set()
+): BookOrder => {
   const inRange = items.filter((item) =>
     (range.set === undefined || setKey(item.set) === setKey(range.set)) &&
     (range.from === undefined || item.number >= range.from) &&
@@ -201,11 +207,14 @@ export const bookOrder = (items: ReadonlyArray<BookItem>, seen: ReadonlySet<stri
   const places: Array<Place> = []
   const heldForMocks: Array<SkippedItem> = []
   const unavailable: Array<SkippedItem> = []
+  const inSection: Array<SkippedItem> = []
   const taken = new Set<string>()
   for (const item of ordered) {
     const ref = { set: item.set, number: item.number }
     if (item.status !== "published") {
       unavailable.push({ ...ref, reason: item.status === "withdrawn" ? "withdrawn" : "checking" })
+    } else if (held.has(item.questionId)) {
+      inSection.push({ ...ref, reason: "in-section" })
     } else if (!openToPractice({ id: item.questionId, reserve: item.reserve, released: item.released }, seen)) {
       heldForMocks.push({ ...ref, reason: item.reserve === null ? "undecided" : "reserve" })
     } else if (!taken.has(item.questionId)) {
@@ -214,5 +223,5 @@ export const bookOrder = (items: ReadonlyArray<BookItem>, seen: ReadonlySet<stri
       places.push({ questionId: item.questionId, ...ref })
     }
   }
-  return { questionIds, places, heldForMocks, unavailable }
+  return { questionIds, places, heldForMocks, unavailable, inSection }
 }

@@ -4,8 +4,10 @@ import { HttpApiBuilder } from "effect/http-api"
 import { Api } from "../../api/Api.ts"
 import { CuratorCookie, CuratorSession } from "../../api/Curator.ts"
 import { LlmNotConfigured } from "../../api/Jobs.ts"
+import { DefaultBlueprint } from "../../api/blueprint.ts"
 import {
   ApiKeyStatus,
+  BlueprintView,
   LlmSettingsView,
   LlmTasks,
   ModelPrice,
@@ -163,6 +165,14 @@ export const SettingsHandlers = HttpApiBuilder.group(
         }
         yield* settings.saveTargetTimes(current)
         return yield* targetTimesView
+      }),
+      blueprint: () =>
+        settings.blueprint.pipe(
+          Effect.map((blueprint) => new BlueprintView({ blueprint, defaults: DefaultBlueprint, released: null, joined: null }))
+        ),
+      saveBlueprint: Effect.fn(function*({ payload }) {
+        const { released, joined } = yield* settings.saveBlueprint(payload.blueprint)
+        return new BlueprintView({ blueprint: yield* settings.blueprint, defaults: DefaultBlueprint, released, joined })
       })
     })
   })

@@ -1,8 +1,9 @@
-import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm"
+import { and, asc, eq, inArray, isNotNull, max, sql } from "drizzle-orm"
 import { Effect, Schema } from "effect"
 import { PartChoice, type Selection } from "../../api/Practice.ts"
 import { Db } from "../db/Database.ts"
 import { bookmarks, books, difficulty, parts, questions, responses, servedQuestions, sessions, sources } from "../db/schema.ts"
+import { chosenQuestions, decodeConfig, SectionKinds } from "../sections/config.ts"
 import type { History, PoolQuestion } from "./selection.ts"
 
 // What Practice Sets read about Questions and about a Profile's history.
@@ -66,6 +67,39 @@ export const seenBy = (profileId: string) =>
       .innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
       .where(eq(sessions.profileId, profileId))
     return new Set(rows.map((row) => resolve(row.questionId)))
+  })
+
+// The Questions of every unit the Profile's running Sectionals chose, served
+// yet or not, by the Question each counts as. Practice leaves them out until
+// the Section closes, so no Practice Set can show their keys or say how an
+// answer went while the Section can still change it.
+export const heldBySections = (profileId: string) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const running = yield* db.select({ config: sessions.config }).from(sessions)
+      .where(and(eq(sessions.profileId, profileId), inArray(sessions.kind, SectionKinds), eq(sessions.status, "active")))
+    if (running.length === 0) return new Set<string>()
+    const resolve = yield* mergeTargets
+    return new Set(running.flatMap((session) => chosenQuestions(decodeConfig(session.config)).map(resolve)))
+  })
+
+// When a Profile last saw each Question it has Seen, a merged Question's
+// servings counting for the one it became.
+export const lastSeenBy = (profileId: string) =>
+  Effect.gen(function*() {
+    const db = yield* Db
+    const resolve = yield* mergeTargets
+    const rows = yield* db.select({ questionId: servedQuestions.questionId, at: max(servedQuestions.servedAt) })
+      .from(servedQuestions)
+      .innerJoin(sessions, eq(sessions.id, servedQuestions.sessionId))
+      .where(eq(sessions.profileId, profileId))
+      .groupBy(servedQuestions.questionId)
+    const last = new Map<string, number>()
+    for (const row of rows) {
+      const id = resolve(row.questionId)
+      last.set(id, Math.max(last.get(id) ?? 0, Number(row.at ?? 0)))
+    }
+    return last
   })
 
 // The Questions a Profile has Bookmarked.

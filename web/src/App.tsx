@@ -5,6 +5,8 @@ import { CuratorArea } from "./curator/CuratorArea.tsx"
 import { useFocusOnMount } from "./focus.ts"
 import { PracticeHome } from "./practice/PracticeHome.tsx"
 import { PracticeSet } from "./practice/PracticeSet.tsx"
+import { SectionalScreen } from "./sectionals/SectionalScreen.tsx"
+import { SectionalsHome } from "./sectionals/SectionalsHome.tsx"
 import { ProfilePicker } from "./ProfilePicker.tsx"
 import { linkProps, usePath } from "./router.ts"
 import { TaxonomyBrowser } from "./TaxonomyBrowser.tsx"
@@ -117,7 +119,8 @@ export const App = () => {
   }
 }
 
-// A Learner's pages: Practice, a set, and the Taxonomy.
+// A Learner's pages: Practice and a set, Sectionals and one Sectional, and
+// the Taxonomy.
 const LearnerArea = ({ path, onSessionLost, onStopped }: {
   readonly path: string
   readonly onSessionLost: () => void
@@ -127,19 +130,27 @@ const LearnerArea = ({ path, onSessionLost, onStopped }: {
   if (setId !== undefined) {
     return <PracticeSet key={setId} id={setId} onSessionLost={onSessionLost} onStopped={onStopped} />
   }
-  const taxonomy = path === "/taxonomy"
+  const sectionalId = /^\/sectionals\/([^/]+)$/.exec(path)?.[1]
+  if (sectionalId !== undefined) {
+    return <SectionalScreen key={sectionalId} id={sectionalId} onSessionLost={onSessionLost} onStopped={onStopped} />
+  }
+  const page = path === "/taxonomy" ? "taxonomy" : path === "/sectionals" ? "sectionals" : "practice"
+  const link = (to: string, name: typeof page, label: string) => (
+    <a {...linkProps(to)} aria-current={page === name ? "page" : undefined}>
+      <span className={page === name ? "mark" : undefined}>{label}</span>
+    </a>
+  )
   return (
     <>
       <nav className="subnav" aria-label="Learner pages">
-        <a {...linkProps("/")} aria-current={taxonomy ? undefined : "page"}>
-          <span className={taxonomy ? undefined : "mark"}>Practice</span>
-        </a>
-        <a {...linkProps("/taxonomy")} aria-current={taxonomy ? "page" : undefined}>
-          <span className={taxonomy ? "mark" : undefined}>What the GMAT tests</span>
-        </a>
+        {link("/", "practice", "Practice")}
+        {link("/sectionals", "sectionals", "Sectionals")}
+        {link("/taxonomy", "taxonomy", "What the GMAT tests")}
       </nav>
-      {taxonomy
+      {page === "taxonomy"
         ? <TaxonomyBrowser onSessionLost={onSessionLost} onStopped={onStopped} />
+        : page === "sectionals"
+        ? <SectionalsHome onSessionLost={onSessionLost} onStopped={onStopped} />
         : <PracticeHome onSessionLost={onSessionLost} onStopped={onStopped} />}
     </>
   )
